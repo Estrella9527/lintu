@@ -24,6 +24,11 @@ async def lifespan(app: FastAPI):
     from sidecar.engines.scan import run_scan
     from sidecar.engines.crop import run_crop
     from sidecar.engines.upscale import run_upscale
+    from sidecar.engines.outpaint import run_outpaint
+    from sidecar.engines.seasonal import run_seasonal
+    from sidecar.engines.style import run_style
+    from sidecar.engines.inpaint import run_inpaint
+    from sidecar.engines.marketing import run_marketing
 
     scheduler.register("quality_check", run_quality_check)
     scheduler.register("dedup", run_dedup)
@@ -31,6 +36,11 @@ async def lifespan(app: FastAPI):
     scheduler.register("scan", run_scan)
     scheduler.register("crop", run_crop)
     scheduler.register("upscale", run_upscale)
+    scheduler.register("outpaint", run_outpaint)
+    scheduler.register("seasonal", run_seasonal)
+    scheduler.register("style", run_style)
+    scheduler.register("inpaint", run_inpaint)
+    scheduler.register("marketing", run_marketing)
 
     await scheduler.start()
     yield

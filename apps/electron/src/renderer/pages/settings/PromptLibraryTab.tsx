@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -141,10 +141,10 @@ function PromptDialog({ open, onClose, prompt, onSaved }: {
   const [isDefault, setIsDefault] = useState(prompt?.is_default || false)
 
   // Reset when prompt changes
-  useState(() => {
+  useEffect(() => {
     if (prompt) { setName(prompt.name); setCategory(prompt.category); setContent(prompt.content); setIsDefault(prompt.is_default) }
     else { setName(''); setCategory('tagging'); setContent(''); setIsDefault(false) }
-  })
+  }, [prompt])
 
   const saveMutation = useMutation({
     mutationFn: () => {

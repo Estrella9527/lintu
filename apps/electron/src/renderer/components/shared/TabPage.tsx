@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { LucideIcon } from 'lucide-react'
+import { ErrorBoundary } from './ErrorBoundary'
 
 export interface TabConfig {
   id: string
@@ -60,8 +61,11 @@ export function TabPage({ title, tabs, activeTab, onTabChange, actions }: TabPag
             key={tab.id}
             value={tab.id}
             className="flex-1 min-h-0 px-6 py-4 overflow-y-auto"
+            forceMount={undefined}
           >
-            {tab.content}
+            <ErrorBoundary fallbackMessage={`"${tab.label}" 加载出错`}>
+              {tab.content}
+            </ErrorBoundary>
           </TabsContent>
         ))}
       </Tabs>
