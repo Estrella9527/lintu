@@ -14,21 +14,37 @@ interface DimensionSchema {
 
 export function TagSchemaTab() {
   const queryClient = useQueryClient()
-  const { data: schema, isLoading } = useQuery<Record<string, DimensionSchema>>({
+  const { data: schema, isLoading, error } = useQuery<Record<string, DimensionSchema>>({
     queryKey: ['tag-schema'],
-    queryFn: () => fetch('http://localhost:7879/api/tag-schema').then((r) => r.json()),
+    queryFn: async () => {
+      const res = await fetch('http://localhost:7879/api/tag-schema')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    },
   })
 
-  if (isLoading || !schema) {
+  if (isLoading) {
     return <div className="space-y-3">{[1, 2, 3].map((i) => <div key={i} className="h-24 rounded-lg bg-foreground/[0.02] animate-pulse" />)}</div>
   }
+
+  if (error || !schema) {
+    return (
+      <div className="text-center py-12 text-[13px] text-foreground/40">
+        加载标签体系失败，请确认后台服务正常运行
+      </div>
+    )
+  }
+
+  const entries = Object.entries(schema).filter(
+    ([, def]) => def && Array.isArray(def.values),
+  )
 
   return (
     <div className="space-y-4 max-w-2xl">
       <p className="text-[12px] text-foreground/40">
         管理 7 个标签维度及其预设值。修改后将影响 AI 打标的输出范围和覆盖矩阵的维度选项。
       </p>
-      {Object.entries(schema).map(([dim, def]) => (
+      {entries.map(([dim, def]) => (
         <DimensionCard key={dim} dimension={dim} schema={def} onChanged={() => queryClient.invalidateQueries({ queryKey: ['tag-schema'] })} />
       ))}
     </div>
