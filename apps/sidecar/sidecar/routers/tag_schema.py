@@ -14,34 +14,51 @@ SCHEMA_FILE = DATA_DIR / "tag_schema.json"
 
 DEFAULT_SCHEMA: Dict[str, Dict] = {
     "scene": {
-        "label": "场景",
+        "label": "场景类型",
+        "required": True,
+        "multi": False,
         "values": ["山地景观", "水域", "森林步道", "游乐设施", "餐饮区", "住宿区", "入口大门", "停车场", "观景台", "商业街区", "室内场馆"],
     },
     "facility": {
-        "label": "设施",
-        "values": ["索道", "栈道", "观光车", "游船", "滑道", "缆车", "儿童乐园", "餐厅", "商店", "洗手间"],
+        "label": "项目设施",
+        "required": False,
         "multi": True,
+        "values": [
+            "玻璃滑道", "高空吊桥", "卡丁车", "彩虹赛道", "漂流", "攀岩墙", "蹦极", "滑索",
+            "旱雪滑道", "蹦蹦云", "网红秋千", "丛林穿越", "水上乐园", "露营基地", "坚果乐园",
+            "亲子乐园", "玻璃观景台", "丛林飞渡", "悬崖过山车", "蒙奇穿越", "路极飞车",
+            "飞索环游", "象鼻滑滑乐", "森林骑士", "小鹿上山", "滑出边际",
+        ],
     },
     "season": {
         "label": "季节",
+        "required": True,
+        "multi": False,
         "values": ["春季", "夏季", "秋季", "冬季"],
     },
     "weather": {
-        "label": "天气",
+        "label": "天气光线",
+        "required": True,
+        "multi": False,
         "values": ["晴天", "多云", "阴天", "雨天", "雾天", "黄昏", "夜景"],
     },
     "angle": {
-        "label": "角度",
+        "label": "视角",
+        "required": True,
+        "multi": False,
         "values": ["俯拍", "仰拍", "平拍", "全景", "特写", "第一人称视角", "航拍"],
     },
     "people": {
         "label": "人物",
+        "required": True,
+        "multi": False,
         "values": ["无人", "少量游客", "人群", "工作人员", "儿童", "吉祥物IP形象"],
     },
     "usage": {
-        "label": "用途",
-        "values": ["小红书封面", "朋友圈分享", "OTA详情页", "宣传海报底图", "景区导览", "不适合外发"],
+        "label": "画面用途",
+        "required": False,
         "multi": True,
+        "values": ["小红书封面", "朋友圈分享", "OTA详情页", "宣传海报底图", "景区导览", "不适合外发"],
     },
 }
 

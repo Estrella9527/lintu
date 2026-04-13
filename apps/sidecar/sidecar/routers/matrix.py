@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sidecar.db.models import Image, Tag
 from sidecar.db.session import get_db
 from sidecar.routers.tag_schema import get_tag_values
+from sidecar.defaults import get_setting
 
 router = APIRouter()
 
@@ -54,9 +55,11 @@ async def get_matrix(
     for r in row_values:
         for c in col_values:
             count = matrix[r][c]
-            if count < 50:
+            p0_th = get_setting("matrix_p0_threshold")
+            p1_th = get_setting("matrix_p1_threshold")
+            if count < p0_th:
                 priority = "P0"
-            elif count < 200:
+            elif count < p1_th:
                 priority = "P1"
             else:
                 priority = "P2"

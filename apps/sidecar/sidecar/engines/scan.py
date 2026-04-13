@@ -10,10 +10,24 @@ from sqlalchemy import select
 
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
+from sidecar.defaults import get_setting
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
+# Register HEIC support if available
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
+
+
+def _get_supported_formats() -> set:
+    raw = get_setting("quality_supported_formats") or ".jpg,.jpeg,.png,.webp,.heic,.bmp,.tiff,.tif"
+    return {ext.strip().lower() for ext in raw.split(",") if ext.strip()}
+
+
+IMAGE_EXTENSIONS = _get_supported_formats()
 
 
 def _md5(path: Path) -> str:
