@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { activeProjectIdAtom } from '@/atoms/project'
 import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
@@ -11,6 +13,7 @@ import type { TaskRecord } from '@/lib/types'
 
 export function DedupTab() {
   const queryClient = useQueryClient()
+  const projectId = useAtomValue(activeProjectIdAtom)
   const [threshold, setThreshold] = useState(10)
 
   const { data: tasks } = useQuery({
@@ -27,10 +30,9 @@ export function DedupTab() {
 
   const startMutation = useMutation({
     mutationFn: async () => {
-      const projects = await fetch('http://localhost:7879/api/projects').then((r) => r.json())
-      if (projects.length === 0) throw new Error('请先在质检Tab中选择目录并执行扫描')
+      if (!projectId) throw new Error('请先选择或创建项目')
       return api.tasks.create('dedup', {
-        project_id: projects[0].id,
+        project_id: projectId,
         threshold,
         strategy: 'highest_quality',
       } as any)

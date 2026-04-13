@@ -1,62 +1,201 @@
 import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
+import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { TabPage } from '@/components/shared/TabPage'
+import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
+import { DetailDrawer } from '@/components/shared/DetailDrawer'
+import { Badge } from '@/components/ui/badge'
 import { Play, Clock, CheckCircle, XCircle } from 'lucide-react'
+import type { TaskRecord } from '@/lib/types'
 
-const TABS = [
-  {
-    id: 'running',
-    label: '进行中',
-    icon: Play,
-    badge: 0,
-    content: (
-      <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-        暂无运行中的任务
+const STATUS_MAP: Record<string, string[]> = {
+  running: ['running'],
+  queued: ['queued', 'paused'],
+  completed: ['completed'],
+  failed: ['failed', 'cancelled'],
+}
+
+const TASK_TYPE_LABELS: Record<string, string> = {
+  scan: '图片扫描',
+  quality_check: '质量检查',
+  dedup: '去重',
+  tag: 'AI打标',
+  crop: '视角裁剪',
+  upscale: '超分增强',
+}
+
+function TaskList({ statuses }: { statuses: string[] }) {
+  const queryClient = useQueryClient()
+  const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null)
+
+  const { data: tasks, isLoading } = useQuery({
+    queryKey: ['tasks', 'center', statuses],
+    queryFn: async () => {
+      const all = await api.tasks.list()
+      return all.filter((t: TaskRecord) => statuses.includes(t.status))
+    },
+    refetchInterval: 3000,
+  })
+
+  const activeTaskId = tasks?.find((t: TaskRecord) => t.status === 'running')?.id ?? null
+  const progress = useTaskProgress(activeTaskId)
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-24 rounded-lg bg-foreground/[0.02] animate-pulse" />
+        ))}
       </div>
-    ),
-  },
-  {
-    id: 'queued',
-    label: '排队中',
-    icon: Clock,
-    badge: 0,
-    content: (
-      <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-        暂无排队中的任务
+    )
+  }
+
+  if (!tasks || tasks.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-[13px] text-foreground/30">
+        暂无{statuses.includes('running') ? '运行中' : statuses.includes('completed') ? '已完成' : ''}的任务
       </div>
-    ),
-  },
-  {
-    id: 'completed',
-    label: '已完成',
-    icon: CheckCircle,
-    badge: 0,
-    content: (
-      <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-        暂无已完成的任务
+    )
+  }
+
+  return (
+    <>
+      <div className="space-y-3">
+        {tasks.map((task: TaskRecord) => (
+          <div key={task.id} className="cursor-pointer" onClick={() => setSelectedTask(task)}>
+            <TaskProgressCard
+              task={task}
+              progress={task.id === activeTaskId ? progress : null}
+              onPause={
+                task.status === 'running'
+                  ? () => { api.tasks.pause(task.id); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
+                  : undefined
+              }
+              onResume={
+                task.status === 'paused'
+                  ? () => { api.tasks.resume(task.id); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
+                  : undefined
+              }
+              onCancel={
+                task.status === 'running' || task.status === 'paused'
+                  ? () => { api.tasks.cancel(task.id); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
+                  : undefined
+              }
+              extraStats={
+                <div className="flex items-center gap-2 text-[12px] text-foreground/50">
+                  <Badge variant="secondary" className="text-[10px]">
+                    {TASK_TYPE_LABELS[task.type] || task.type}
+                  </Badge>
+                  {task.created_at && (
+                    <span>{new Date(task.created_at).toLocaleString('zh-CN')}</span>
+                  )}
+                </div>
+              }
+            />
+          </div>
+        ))}
       </div>
-    ),
-  },
-  {
-    id: 'failed',
-    label: '失败',
-    icon: XCircle,
-    badge: 0,
-    content: (
-      <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-        暂无失败的任务
-      </div>
-    ),
-  },
-]
+
+      <DetailDrawer
+        open={!!selectedTask}
+        onClose={() => setSelectedTask(null)}
+        title={selectedTask ? (TASK_TYPE_LABELS[selectedTask.type] || selectedTask.type) : ''}
+      >
+        {selectedTask && (
+          <div className="space-y-4 text-[13px]">
+            <InfoRow label="任务ID" value={selectedTask.id} />
+            <InfoRow label="类型" value={TASK_TYPE_LABELS[selectedTask.type] || selectedTask.type} />
+            <InfoRow label="状态" value={selectedTask.status} />
+            <InfoRow label="进度" value={`${selectedTask.processed} / ${selectedTask.total}`} />
+            <InfoRow label="失败数" value={String(selectedTask.failed)} />
+            {selectedTask.cost_usd > 0 && (
+              <InfoRow label="费用" value={`$${selectedTask.cost_usd.toFixed(4)}`} />
+            )}
+            <InfoRow label="创建时间" value={selectedTask.created_at ? new Date(selectedTask.created_at).toLocaleString('zh-CN') : '—'} />
+            {selectedTask.started_at && (
+              <InfoRow label="开始时间" value={new Date(selectedTask.started_at).toLocaleString('zh-CN')} />
+            )}
+            {selectedTask.completed_at && (
+              <InfoRow label="完成时间" value={new Date(selectedTask.completed_at).toLocaleString('zh-CN')} />
+            )}
+            {selectedTask.error_message && (
+              <div>
+                <span className="text-foreground/40">错误信息</span>
+                <p className="mt-1 p-2 rounded bg-destructive/10 text-destructive text-[12px]">
+                  {selectedTask.error_message}
+                </p>
+              </div>
+            )}
+            {selectedTask.parameters && (
+              <div>
+                <span className="text-foreground/40">参数</span>
+                <pre className="mt-1 p-2 rounded bg-foreground/[0.03] text-[11px] text-foreground/60 overflow-x-auto">
+                  {JSON.stringify(JSON.parse(selectedTask.parameters), null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </DetailDrawer>
+    </>
+  )
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-foreground/40">{label}</span>
+      <span className="text-foreground/70 text-right max-w-[60%] truncate">{value}</span>
+    </div>
+  )
+}
 
 export default function TaskCenter() {
   const [activeTab, setActiveTab] = useState('running')
+
+  // Fetch all tasks once to get badge counts
+  const { data: allTasks } = useQuery({
+    queryKey: ['tasks', 'all-for-badges'],
+    queryFn: () => api.tasks.list(),
+    refetchInterval: 5000,
+  })
+
+  const countByStatus = (statuses: string[]) =>
+    allTasks?.filter((t: TaskRecord) => statuses.includes(t.status)).length ?? 0
+
+  const TABS = [
+    {
+      id: 'running',
+      label: '进行中',
+      icon: Play,
+      badge: countByStatus(['running']),
+      content: <TaskList statuses={STATUS_MAP.running} />,
+    },
+    {
+      id: 'queued',
+      label: '排队中',
+      icon: Clock,
+      badge: countByStatus(['queued', 'paused']),
+      content: <TaskList statuses={STATUS_MAP.queued} />,
+    },
+    {
+      id: 'completed',
+      label: '已完成',
+      icon: CheckCircle,
+      badge: countByStatus(['completed']),
+      content: <TaskList statuses={STATUS_MAP.completed} />,
+    },
+    {
+      id: 'failed',
+      label: '失败',
+      icon: XCircle,
+      badge: countByStatus(['failed', 'cancelled']),
+      content: <TaskList statuses={STATUS_MAP.failed} />,
+    },
+  ]
+
   return (
-    <TabPage
-      title="任务中心"
-      tabs={TABS}
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-    />
+    <TabPage title="任务中心" tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
   )
 }

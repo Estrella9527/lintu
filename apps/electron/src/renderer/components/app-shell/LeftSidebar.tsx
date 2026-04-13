@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { activeModuleAtom, type ModuleId } from '@/atoms/navigation'
 import { cn } from '@/lib/utils'
+import { ProjectSelector } from './ProjectSelector'
 
 interface NavItem {
   id: ModuleId
@@ -41,6 +42,9 @@ export function LeftSidebar() {
           灵图
         </span>
       </div>
+
+      {/* Project selector */}
+      <ProjectSelector />
 
       {/* Navigation */}
       <nav className="flex flex-col gap-0.5 px-2 py-2 flex-1 overflow-y-auto scrollbar-hide">

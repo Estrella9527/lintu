@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { api } from '@/lib/api'
 import { activeModuleAtom } from '@/atoms/navigation'
+import { activeProjectIdAtom } from '@/atoms/project'
 import {
   Select,
   SelectContent,
@@ -25,12 +26,7 @@ export default function CoverageMatrix() {
   const [rowDim, setRowDim] = useState('season')
   const [colDim, setColDim] = useState('scene')
   const [, setActiveModule] = useAtom(activeModuleAtom)
-
-  const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => fetch('http://localhost:7879/api/projects').then((r) => r.json()),
-  })
-  const projectId = projects?.[0]?.id || ''
+  const projectId = useAtomValue(activeProjectIdAtom) || ''
 
   const { data, isLoading } = useQuery({
     queryKey: ['matrix', projectId, rowDim, colDim],

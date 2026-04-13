@@ -1,5 +1,7 @@
+import { useAtomValue } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { activeProjectIdAtom } from '@/atoms/project'
 import {
   Image,
   CheckCircle,
@@ -10,11 +12,7 @@ import {
 import type { DashboardStats, TaskRecord } from '@/lib/types'
 
 export default function Dashboard() {
-  const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => fetch('http://localhost:7879/api/projects').then((r) => r.json()),
-  })
-  const projectId = projects?.[0]?.id || ''
+  const projectId = useAtomValue(activeProjectIdAtom) || ''
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', projectId],

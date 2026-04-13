@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { TabPage } from '@/components/shared/TabPage'
 import { LayoutGrid, GitFork, Star, Trash2 } from 'lucide-react'
 import { ImageGrid } from '@/components/asset-library/ImageGrid'
 import { FilterBar, type FilterState } from '@/components/asset-library/FilterBar'
 import { ImageDetailDrawer } from '@/components/asset-library/ImageDetailDrawer'
+import { activeProjectIdAtom } from '@/atoms/project'
 import type { ImageRecord } from '@/lib/types'
 
 export default function AssetLibrary() {
@@ -13,12 +14,7 @@ export default function AssetLibrary() {
   const [selectedImage, setSelectedImage] = useState<ImageRecord | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
-  // Get first project
-  const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => fetch('http://localhost:7879/api/projects').then((r) => r.json()),
-  })
-  const projectId = projects?.[0]?.id
+  const projectId = useAtomValue(activeProjectIdAtom)
 
   const handleSelectImage = (img: ImageRecord) => {
     setSelectedImage(img)

@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { activeProjectIdAtom } from '@/atoms/project'
 import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
@@ -10,10 +12,9 @@ import { DirectorySelector } from '@/components/pipeline/DirectorySelector'
 import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import type { TaskRecord } from '@/lib/types'
 
-const DEFAULT_PROJECT_ID = 'default'
-
 export function QualityCheckTab() {
   const queryClient = useQueryClient()
+  const projectId = useAtomValue(activeProjectIdAtom)
 
   const [directory, setDirectory] = useState<string | null>(null)
   const [minResolution, setMinResolution] = useState(720)
@@ -39,35 +40,16 @@ export function QualityCheckTab() {
   const startMutation = useMutation({
     mutationFn: async () => {
       if (!directory) throw new Error('请先选择图片目录')
+      if (!projectId) throw new Error('请先选择或创建项目')
 
-      // 1. Create project if needed
-      const projects = await fetch('http://localhost:7879/api/projects').then((r) => r.json())
-      let projectId: string
-      if (projects.length === 0) {
-        const proj = await fetch('http://localhost:7879/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: directory.split('/').pop() || '默认项目',
-            originals_path: directory,
-            workspace_path: directory,
-          }),
-        }).then((r) => r.json())
-        projectId = proj.id
-      } else {
-        projectId = projects[0].id
-      }
-
-      // 2. Scan images first
+      // 1. Scan images first
       await api.tasks.create('scan', {
         project_id: projectId,
         directory,
       } as any)
-
-      // Wait a bit for scan to complete
       await new Promise((r) => setTimeout(r, 2000))
 
-      // 3. Create quality check task
+      // 2. Create quality check task
       const result = await api.tasks.create('quality_check', {
         project_id: projectId,
         min_resolution: minResolution,

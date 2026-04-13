@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from '@/components/app-shell/AppShell'
+import '@/atoms/theme' // ensure theme is applied on load
 
 const API_BASE = 'http://localhost:7879'
 
