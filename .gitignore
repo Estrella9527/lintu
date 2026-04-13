@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.db
+bun.lock
+.DS_Store
+lintu-data/

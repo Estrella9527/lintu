@@ -1,0 +1,5 @@
+{
+  "name": "lintu",
+  "private": true,
+  "workspaces": ["apps/*"]
+}

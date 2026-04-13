@@ -1,0 +1,16 @@
+[project]
+name = "lintu-sidecar"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "fastapi>=0.115.0",
+    "greenlet>=3.4.0",
+    "imagehash>=4.3",
+    "numpy>=2.4.4",
+    "pillow>=10.0",
+    "scipy>=1.17.1",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.30.0",
+]
