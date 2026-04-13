@@ -6,17 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.db.models import Image, Tag
 from sidecar.db.session import get_db
+from sidecar.routers.tag_schema import get_tag_values
 
 router = APIRouter()
-
-# Predefined tag values per dimension
-TAG_VALUES = {
-    "scene": ["山地景观", "水域", "森林步道", "游乐设施", "餐饮区", "住宿区", "入口大门", "停车场", "观景台", "商业街区", "室内场馆"],
-    "season": ["春季", "夏季", "秋季", "冬季"],
-    "weather": ["晴天", "多云", "阴天", "雨天", "雾天", "黄昏", "夜景"],
-    "angle": ["俯拍", "仰拍", "平拍", "全景", "特写", "第一人称视角", "航拍"],
-    "people": ["无人", "少量游客", "人群", "工作人员", "儿童", "吉祥物IP形象"],
-}
 
 SEASONS = {"春季", "夏季", "秋季", "冬季"}
 
@@ -55,8 +47,8 @@ async def get_matrix(
             for c in tags["col"]:
                 matrix[r][c] += 1
 
-    row_values = TAG_VALUES.get(row, sorted(set(r for tags in image_tags.values() for r in tags["row"])))
-    col_values = TAG_VALUES.get(col, sorted(set(c for tags in image_tags.values() for c in tags["col"])))
+    row_values = get_tag_values(row) or sorted(set(r for tags in image_tags.values() for r in tags["row"]))
+    col_values = get_tag_values(col) or sorted(set(c for tags in image_tags.values() for c in tags["col"]))
 
     cells = []
     for r in row_values:

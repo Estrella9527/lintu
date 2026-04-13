@@ -130,6 +130,24 @@ class Task(Base):
 # ── Duplicate Group ──
 
 
+# ── Prompt Template ──
+
+
+class Prompt(Base):
+    __tablename__ = "prompts"
+
+    id = Column(String, primary_key=True, default=_uid)
+    name = Column(String, nullable=False)
+    category = Column(String, nullable=False, index=True)  # tagging/seasonal/style/...
+    content = Column(Text, nullable=False)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── Duplicate Group ──
+
+
 class DuplicateGroup(Base):
     __tablename__ = "duplicate_groups"
 
