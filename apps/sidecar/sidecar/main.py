@@ -22,11 +22,15 @@ async def lifespan(app: FastAPI):
     from sidecar.engines.dedup import run_dedup
     from sidecar.engines.tagger import run_tagging
     from sidecar.engines.scan import run_scan
+    from sidecar.engines.crop import run_crop
+    from sidecar.engines.upscale import run_upscale
 
     scheduler.register("quality_check", run_quality_check)
     scheduler.register("dedup", run_dedup)
     scheduler.register("tag", run_tagging)
     scheduler.register("scan", run_scan)
+    scheduler.register("crop", run_crop)
+    scheduler.register("upscale", run_upscale)
 
     await scheduler.start()
     yield
