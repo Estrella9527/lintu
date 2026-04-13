@@ -23,11 +23,13 @@ class APIClient {
   // ── Tasks ──
 
   tasks = {
-    create: (type: string, params: Record<string, unknown>) =>
-      this.request<{ task_id: string }>('/tasks', {
+    create: (type: string, params: Record<string, unknown>) => {
+      const { project_id, ...rest } = params
+      return this.request<{ task_id: string }>('/tasks', {
         method: 'POST',
-        body: JSON.stringify({ type, parameters: params }),
-      }),
+        body: JSON.stringify({ type, project_id, parameters: rest }),
+      })
+    },
 
     list: (filter?: Record<string, string>) => {
       const qs = filter ? '?' + new URLSearchParams(filter).toString() : ''
