@@ -28,10 +28,22 @@ class UpdateConfigBody(BaseModel):
 @router.get("")
 async def get_config():
     config = _read_config()
-    # Mask sensitive keys
+    # Mask sensitive keys (only mask string values that look like secrets)
     safe = {}
     for k, v in config.items():
-        if "key" in k.lower() or "secret" in k.lower():
+        if not isinstance(v, str):
+            safe[k] = v
+        elif k == "custom_relays":
+            # Mask api_key inside relay entries but keep structure
+            try:
+                relays = json.loads(v)
+                for r in relays:
+                    if "api_key" in r and len(r["api_key"]) > 4:
+                        r["api_key"] = r["api_key"][:4] + "****"
+                safe[k] = json.dumps(relays, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                safe[k] = v
+        elif "key" in k.lower() or "secret" in k.lower():
             safe[k] = v[:4] + "****" if len(v) > 4 else "****"
         else:
             safe[k] = v

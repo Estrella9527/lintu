@@ -17,6 +17,7 @@ class TestProviderBody(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+    relay_index: int | None = None  # For testing saved custom relays
 
 
 @router.post("/test")
@@ -26,9 +27,29 @@ async def test_provider(body: TestProviderBody):
         if body.provider_id == "gemini":
             return await _test_gemini(body.api_key)
         elif body.provider_id == "openai_compatible":
-            return await _test_openai_compatible(body.base_url, body.api_key, body.model)
+            # If relay_index is set, read saved relay config (with full api_key)
+            base_url = body.base_url
+            api_key = body.api_key
+            model = body.model
+            if body.relay_index is not None:
+                config = _read_config()
+                try:
+                    relays = json.loads(config.get("custom_relays", "[]"))
+                    relay = relays[body.relay_index]
+                    base_url = base_url or relay.get("base_url")
+                    api_key = api_key or relay.get("api_key")
+                    model = model or relay.get("model")
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            return await _test_openai_compatible(base_url, api_key, model)
         elif body.provider_id == "comfyui":
             return await _test_comfyui(body.base_url)
+        elif body.provider_id in ("openai", "qwen_vl", "jimeng", "tongyi_wanxiang", "zhipu"):
+            # For providers that use simple API key, just verify key is set
+            key = body.api_key or _read_config().get(f"{body.provider_id}_api_key", "")
+            if key:
+                return {"ok": True, "message": f"API Key 已配置（{len(key)}字符）"}
+            return {"ok": False, "error": "未提供 API Key"}
         else:
             return {"ok": False, "error": f"未知的 Provider: {body.provider_id}"}
     except Exception as e:
@@ -59,7 +80,11 @@ async def _test_openai_compatible(base_url: str | None, api_key: str | None, mod
         return {"ok": False, "error": "未提供 API Key"}
     try:
         import httpx
-        url = base_url.rstrip("/") + "/v1/models" if "/v1" not in base_url else base_url.rstrip("/") + "/models"
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            url = base + "/models"
+        else:
+            url = base + "/v1/models"
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
             if resp.status_code == 200:

@@ -336,9 +336,7 @@ function RelayCard({ relay, index, allRelays, onSaved }: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider_id: 'openai_compatible',
-          base_url: relay.base_url,
-          api_key: relay.api_key,
-          model: relay.model,
+          relay_index: index,
         }),
       })
       setTestResult(await res.json())

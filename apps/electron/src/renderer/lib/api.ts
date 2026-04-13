@@ -123,7 +123,7 @@ class APIClient {
     update: (data: Record<string, string>) =>
       this.request('/config', {
         method: 'PUT',
-        body: JSON.stringify(data),
+        body: JSON.stringify({ data }),
       }),
   }
 }
