@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def run_upscale(task: Task, progress_cb):
     params = json.loads(task.parameters or "{}")
-    scale = params.get("scale", 2)
+    scale = int(params.get("scale", 2))
     image_ids = params.get("image_ids", [])
 
     output_dir = WORKSPACE_DIR / "generated" / "upscale"

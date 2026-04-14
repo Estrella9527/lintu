@@ -47,32 +47,44 @@ def _build_prompt_from_schema() -> str:
 
 
 def _get_provider(provider_name: str):
-    """Instantiate a provider by name, reading api_key from config."""
+    """Instantiate a provider by name. Falls back to first custom relay if named provider unavailable."""
     from sidecar.routers.config_api import _read_config
     config = _read_config()
 
+    # Parse custom relays once
+    relays_raw = config.get("custom_relays", "[]")
+    try:
+        relays = json.loads(relays_raw) if isinstance(relays_raw, str) else []
+    except json.JSONDecodeError:
+        relays = []
+
     if provider_name == "gemini":
         api_key = config.get("gemini_api_key", "")
-        if not api_key:
-            raise ValueError("未配置 Gemini API Key")
-        from sidecar.providers.gemini import GeminiProvider
-        return GeminiProvider(api_key=api_key)
-    else:
-        # Try as custom relay (OpenAI compatible)
-        relays_raw = config.get("custom_relays", "[]")
-        try:
-            relays = json.loads(relays_raw) if isinstance(relays_raw, str) else []
-        except json.JSONDecodeError:
-            relays = []
-        for relay in relays:
-            if relay.get("name") == provider_name:
-                from sidecar.providers.openai_compat import OpenAICompatProvider
-                return OpenAICompatProvider(
-                    base_url=relay["base_url"],
-                    api_key=relay["api_key"],
-                    model=relay.get("model", "gpt-4o"),
-                )
-        raise ValueError(f"未找到 Provider: {provider_name}")
+        if api_key:
+            from sidecar.providers.gemini import GeminiProvider
+            return GeminiProvider(api_key=api_key)
+        # Gemini key not set — fall through to relay
+
+    # Try matching by relay name
+    for relay in relays:
+        if relay.get("name") == provider_name:
+            from sidecar.providers.openai_compat import OpenAICompatProvider
+            return OpenAICompatProvider(
+                base_url=relay["base_url"], api_key=relay["api_key"],
+                model=relay.get("model", "gpt-4o"),
+            )
+
+    # Last resort: use first available relay
+    if relays:
+        from sidecar.providers.openai_compat import OpenAICompatProvider
+        relay = relays[0]
+        logger.info(f"Provider '{provider_name}' not found, using relay '{relay.get('name')}'")
+        return OpenAICompatProvider(
+            base_url=relay["base_url"], api_key=relay["api_key"],
+            model=relay.get("model", "gpt-4o"),
+        )
+
+    raise ValueError("未配置任何 AI 服务商。请在设置→AI服务商中配置 Gemini API Key 或添加自定义中转站。")
 
 
 async def run_tagging(task: Task, progress_cb):
