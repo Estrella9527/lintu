@@ -28,6 +28,9 @@ DEFAULTS = {
     "tagger_retry_times": 3,
     "tagger_cost_limit_usd": 50.0,
 
+    # ── Image generation ──
+    "generation_model": "nano-banana-2",
+
     # ── Coverage matrix ──
     "matrix_row_dimension": "season",
     "matrix_col_dimension": "scene",

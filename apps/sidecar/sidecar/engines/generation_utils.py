@@ -8,11 +8,17 @@ from sidecar.defaults import get_setting
 
 logger = logging.getLogger(__name__)
 
+# Image generation model — separate from the chat/tagging model
+DEFAULT_IMAGE_MODEL = "nano-banana-2"
+
 
 def get_generation_provider():
-    """Get the configured AI provider for image generation."""
+    """Get AI provider configured for IMAGE GENERATION (not tagging).
+    Uses nano-banana-2 model by default, overridable via config."""
     from sidecar.routers.config_api import _read_config
     config = _read_config()
+
+    image_model = config.get("generation_model", DEFAULT_IMAGE_MODEL)
 
     # Try custom relays first
     relays_raw = config.get("custom_relays", "[]")
@@ -24,11 +30,11 @@ def get_generation_provider():
     if relays:
         from sidecar.providers.openai_compat import OpenAICompatProvider
         relay = relays[0]
-        logger.info(f"Using relay '{relay.get('name', 'default')}' for generation")
+        logger.info(f"Using relay '{relay.get('name')}' with model '{image_model}' for generation")
         return OpenAICompatProvider(
             base_url=relay["base_url"],
             api_key=relay["api_key"],
-            model=relay.get("model", "gpt-4o"),
+            model=image_model,
         )
 
     # Fall back to Gemini
@@ -58,7 +64,6 @@ def get_prompt_template(category: str, default: str, **format_args) -> str:
                 )
                 return result.scalar_one_or_none()
 
-        # Try to get from DB (may fail in sync context)
         prompt = asyncio.get_event_loop().run_until_complete(_fetch())
         if prompt:
             template = prompt.content
@@ -68,7 +73,6 @@ def get_prompt_template(category: str, default: str, **format_args) -> str:
     except Exception:
         pass
 
-    # Fallback: use default with format args
     return default.format(**format_args)
 
 
