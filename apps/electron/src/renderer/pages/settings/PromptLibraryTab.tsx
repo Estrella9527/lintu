@@ -6,9 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select'
-import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Plus, Pencil, Trash2, Star } from 'lucide-react'
@@ -65,17 +62,16 @@ export function PromptLibraryTab() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Select value={filterCat} onValueChange={setFilterCat}>
-            <SelectTrigger className="h-8 w-28 text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部分类</SelectItem>
-              {CATEGORIES.map((c) => (
-                <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <select
+            value={filterCat}
+            onChange={(e) => setFilterCat(e.target.value)}
+            className="h-8 w-28 rounded-md border border-foreground/15 bg-background px-2 text-[12px] text-foreground/80"
+          >
+            <option value="all">全部分类</option>
+            {CATEGORIES.map((c) => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </select>
           <span className="text-[12px] text-foreground/40">{prompts?.length ?? 0} 个模板</span>
         </div>
         <Button size="sm" className="h-8 text-[12px]" onClick={() => setShowCreate(true)}>
@@ -173,14 +169,13 @@ function PromptDialog({ open, onClose, prompt, onSaved }: {
             </div>
             <div className="w-32 space-y-1">
               <label className="text-[12px] text-foreground/50">分类</label>
-              <Select value={category} onValueChange={setCategory}>
-                <SelectTrigger className="h-8 text-[12px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full h-8 rounded-md border border-foreground/15 bg-background px-2 text-[12px] text-foreground/80"
+              >
+                {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
             </div>
           </div>
           <div className="space-y-1">
