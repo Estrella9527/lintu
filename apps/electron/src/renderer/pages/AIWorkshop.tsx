@@ -21,7 +21,7 @@ interface StrategyRecord {
   icon_keyword: string
   task_type: string
   prompt: string
-  parameters: string  // JSON string of FieldConfig[]
+  parameters: string
   sort_order: number
   is_builtin: boolean
   enabled: boolean
@@ -31,7 +31,7 @@ const API = 'http://localhost:7879/api/strategies'
 
 export default function AIWorkshop() {
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<string>('')
+  const [activeId, setActiveId] = useState<string>('')
   const [preset, setPreset] = useAtom(workshopPresetAtom)
   const [showCreate, setShowCreate] = useState(false)
   const [editingStrategy, setEditingStrategy] = useState<StrategyRecord | null>(null)
@@ -41,24 +41,24 @@ export default function AIWorkshop() {
     queryFn: () => fetch(API).then((r) => r.json()),
   })
 
-  // Auto-select first tab
+  // Auto-select first strategy
   useEffect(() => {
-    if (strategies?.length && !activeTab) {
-      setActiveTab(strategies[0].task_type)
+    if (strategies?.length && !activeId) {
+      setActiveId(strategies[0].id)
     }
-  }, [strategies, activeTab])
+  }, [strategies, activeId])
 
   // Handle preset from CoverageMatrix
   useEffect(() => {
     if (preset && strategies) {
       const match = strategies.find((s) => s.task_type === preset.strategy)
-      if (match) setActiveTab(match.task_type)
+      if (match) setActiveId(match.id)
     }
   }, [preset, strategies])
 
   const activeStrategy = useMemo(
-    () => strategies?.find((s) => s.task_type === activeTab) || null,
-    [strategies, activeTab],
+    () => strategies?.find((s) => s.id === activeId) || null,
+    [strategies, activeId],
   )
 
   const activeFields: FieldConfig[] = useMemo(() => {
@@ -89,11 +89,11 @@ export default function AIWorkshop() {
         <div className="flex gap-1 flex-wrap">
           {strategies?.map((s) => {
             const Icon = matchIcon(s.icon_keyword, s.name)
-            const isActive = activeTab === s.task_type
+            const isActive = activeId === s.id
             return (
               <button
                 key={s.id}
-                onClick={() => setActiveTab(s.task_type)}
+                onClick={() => setActiveId(s.id)}
                 className={cn(
                   'flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-md transition-colors group',
                   isActive
@@ -122,7 +122,7 @@ export default function AIWorkshop() {
         {activeStrategy ? (
           <StrategyPage
             key={activeStrategy.id}
-            taskType={activeStrategy.task_type === 'custom' ? 'custom' : activeStrategy.task_type}
+            taskType={activeStrategy.task_type}
             fields={activeFields}
             strategyId={activeStrategy.id}
           />
