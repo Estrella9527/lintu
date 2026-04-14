@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI):
     from sidecar.engines.inpaint import run_inpaint
     from sidecar.engines.marketing import run_marketing
     from sidecar.engines.custom import run_custom
+    from sidecar.engines.orient import run_orient
 
     scheduler.register("quality_check", run_quality_check)
     scheduler.register("dedup", run_dedup)
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("inpaint", run_inpaint)
     scheduler.register("marketing", run_marketing)
     scheduler.register("custom", run_custom)
+    scheduler.register("orient", run_orient)
 
     await scheduler.start()
     yield
