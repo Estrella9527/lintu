@@ -34,6 +34,14 @@ export function StrategyPage({ taskType, fields, maxSeedImages, strategyId }: St
   const [batchOpen, setBatchOpen] = useState(false)
   const progress = useTaskProgress(activeTaskId)
 
+  // Clear activeTaskId when task finishes
+  useEffect(() => {
+    if (progress?.status && ['completed', 'failed', 'cancelled'].includes(progress.status)) {
+      const timer = setTimeout(() => setActiveTaskId(null), 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [progress?.status])
+
   // Apply preset from CoverageMatrix
   useEffect(() => {
     if (preset && preset.strategy === taskType) {
