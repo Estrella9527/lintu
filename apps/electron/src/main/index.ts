@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'path'
 import { writeFileSync } from 'fs'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 
 const isDev = !app.isPackaged
 const SIDECAR_PORT = 7879
@@ -10,7 +10,20 @@ const SIDECAR_PORT = 7879
 
 let pyProcess: ChildProcess | null = null
 
+function killPortOccupant() {
+  try {
+    const pid = execSync(`lsof -ti :${SIDECAR_PORT}`, { encoding: 'utf8' }).trim()
+    if (pid) {
+      console.log(`[sidecar] killing stale process on port ${SIDECAR_PORT}: pid ${pid}`)
+      execSync(`kill -9 ${pid}`)
+    }
+  } catch {
+    // No process on port — good
+  }
+}
+
 function startSidecar() {
+  killPortOccupant()
   const sidecarDir = isDev
     ? join(__dirname, '../../sidecar')
     : join(process.resourcesPath, 'sidecar')
@@ -54,6 +67,7 @@ function stopSidecar() {
     pyProcess.kill('SIGTERM')
     pyProcess = null
   }
+  killPortOccupant()
 }
 
 async function waitForSidecar(timeout = 15000): Promise<boolean> {
