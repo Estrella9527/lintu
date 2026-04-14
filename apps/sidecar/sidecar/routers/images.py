@@ -34,12 +34,22 @@ async def list_images(
     weather: Optional[List[str]] = Query(None),
     angle: Optional[List[str]] = Query(None),
     people: Optional[List[str]] = Query(None),
+    source_type: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Image).where(Image.project_id == project_id)
 
     if search:
         query = query.where(Image.file_name.ilike(f"%{search}%"))
+    if source_type:
+        if source_type == "generated":
+            query = query.where(Image.source_type == "generated")
+        elif source_type == "original":
+            query = query.where(Image.source_type == "original")
+        else:
+            # Filter by generation type (crop, upscale, etc.) via filename pattern
+            query = query.where(Image.source_type == "generated")
+            query = query.where(Image.file_name.ilike(f"%{source_type}%"))
     if status:
         query = query.where(Image.quality_status == status)
 

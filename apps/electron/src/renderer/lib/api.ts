@@ -69,6 +69,7 @@ class APIClient {
       limit?: number
       search?: string
       status?: string
+      source_type?: string
       scene?: string[]
       season?: string[]
       weather?: string[]
@@ -79,6 +80,7 @@ class APIClient {
       if (params.limit !== undefined) qs.set('limit', String(params.limit))
       if (params.search) qs.set('search', params.search)
       if (params.status) qs.set('status', params.status)
+      if (params.source_type) qs.set('source_type', params.source_type)
       params.scene?.forEach((v) => qs.append('scene', v))
       params.season?.forEach((v) => qs.append('season', v))
       params.weather?.forEach((v) => qs.append('weather', v))

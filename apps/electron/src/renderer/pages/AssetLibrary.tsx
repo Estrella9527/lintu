@@ -18,7 +18,7 @@ const TABS = [
 
 export default function AssetLibrary() {
   const [activeTab, setActiveTab] = useState('all')
-  const [filter, setFilter] = useState<FilterState>({ search: '', status: 'all' })
+  const [filter, setFilter] = useState<FilterState>({ search: '', status: 'all', source: 'all' })
   const [selectedImage, setSelectedImage] = useState<ImageRecord | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -99,6 +99,7 @@ export default function AssetLibrary() {
                   projectId={projectId}
                   search={activeTab === 'all' ? (filter.search || undefined) : undefined}
                   status={gridStatus}
+                  sourceType={activeTab === 'all' ? (filter.source !== 'all' ? filter.source : undefined) : undefined}
                   selectedIds={selectedIds}
                   onToggleSelect={handleToggleSelect}
                   onSelectAll={handleSelectAll}

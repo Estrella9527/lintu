@@ -1,8 +1,9 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
 import { api } from '@/lib/api'
 import { ImageCard } from './ImageCard'
+import { Check } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import type { ImageRecord } from '@/lib/types'
 
 const COLUMNS = 6
@@ -13,18 +14,19 @@ interface ImageGridProps {
   projectId: string
   search?: string
   status?: string
+  sourceType?: string
   selectedIds: Set<string>
   onToggleSelect: (id: string) => void
   onSelectAll?: (ids: string[]) => void
   onClickImage: (image: ImageRecord) => void
 }
 
-export function ImageGrid({ projectId, search, status, selectedIds, onToggleSelect, onSelectAll, onClickImage }: ImageGridProps) {
+export function ImageGrid({ projectId, search, status, sourceType, selectedIds, onToggleSelect, onSelectAll, onClickImage }: ImageGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
   const selectionMode = selectedIds.size > 0
 
   const { data, fetchNextPage, hasNextPage, isLoading } = useInfiniteQuery({
-    queryKey: ['images', projectId, search, status],
+    queryKey: ['images', projectId, search, status, sourceType],
     queryFn: ({ pageParam = 0 }) =>
       api.images.list({
         project_id: projectId,
@@ -32,6 +34,7 @@ export function ImageGrid({ projectId, search, status, selectedIds, onToggleSele
         limit: PAGE_SIZE,
         search: search || undefined,
         status: status && status !== 'all' ? status : undefined,
+        source_type: sourceType && sourceType !== 'all' ? sourceType : undefined,
       }),
     getNextPageParam: (lastPage, pages) =>
       lastPage.items.length === PAGE_SIZE ? pages.length * PAGE_SIZE : undefined,
@@ -65,19 +68,29 @@ export function ImageGrid({ projectId, search, status, selectedIds, onToggleSele
   }
 
   const allSelected = allImages.length > 0 && allImages.every((img) => selectedIds.has(img.id))
+  const someSelected = selectedIds.size > 0 && !allSelected
 
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[12px] text-foreground/40">
-          共 {total.toLocaleString()} 张图片
-        </span>
-        <button
-          onClick={handleSelectAll}
-          className="text-[12px] text-foreground/40 hover:text-accent transition-colors"
-        >
-          {allSelected ? '取消全选' : '全选当前页'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSelectAll}
+            className={cn(
+              'w-4 h-4 rounded-sm border flex items-center justify-center transition-all',
+              allSelected
+                ? 'bg-accent border-accent text-white'
+                : someSelected
+                  ? 'bg-accent/30 border-accent text-white'
+                  : 'border-foreground/20 hover:border-foreground/40',
+            )}
+          >
+            {(allSelected || someSelected) && <Check size={10} strokeWidth={3} />}
+          </button>
+          <span className="text-[12px] text-foreground/40">
+            {selectedIds.size > 0 ? `已选 ${selectedIds.size} / ${total.toLocaleString()} 张` : `共 ${total.toLocaleString()} 张图片`}
+          </span>
+        </div>
       </div>
       <div
         ref={parentRef}

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sidecar.db.migrate import init_db
 from sidecar.scheduler.engine import TaskScheduler
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi
 
 logging.basicConfig(level=logging.INFO)
 
@@ -75,3 +75,4 @@ app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
 app.include_router(tag_schema.router, prefix="/api/tag-schema", tags=["tag-schema"])
 app.include_router(prompts.router, prefix="/api/prompts", tags=["prompts"])
+app.include_router(openapi.router, prefix="/open-api", tags=["open-api"])
