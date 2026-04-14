@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { api } from '@/lib/api'
@@ -6,7 +6,7 @@ import { ImageCard } from './ImageCard'
 import type { ImageRecord } from '@/lib/types'
 
 const COLUMNS = 6
-const ROW_HEIGHT = 180
+const GAP = 8
 const PAGE_SIZE = 120
 
 interface ImageGridProps {
@@ -15,10 +15,11 @@ interface ImageGridProps {
   status?: string
   selectedIds: Set<string>
   onToggleSelect: (id: string) => void
+  onSelectAll?: (ids: string[]) => void
   onClickImage: (image: ImageRecord) => void
 }
 
-export function ImageGrid({ projectId, search, status, selectedIds, onToggleSelect, onClickImage }: ImageGridProps) {
+export function ImageGrid({ projectId, search, status, selectedIds, onToggleSelect, onSelectAll, onClickImage }: ImageGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
   const selectionMode = selectedIds.size > 0
 
@@ -39,22 +40,10 @@ export function ImageGrid({ projectId, search, status, selectedIds, onToggleSele
 
   const allImages = data?.pages.flatMap((p) => p.items) ?? []
   const total = data?.pages[0]?.total ?? 0
-  const rowCount = Math.ceil(allImages.length / COLUMNS)
 
-  const rowVirtualizer = useVirtualizer({
-    count: hasNextPage ? rowCount + 1 : rowCount,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 3,
-  })
-
-  useEffect(() => {
-    const items = rowVirtualizer.getVirtualItems()
-    const lastRow = items[items.length - 1]
-    if (lastRow && lastRow.index >= rowCount - 1 && hasNextPage) {
-      fetchNextPage()
-    }
-  }, [rowVirtualizer.getVirtualItems(), hasNextPage, rowCount, fetchNextPage])
+  const handleSelectAll = useCallback(() => {
+    if (onSelectAll) onSelectAll(allImages.map((img) => img.id))
+  }, [allImages, onSelectAll])
 
   if (isLoading) {
     return (
@@ -75,46 +64,61 @@ export function ImageGrid({ projectId, search, status, selectedIds, onToggleSele
     )
   }
 
+  const allSelected = allImages.length > 0 && allImages.every((img) => selectedIds.has(img.id))
+
   return (
     <div>
-      <div className="text-[12px] text-foreground/40 mb-2">
-        共 {total.toLocaleString()} 张图片
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[12px] text-foreground/40">
+          共 {total.toLocaleString()} 张图片
+        </span>
+        <button
+          onClick={handleSelectAll}
+          className="text-[12px] text-foreground/40 hover:text-accent transition-colors"
+        >
+          {allSelected ? '取消全选' : '全选当前页'}
+        </button>
       </div>
-      <div ref={parentRef} className="flex-1 overflow-auto" style={{ height: 'calc(100vh - 280px)' }}>
-        <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const rowImages = allImages.slice(
-              virtualRow.index * COLUMNS,
-              (virtualRow.index + 1) * COLUMNS,
-            )
-            return (
-              <div
-                key={virtualRow.index}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: ROW_HEIGHT,
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-                className="grid grid-cols-6 gap-2 px-0"
-              >
-                {rowImages.map((img) => (
-                  <ImageCard
-                    key={img.id}
-                    image={img}
-                    selected={selectedIds.has(img.id)}
-                    selectionMode={selectionMode}
-                    onClick={() => onClickImage(img)}
-                    onToggleSelect={() => onToggleSelect(img.id)}
-                  />
-                ))}
-              </div>
-            )
-          })}
+      <div
+        ref={parentRef}
+        className="overflow-auto"
+        style={{ height: 'calc(100vh - 290px)' }}
+      >
+        <div
+          className="grid gap-2"
+          style={{ gridTemplateColumns: `repeat(${COLUMNS}, 1fr)` }}
+        >
+          {allImages.map((img) => (
+            <ImageCard
+              key={img.id}
+              image={img}
+              selected={selectedIds.has(img.id)}
+              selectionMode={selectionMode}
+              onClick={() => onClickImage(img)}
+              onToggleSelect={() => onToggleSelect(img.id)}
+            />
+          ))}
         </div>
+        {hasNextPage && (
+          <LoadMoreTrigger onVisible={() => fetchNextPage()} />
+        )}
       </div>
     </div>
   )
+}
+
+/** Intersection observer trigger to load more pages */
+function LoadMoreTrigger({ onVisible }: { onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) onVisible() },
+      { rootMargin: '200px' },
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [onVisible])
+  return <div ref={ref} className="h-4" />
 }

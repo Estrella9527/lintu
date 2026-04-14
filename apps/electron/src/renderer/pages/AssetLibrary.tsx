@@ -41,6 +41,14 @@ export default function AssetLibrary() {
 
   const handleClearSelection = useCallback(() => setSelectedIds(new Set()), [])
 
+  const handleSelectAll = useCallback((ids: string[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id))
+      if (allSelected) return new Set() // deselect all
+      return new Set(ids)
+    })
+  }, [])
+
   const gridStatus = activeTab === 'trash' ? 'rejected' : (filter.status !== 'all' ? filter.status : undefined)
 
   return (
@@ -93,6 +101,7 @@ export default function AssetLibrary() {
                   status={gridStatus}
                   selectedIds={selectedIds}
                   onToggleSelect={handleToggleSelect}
+                  onSelectAll={handleSelectAll}
                   onClickImage={handleClickImage}
                 />
               </div>
