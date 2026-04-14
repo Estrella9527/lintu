@@ -24,6 +24,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear }: BatchAct
       toast.success(`已删除 ${data.deleted} 张图片`)
       onClear()
       queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
     onError: () => toast.error('删除失败'),
   })
@@ -43,18 +44,35 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear }: BatchAct
   })
 
   const handleDownload = async () => {
-    for (const id of ids) {
+    if (ids.length === 1) {
+      // Single file: show save dialog
+      const id = ids[0]
+      const detailRes = await fetch(`http://localhost:7879/api/images/${id}`)
+      const detail = await detailRes.json()
       const url = `http://localhost:7879/api/images/${id}/download`
-      const a = document.createElement('a')
-      a.href = url
-      a.download = ''
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      // Small delay between downloads
-      await new Promise((r) => setTimeout(r, 200))
+      const saved = await window.electronAPI.downloadFile(url, detail.file_name || `${id}.jpg`)
+      if (saved) toast.success(`已保存到 ${saved}`)
+    } else {
+      // Multiple: ask for directory, then save all
+      const dir = await window.electronAPI.selectDirectory()
+      if (!dir) return
+      let saved = 0
+      for (const id of ids) {
+        try {
+          const res = await fetch(`http://localhost:7879/api/images/${id}/download`)
+          const blob = await res.blob()
+          const detailRes = await fetch(`http://localhost:7879/api/images/${id}`)
+          const detail = await detailRes.json()
+          const filename = detail.file_name || `${id}.jpg`
+          // Use IPC to save to chosen directory
+          const url = `http://localhost:7879/api/images/${id}/download`
+          // For batch, we write directly via a temporary approach
+          await window.electronAPI.downloadFile(url, `${dir}/${filename}`)
+          saved++
+        } catch {}
+      }
+      toast.success(`已保存 ${saved} 张图片到 ${dir}`)
     }
-    toast.success(`已开始下载 ${ids.length} 张图片`)
   }
 
   if (selectedCount === 0) return null
@@ -69,26 +87,19 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear }: BatchAct
         <Download size={12} className="mr-1" /> 下载
       </Button>
 
-      <Button
-        variant="outline" size="sm" className="h-7 text-[12px]"
-        onClick={() => statusMutation.mutate('passed')}
-      >
+      <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => statusMutation.mutate('passed')}>
         <CheckCircle size={12} className="mr-1" /> 标记通过
       </Button>
 
-      <Button
-        variant="outline" size="sm" className="h-7 text-[12px]"
-        onClick={() => statusMutation.mutate('rejected')}
-      >
+      <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => statusMutation.mutate('rejected')}>
         <XCircle size={12} className="mr-1" /> 标记淘汰
       </Button>
 
       <Button
-        variant="outline" size="sm" className="h-7 text-[12px] text-destructive border-destructive/30 hover:bg-destructive/10"
+        variant="outline" size="sm"
+        className="h-7 text-[12px] text-destructive border-destructive/30 hover:bg-destructive/10"
         onClick={() => {
-          if (confirm(`确定删除 ${selectedCount} 张图片？此操作不可撤销。`)) {
-            deleteMutation.mutate()
-          }
+          if (confirm(`确定删除 ${selectedCount} 张图片？此操作不可撤销。`)) deleteMutation.mutate()
         }}
         disabled={deleteMutation.isPending}
       >

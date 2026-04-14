@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'path'
+import { writeFileSync } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 
 const isDev = !app.isPackaged
@@ -109,6 +110,30 @@ ipcMain.handle('select-directory', async () => {
     properties: ['openDirectory'],
   })
   return result.canceled ? null : result.filePaths[0]
+})
+
+ipcMain.handle('download-file', async (_event, url: string, filename: string) => {
+  const result = await dialog.showSaveDialog({
+    defaultPath: filename,
+    filters: [
+      { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePath) return null
+  try {
+    const res = await fetch(url)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    writeFileSync(result.filePath, buffer)
+    return result.filePath
+  } catch (e) {
+    console.error('[download]', e)
+    return null
+  }
+})
+
+ipcMain.handle('open-file', async (_event, filePath: string) => {
+  shell.openPath(filePath)
 })
 
 // ── App lifecycle ──
