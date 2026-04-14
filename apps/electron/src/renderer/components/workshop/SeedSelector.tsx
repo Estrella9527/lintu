@@ -94,7 +94,15 @@ export function SeedSelector({ selectedImages, onSelect, maxSelect }: SeedSelect
               <ImageGrid
                 projectId={projectId}
                 status="passed"
-                onSelectImage={handlePickImage}
+                selectedIds={new Set(selectedImages.map((s) => s.id))}
+                onToggleSelect={(id) => {
+                  const img = selectedImages.find((s) => s.id === id)
+                  if (img) {
+                    onSelect(selectedImages.filter((s) => s.id !== id))
+                  }
+                  // For adding, we need the full ImageRecord — handled via onClickImage
+                }}
+                onClickImage={handlePickImage}
               />
             ) : (
               <div className="text-center py-12 text-[13px] text-foreground/30">请先选择项目</div>

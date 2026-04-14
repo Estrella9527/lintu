@@ -13,11 +13,14 @@ interface ImageGridProps {
   projectId: string
   search?: string
   status?: string
-  onSelectImage: (image: ImageRecord) => void
+  selectedIds: Set<string>
+  onToggleSelect: (id: string) => void
+  onClickImage: (image: ImageRecord) => void
 }
 
-export function ImageGrid({ projectId, search, status, onSelectImage }: ImageGridProps) {
+export function ImageGrid({ projectId, search, status, selectedIds, onToggleSelect, onClickImage }: ImageGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
+  const selectionMode = selectedIds.size > 0
 
   const { data, fetchNextPage, hasNextPage, isLoading } = useInfiniteQuery({
     queryKey: ['images', projectId, search, status],
@@ -45,7 +48,6 @@ export function ImageGrid({ projectId, search, status, onSelectImage }: ImageGri
     overscan: 3,
   })
 
-  // Load more when scrolling near bottom
   useEffect(() => {
     const items = rowVirtualizer.getVirtualItems()
     const lastRow = items[items.length - 1]
@@ -78,7 +80,7 @@ export function ImageGrid({ projectId, search, status, onSelectImage }: ImageGri
       <div className="text-[12px] text-foreground/40 mb-2">
         共 {total.toLocaleString()} 张图片
       </div>
-      <div ref={parentRef} className="flex-1 overflow-auto" style={{ height: 'calc(100vh - 240px)' }}>
+      <div ref={parentRef} className="flex-1 overflow-auto" style={{ height: 'calc(100vh - 280px)' }}>
         <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const rowImages = allImages.slice(
@@ -102,7 +104,10 @@ export function ImageGrid({ projectId, search, status, onSelectImage }: ImageGri
                   <ImageCard
                     key={img.id}
                     image={img}
-                    onClick={() => onSelectImage(img)}
+                    selected={selectedIds.has(img.id)}
+                    selectionMode={selectionMode}
+                    onClick={() => onClickImage(img)}
+                    onToggleSelect={() => onToggleSelect(img.id)}
                   />
                 ))}
               </div>

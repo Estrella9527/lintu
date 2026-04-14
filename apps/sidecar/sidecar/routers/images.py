@@ -160,6 +160,79 @@ async def update_tags(
     return {"ok": True}
 
 
+# ── Download original ──
+
+
+@router.get("/{image_id}/download")
+async def download_image(image_id: str, db: AsyncSession = Depends(get_db)):
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    source = Path(img.file_path)
+    if not source.exists():
+        raise HTTPException(404, "Source file not found")
+    return FileResponse(
+        source,
+        filename=img.file_name,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# ── Delete ──
+
+
+@router.delete("/{image_id}")
+async def delete_image(image_id: str, db: AsyncSession = Depends(get_db)):
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    # Delete tags
+    tags = await db.execute(select(Tag).where(Tag.image_id == image_id))
+    for tag in tags.scalars().all():
+        await db.delete(tag)
+    await db.delete(img)
+    await db.commit()
+    return {"ok": True}
+
+
+# ── Batch operations ──
+
+
+class BatchActionBody(BaseModel):
+    image_ids: list[str]
+
+
+@router.post("/batch/delete")
+async def batch_delete(body: BatchActionBody, db: AsyncSession = Depends(get_db)):
+    deleted = 0
+    for img_id in body.image_ids:
+        img = await db.get(Image, img_id)
+        if img:
+            tags = await db.execute(select(Tag).where(Tag.image_id == img_id))
+            for tag in tags.scalars().all():
+                await db.delete(tag)
+            await db.delete(img)
+            deleted += 1
+    await db.commit()
+    return {"ok": True, "deleted": deleted}
+
+
+@router.post("/batch/update-status")
+async def batch_update_status(
+    body: BatchActionBody,
+    status: str = "passed",
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import update as sql_update
+    await db.execute(
+        sql_update(Image)
+        .where(Image.id.in_(body.image_ids))
+        .values(quality_status=status)
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 def _image_to_dict(img: Image) -> dict:
     return {
         "id": img.id,
