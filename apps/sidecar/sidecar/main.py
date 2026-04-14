@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sidecar.db.migrate import init_db
 from sidecar.scheduler.engine import TaskScheduler
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, strategies
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     from sidecar.engines.style import run_style
     from sidecar.engines.inpaint import run_inpaint
     from sidecar.engines.marketing import run_marketing
+    from sidecar.engines.custom import run_custom
 
     scheduler.register("quality_check", run_quality_check)
     scheduler.register("dedup", run_dedup)
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("style", run_style)
     scheduler.register("inpaint", run_inpaint)
     scheduler.register("marketing", run_marketing)
+    scheduler.register("custom", run_custom)
 
     await scheduler.start()
     yield
@@ -76,3 +78,4 @@ app.include_router(providers.router, prefix="/api/providers", tags=["providers"]
 app.include_router(tag_schema.router, prefix="/api/tag-schema", tags=["tag-schema"])
 app.include_router(prompts.router, prefix="/api/prompts", tags=["prompts"])
 app.include_router(openapi.router, prefix="/open-api", tags=["open-api"])
+app.include_router(strategies.router, prefix="/api/strategies", tags=["strategies"])

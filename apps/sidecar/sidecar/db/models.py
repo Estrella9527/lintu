@@ -145,6 +145,25 @@ class Prompt(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# ── Strategy (AI Workshop) ──
+
+
+class Strategy(Base):
+    __tablename__ = "strategies"
+
+    id = Column(String, primary_key=True, default=_uid)
+    name = Column(String, nullable=False)
+    icon_keyword = Column(String, default="")  # keyword for auto icon matching
+    task_type = Column(String, nullable=False)  # engine task type: seasonal/style/outpaint/inpaint/crop/upscale/marketing/custom
+    prompt = Column(Text, default="")  # default prompt template
+    parameters = Column(Text, default="[]")  # JSON array of FieldConfig
+    sort_order = Column(Integer, default=0)
+    is_builtin = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ── Duplicate Group ──
 
 

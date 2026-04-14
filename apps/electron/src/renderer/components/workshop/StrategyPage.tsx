@@ -17,9 +17,10 @@ interface StrategyPageProps {
   taskType: string
   fields: FieldConfig[]
   maxSeedImages?: number
+  strategyId?: string
 }
 
-export function StrategyPage({ taskType, fields, maxSeedImages }: StrategyPageProps) {
+export function StrategyPage({ taskType, fields, maxSeedImages, strategyId }: StrategyPageProps) {
   const projectId = useAtomValue(activeProjectIdAtom)
   const [preset, setPreset] = useAtom(workshopPresetAtom)
   const queryClient = useQueryClient()
@@ -48,6 +49,7 @@ export function StrategyPage({ taskType, fields, maxSeedImages }: StrategyPagePr
       const result = await api.tasks.create(taskType, {
         project_id: projectId,
         image_ids: seeds.map((s) => s.id),
+        ...(strategyId ? { strategy_id: strategyId } : {}),
         ...params,
       } as any)
       return result
