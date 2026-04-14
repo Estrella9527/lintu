@@ -1,5 +1,7 @@
-"""Gemini provider for image tagging."""
+"""Gemini provider for vision tagging AND image generation."""
 
+import base64
+import io
 import json
 import logging
 
@@ -9,7 +11,6 @@ from sidecar.providers.base import ImageProvider
 
 logger = logging.getLogger(__name__)
 
-# Register HEIC support if available
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -23,22 +24,25 @@ class GeminiProvider(ImageProvider):
             import google.generativeai as genai
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel("gemini-2.0-flash")
+            self._genai = genai
         except ImportError:
-            raise ImportError("google-generativeai is required. Run: uv add google-generativeai")
+            raise ImportError("google-generativeai required. Run: uv add google-generativeai")
 
-    async def tag_image(self, image_path: str, prompt: str | None = None) -> dict:
+    def _load_image(self, image_path: str) -> PILImage.Image:
         img = PILImage.open(image_path)
         if img.mode in ("RGBA", "P", "LA"):
             img = img.convert("RGB")
         img.thumbnail((1024, 1024))
+        return img
 
-        use_prompt = prompt or "Describe this image in JSON."
+    # ── Vision / Tagging ──
 
+    async def tag_image(self, image_path: str, prompt: str | None = None) -> dict:
+        img = self._load_image(image_path)
         response = await self.model.generate_content_async(
-            [use_prompt, img],
+            [prompt or "Describe this image in JSON.", img],
             generation_config={"response_mime_type": "application/json"},
         )
-
         try:
             tags = json.loads(response.text)
         except json.JSONDecodeError:
@@ -50,7 +54,32 @@ class GeminiProvider(ImageProvider):
             tags = json.loads(text)
 
         tokens = getattr(response, "usage_metadata", None)
-        token_count = tokens.total_token_count if tokens else 500
-        cost = token_count * 0.0000001
-
+        cost = (tokens.total_token_count if tokens else 500) * 0.0000001
         return {"tags": tags, "cost_usd": cost}
+
+    # ── Image Generation ──
+
+    async def generate_image(self, image_path: str, prompt: str, **kwargs) -> dict:
+        """Gemini image generation via generate_content with image output."""
+        img = self._load_image(image_path)
+
+        try:
+            response = await self.model.generate_content_async(
+                [prompt, img],
+                generation_config={"response_mime_type": "image/jpeg"},
+            )
+            # Gemini returns image as part of response
+            if hasattr(response, 'candidates') and response.candidates:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        image_data = part.inline_data.data
+                        tokens = getattr(response, "usage_metadata", None)
+                        cost = (tokens.total_token_count if tokens else 1000) * 0.000001
+                        return {"image_data": image_data, "cost_usd": cost}
+
+            raise ValueError("Gemini response did not contain image data")
+
+        except Exception as e:
+            # Fallback: try without response_mime_type (some models don't support it)
+            logger.info(f"Gemini image generation failed: {e}")
+            raise

@@ -4,6 +4,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { api } from '@/lib/api'
 import { activeModuleAtom } from '@/atoms/navigation'
 import { activeProjectIdAtom } from '@/atoms/project'
+import { workshopPresetAtom } from '@/atoms/workshop'
 import {
   Select,
   SelectContent,
@@ -26,6 +27,7 @@ export default function CoverageMatrix() {
   const [rowDim, setRowDim] = useState('season')
   const [colDim, setColDim] = useState('scene')
   const [, setActiveModule] = useAtom(activeModuleAtom)
+  const [, setWorkshopPreset] = useAtom(workshopPresetAtom)
   const projectId = useAtomValue(activeProjectIdAtom) || ''
 
   const { data, isLoading } = useQuery({
@@ -133,7 +135,27 @@ export default function CoverageMatrix() {
                           className={cn(
                             'p-0 text-center border-b border-foreground/5 cursor-pointer transition-opacity hover:opacity-80',
                           )}
-                          onClick={() => setActiveModule('asset-library')}
+                          onClick={() => {
+                            // Navigate to AI Workshop with preset
+                            let strategy = 'seasonal'
+                            let params: Record<string, any> = {}
+                            let seedFilter: any = {}
+
+                            if (rowDim === 'season') {
+                              strategy = 'seasonal'
+                              params = { season: r }
+                              seedFilter = { scene: c }
+                            } else if (colDim === 'season') {
+                              strategy = 'seasonal'
+                              params = { season: c }
+                              seedFilter = { scene: r }
+                            } else {
+                              strategy = 'outpaint'
+                            }
+
+                            setWorkshopPreset({ strategy, params, seedFilter })
+                            setActiveModule('ai-workshop')
+                          }}
                         >
                           <div
                             className={cn(

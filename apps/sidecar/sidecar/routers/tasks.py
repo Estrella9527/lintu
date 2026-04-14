@@ -26,6 +26,28 @@ class CreateTaskBody(BaseModel):
     parameters: dict = {}
 
 
+class BatchTaskBody(BaseModel):
+    tasks: list[CreateTaskBody]
+
+
+@router.post("/batch")
+async def create_batch(body: BatchTaskBody, db: AsyncSession = Depends(get_db)):
+    """Create multiple tasks at once."""
+    task_ids = []
+    for t in body.tasks:
+        task = Task(
+            project_id=t.project_id,
+            type=t.type,
+            parameters=json.dumps(t.parameters),
+            status="queued",
+        )
+        db.add(task)
+        await db.flush()
+        task_ids.append(task.id)
+    await db.commit()
+    return {"task_ids": task_ids, "count": len(task_ids)}
+
+
 @router.post("")
 async def create_task(body: CreateTaskBody, db: AsyncSession = Depends(get_db)):
     task = Task(

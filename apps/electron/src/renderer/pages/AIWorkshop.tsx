@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useAtom } from 'jotai'
 import { TabPage } from '@/components/shared/TabPage'
 import { Maximize, Leaf, Palette, Scissors, Eye, Zap, Megaphone } from 'lucide-react'
+import { workshopPresetAtom } from '@/atoms/workshop'
 import { CropStrategy } from './workshop/CropStrategy'
 import { UpscaleStrategy } from './workshop/UpscaleStrategy'
 import { OutpaintStrategy } from './workshop/OutpaintStrategy'
@@ -21,6 +23,15 @@ const STRATEGIES = [
 
 export default function AIWorkshop() {
   const [activeTab, setActiveTab] = useState('outpaint')
+  const [preset, setPreset] = useAtom(workshopPresetAtom)
+
+  // When preset arrives from CoverageMatrix, switch to the right tab
+  useEffect(() => {
+    if (preset) {
+      setActiveTab(preset.strategy)
+    }
+  }, [preset])
+
   return (
     <TabPage title="AI工坊" tabs={STRATEGIES} activeTab={activeTab} onTabChange={setActiveTab} />
   )

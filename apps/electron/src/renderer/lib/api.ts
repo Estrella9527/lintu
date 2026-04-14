@@ -31,6 +31,12 @@ class APIClient {
       })
     },
 
+    createBatch: (tasks: Array<{ type: string; project_id: string; parameters: Record<string, unknown> }>) =>
+      this.request<{ task_ids: string[]; count: number }>('/tasks/batch', {
+        method: 'POST',
+        body: JSON.stringify({ tasks }),
+      }),
+
     list: (filter?: Record<string, string>) => {
       const qs = filter ? '?' + new URLSearchParams(filter).toString() : ''
       return this.request<TaskRecord[]>(`/tasks${qs}`)
