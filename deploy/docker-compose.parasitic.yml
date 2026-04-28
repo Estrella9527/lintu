@@ -1,11 +1,19 @@
 # 灵图 Sidecar — 寄生部署版（与原 docker-compose.yml 并存）
 #
-# 适用场景：同台 ECS 已运行其他项目（如 zhongming），Docker 默认 bridge
-# 与 data-agent_internal 已占用 172.17/172.18 网段，主机已有 nginx。
+# 适用场景：同台 ECS 已运行其他项目（如 zhongming），且**已有 host PG 实例**
+# 在 5432 端口跑（与 dataagent / geo_ai_platform 共用），lintu 用户/库 + pgvector
+# 等扩展由 phase 4 init 脚本预先建好。
+#
 # 本配置：
-#   - 两个容器都用 host network（避开 bridge 段冲突）
-#   - PG 监听 127.0.0.1:5433（避开重明可能用的 5432）
+#   - 不起新 PG 容器，sidecar 直接连 host PG 的 127.0.0.1:5432
+#   - sidecar 用 host network（避开 bridge 段冲突 172.17/172.18 已占）
 #   - sidecar 监听 127.0.0.1:17879（公网无法直连，只能通过主机 nginx 反代）
+#
+# 前置条件（phase 4 应该已经满足）：
+#   - host PG 17 在 127.0.0.1:5432 listening
+#   - lintu 用户存在，密码已生成保存于 ~/.lintu_db_password
+#   - lintu 数据库已建，extensions 已装（vector/pg_trgm/pgcrypto/unaccent/btree_gin）
+#   - 验证：PGPASSWORD=... psql -h 127.0.0.1 -U lintu -d lintu -c '\dx'
 #
 # Usage:
 #   cd /srv/lintu/deploy
@@ -14,29 +22,6 @@
 #   docker compose -f docker-compose.parasitic.yml logs -f sidecar
 
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: lintu-pg
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - postgres
-      - -c
-      - port=5433
-      - -c
-      - listen_addresses=127.0.0.1
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lintu}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
-      POSTGRES_DB: ${POSTGRES_DB:-lintu}
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5433 -U ${POSTGRES_USER:-lintu} -d ${POSTGRES_DB:-lintu}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   sidecar:
     build:
       context: ../apps/sidecar
@@ -45,9 +30,6 @@ services:
     container_name: lintu-sidecar
     restart: unless-stopped
     network_mode: host
-    depends_on:
-      postgres:
-        condition: service_healthy
     # 覆盖 Dockerfile 默认 CMD（--host 0.0.0.0 --port 7879）：
     # 锁 loopback + 改 17879，公网只能通过主机 nginx 反代进入
     command:
@@ -65,8 +47,9 @@ services:
       LINTU_MODE: server
       LINTU_PORT: "17879"
       LINTU_DATA_DIR: /data
-      # host network 模式无 docker DNS：用 127.0.0.1 + 自定义端口连同主机的 PG 容器
-      LINTU_DB_URL: "postgresql+asyncpg://${POSTGRES_USER:-lintu}:${POSTGRES_PASSWORD}@127.0.0.1:5433/${POSTGRES_DB:-lintu}"
+      # host network 模式：通过 127.0.0.1 直连 host PG（17.9 with pgvector 0.8.2）
+      # 库/用户/扩展由 phase 4 init 脚本预建。
+      LINTU_DB_URL: "postgresql+asyncpg://${POSTGRES_USER:-lintu}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB:-lintu}"
       LINTU_INTERNAL_SYNC_TOKEN: "${LINTU_INTERNAL_SYNC_TOKEN:?required}"
       LINTU_ALLOW_CORS: "${LINTU_ALLOW_CORS:-}"
       LINTU_AUDIT_BODY: "${LINTU_AUDIT_BODY:-0}"
