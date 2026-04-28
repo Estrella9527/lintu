@@ -10,13 +10,23 @@ from sqlalchemy import select, update
 from sidecar.db.models import Image, Tag, Task
 from sidecar.db.session import async_session
 from sidecar.defaults import get_setting
+from sidecar.engines.image_utils import effective_file_path
 from sidecar.routers.tag_schema import _read_schema
 
 logger = logging.getLogger(__name__)
 
 
-def _build_prompt_from_schema() -> str:
-    """Build tagging prompt dynamically from the current tag schema."""
+def _build_prompt_from_schema() -> str:  # noqa: C901
+    """Build the tagger prompt dynamically from the current schema.
+
+    The prompt asks the vision model to:
+      1. Pick from each dimension's allowed values (objective categories)
+      2. Write a long structured description (subjective + scenario)
+
+    The long description is what powers keyword recall when the user query
+    contains affective / scene-context words ("温馨亲子时光", "震撼日落") that
+    don't map to any tag value directly. Without it, abstract queries miss.
+    """
     schema = _read_schema()
     sections = []
     for dim, def_ in schema.items():
@@ -30,7 +40,27 @@ def _build_prompt_from_schema() -> str:
         sections.append(f"### {dim}（{label}，{multi_text}）\n{vals_str}")
 
     dims = "\n\n".join(sections)
-    return f"""你是一个景区图片分类专家。请分析这张图片，严格从以下预定义标签中选择，以JSON格式输出。
+
+    # Output skeleton — schema-driven so adding new dimensions just works.
+    output_lines = []
+    for dim, d in schema.items():
+        if d.get("multi"):
+            output_lines.append(f'  "{dim}": ["选1-3个最贴切的"],')
+        else:
+            output_lines.append(f'  "{dim}": "选1个",')
+    output_skel = "\n".join(output_lines)
+
+    return f"""你是一个景区图片视觉分析专家。请分析这张图片，输出严格 JSON。
+
+## 任务
+
+1. **分类标签**：从下方每个维度的预定义值中选择，不可自创。
+2. **结构化描述**（description 字段）：用 50-80 字的中文，按以下三段写：
+   - **画面**：客观描述图中能看到什么（人/物/场景/动作）
+   - **氛围**：主观感受（光线/情绪/色调，让人想到什么场景）
+   - **适用**：这张图适合什么用途（亲子/打卡/团建/海报背景等）
+   描述要自然口语化，**多用形容词和场景词**（如「温馨」「治愈」「壮阔」「梦幻」「亲子时光」「闺蜜出游」），
+   方便后续按文本搜索时匹配到。**避免**只罗列标签里有的词。
 
 ## 标签维度
 
@@ -38,12 +68,14 @@ def _build_prompt_from_schema() -> str:
 
 ## 输出格式
 
+```json
 {{
-{chr(10).join(f'  "{dim}": ' + ('"选1个"' if not d.get("multi") else '["可选多个"]') + ',' for dim, d in schema.items())}
-  "description": "一句话中文描述，20字以内"
+{output_skel}
+  "description": "画面：…… 氛围：…… 适合：……"
 }}
+```
 
-只输出JSON，不要其他文字。标签必须严格使用预定义值，不可自创。"""
+只输出 JSON，不要其他文字。标签必须严格使用预定义值。"""
 
 
 def _get_provider(provider_name: str):
@@ -92,8 +124,25 @@ async def run_tagging(task: Task, progress_cb):
     concurrency = params.get("concurrency", get_setting("tagger_max_concurrent"))
     cost_limit = params.get("cost_limit", get_setting("tagger_cost_limit_usd"))
     retry_times = int(get_setting("tagger_retry_times") or 3)
-    provider_name = params.get("provider", get_setting("tagger_provider"))
+    # Resolution order:
+    #   1. explicit `provider` in task params (batch-scoped override)
+    #   2. legacy `tagger_provider` config (back-compat)
+    #   3. unified `default_general_provider` (the role-assignment UI)
+    provider_name = (
+        params.get("provider")
+        or get_setting("tagger_provider")
+        or get_setting("default_general_provider")
+        or "gemini"
+    )
+    # Strip relay: prefix if present so _get_provider() can match by name
+    if isinstance(provider_name, str) and provider_name.startswith("relay:"):
+        provider_name = provider_name[len("relay:"):]
     fallback_name = get_setting("tagger_fallback_provider") or ""
+    if isinstance(fallback_name, str) and fallback_name.startswith("relay:"):
+        fallback_name = fallback_name[len("relay:"):]
+    # Phase 2: allow batch-triggered runs to scope tagging to a specific set
+    # of generated images (skips the global "all pending in project" filter).
+    image_ids: list[str] = params.get("image_ids") or []
 
     prompt = _build_prompt_from_schema()
 
@@ -102,13 +151,25 @@ async def run_tagging(task: Task, progress_cb):
     consecutive_failures = 0
 
     async with async_session() as db:
-        result = await db.execute(
-            select(Image)
-            .where(Image.project_id == task.project_id)
-            .where(Image.quality_status == "passed")
-            .where(Image.is_kept == True)  # noqa: E712
-            .where(Image.tag_status == "pending")
-        )
+        if image_ids:
+            result = await db.execute(
+                select(Image).where(Image.id.in_(image_ids))
+            )
+            # Re-run path: drop previously-stored AI tags for these images so
+            # we don't accumulate duplicates from prior runs.
+            from sqlalchemy import delete as sa_delete
+            await db.execute(
+                sa_delete(Tag).where(Tag.image_id.in_(image_ids)).where(Tag.source == "ai")
+            )
+            await db.commit()
+        else:
+            result = await db.execute(
+                select(Image)
+                .where(Image.project_id == task.project_id)
+                .where(Image.quality_status == "passed")
+                .where(Image.is_kept == True)  # noqa: E712
+                .where(Image.tag_status == "pending")
+            )
         images = result.scalars().all()
         total = len(images)
         await progress_cb(total=total, processed=0, cost_usd=0.0)
@@ -126,25 +187,41 @@ async def run_tagging(task: Task, progress_cb):
                 last_error = None
                 for attempt in range(retry_times):
                     try:
-                        result = await provider.tag_image(img.file_path, prompt)
+                        result = await provider.tag_image(effective_file_path(img), prompt)
                         tags_data = result["tags"]
 
                         async with async_session() as inner_db:
+                            tag_values: list[str] = []
                             for dimension, value in tags_data.items():
                                 if dimension == "description":
                                     continue
                                 if isinstance(value, list):
                                     for v in value:
                                         inner_db.add(Tag(image_id=img.id, dimension=dimension, value=v, source="ai"))
+                                        tag_values.append(v)
                                 elif isinstance(value, str):
                                     inner_db.add(Tag(image_id=img.id, dimension=dimension, value=value, source="ai"))
+                                    tag_values.append(value)
+
+                            description = tags_data.get("description")
+                            # Refresh text_search_blob so future text→image matches
+                            # see the new tags & description without waiting for the
+                            # backfill script.
+                            from pathlib import Path as _Path
+                            stem = _Path(img.file_name or "").stem.replace("_", " ")
+                            blob_parts: list[str] = []
+                            if stem: blob_parts.append(stem)
+                            if description and description.strip(): blob_parts.append(description.strip())
+                            if tag_values: blob_parts.append(", ".join(tag_values))
+                            text_search_blob = "\n".join(blob_parts)
 
                             await inner_db.execute(
                                 update(Image).where(Image.id == img.id).values(
-                                    description=tags_data.get("description"),
+                                    description=description,
                                     tag_status="tagged",
                                     tagged_at=datetime.utcnow(),
                                     tag_provider=provider_name,
+                                    text_search_blob=text_search_blob,
                                 )
                             )
                             await inner_db.commit()
@@ -156,6 +233,19 @@ async def run_tagging(task: Task, progress_cb):
                             if total_cost >= cost_limit:
                                 raise Exception(f"达到费用上限 ${total_cost:.4f}")
                             await progress_cb(processed=processed, total=total, cost_usd=total_cost)
+
+                        # A/B audit — sample-rate gated, fire-and-forget
+                        try:
+                            from sidecar.engines.tag_audit import maybe_schedule_audit
+                            maybe_schedule_audit(
+                                img.id,
+                                tags_data,
+                                provider_name,
+                                getattr(provider, "model", None),
+                                prompt=prompt,
+                            )
+                        except Exception as audit_err:
+                            logger.debug("tag_audit scheduling failed: %s", audit_err)
                         return  # Success
 
                     except Exception as e:

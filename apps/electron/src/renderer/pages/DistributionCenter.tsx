@@ -1,15 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
+
+import { distributionNavRequestAtom } from '@/atoms/navigation'
+import { distributionActiveTabAtom } from '@/atoms/ui-state'
 import { cn } from '@/lib/utils'
 import { Cloud, Key, Globe, History, Copy, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
+import { ApiKeyTab } from '@/components/distribution/ApiKeyTab'
+import { OssSyncTab } from '@/components/distribution/OssSyncTab'
+import { RequestLogTab } from '@/components/distribution/RequestLogTab'
 
 const TABS = [
-  { id: 'api', label: 'Open API', icon: Globe },
+  { id: 'keys', label: 'API Keys', icon: Key },
+  { id: 'api', label: '接口文档', icon: Globe },
+  { id: 'history', label: '调用日志', icon: History },
   { id: 'oss', label: 'OSS同步', icon: Cloud },
-  { id: 'history', label: '操作日志', icon: History },
 ]
 
 const API_BASE = 'http://localhost:7879'
@@ -17,45 +25,80 @@ const API_BASE = 'http://localhost:7879'
 const API_DOCS = [
   {
     method: 'GET',
-    path: '/open-api/images',
-    description: '获取图片列表（带筛选、分页）',
+    path: '/open-api/v1/health',
+    description: '健康检查（公开，无需鉴权）',
+    params: '—',
+    example: '/open-api/v1/health',
+  },
+  {
+    method: 'GET',
+    path: '/open-api/v1/images',
+    description: '图片列表（筛选、分页）',
     params: 'project_id, source_type, scene[], season[], offset, limit',
-    example: '/open-api/images?source_type=original&limit=10',
+    example: '/open-api/v1/images?source_type=original&limit=10',
   },
   {
     method: 'GET',
-    path: '/open-api/images/{id}',
-    description: '获取单张图片详情 + 标签',
+    path: '/open-api/v1/images/{id}',
+    description: '单张图片详情 + 标签',
     params: 'id (path)',
-    example: '/open-api/images/{image_id}',
+    example: '/open-api/v1/images/{image_id}',
   },
   {
     method: 'GET',
-    path: '/open-api/images/{id}/file',
-    description: '获取图片文件（原图或缩略图）',
+    path: '/open-api/v1/images/{id}/derivatives',
+    description: '该种子图的所有衍生图',
+    params: 'id (path)',
+    example: '/open-api/v1/images/{image_id}/derivatives',
+  },
+  {
+    method: 'GET',
+    path: '/open-api/v1/images/{id}/file',
+    description: '图片文件（原图或 thumbnail）',
     params: 'size (可选: 128/300/800)',
-    example: '/open-api/images/{image_id}/file?size=300',
+    example: '/open-api/v1/images/{image_id}/file?size=300',
   },
   {
     method: 'GET',
-    path: '/open-api/tags',
-    description: '获取标签分布统计',
+    path: '/open-api/v1/tags',
+    description: '标签分布统计',
     params: 'project_id, dimension',
-    example: '/open-api/tags?dimension=scene',
+    example: '/open-api/v1/tags?dimension=scene',
   },
   {
     method: 'GET',
-    path: '/open-api/stats',
-    description: '获取汇总统计（总量/通过/生成/打标）',
+    path: '/open-api/v1/stats',
+    description: '汇总统计（总量/通过/生成/打标）',
     params: 'project_id',
-    example: '/open-api/stats',
+    example: '/open-api/v1/stats',
+  },
+  {
+    method: 'GET',
+    path: '/open-api/v1/matrix',
+    description: '覆盖矩阵（行 × 列 标签维度）',
+    params: 'project_id, row, col',
+    example: '/open-api/v1/matrix?project_id=xxx&row=scene&col=season',
+  },
+  {
+    method: 'GET',
+    path: '/open-api/v1/batches',
+    description: '批次列表（只读）',
+    params: 'project_id, status',
+    example: '/open-api/v1/batches',
+  },
+  {
+    method: 'POST',
+    path: '/open-api/v1/batches',
+    description: '提交批次（需 generate:write 权限）',
+    params: 'JSON: { name, task_type, seed_image_ids, prompt_ids, project_id }',
+    example: '/open-api/v1/batches',
   },
 ]
 
 function OpenAPITab() {
   const { data: stats } = useQuery({
     queryKey: ['open-api-stats'],
-    queryFn: () => fetch(`${API_BASE}/open-api/stats`).then((r) => r.json()),
+    queryFn: () => fetch(`${API_BASE}/open-api/v1/stats`).then((r) => r.json()),
   })
 
   const copyUrl = (path: string) => {
@@ -99,14 +142,16 @@ function OpenAPITab() {
         <h3 className="text-[13px] font-medium text-foreground/80 mb-2">Base URL</h3>
         <div className="flex items-center gap-2">
           <code className="flex-1 px-3 py-2 rounded-md bg-foreground/[0.03] text-[13px] font-mono text-foreground/70">
-            {API_BASE}/open-api
+            {API_BASE}/open-api/v1
           </code>
-          <Button variant="outline" size="sm" className="h-8" onClick={() => copyUrl('/open-api')}>
+          <Button variant="outline" size="sm" className="h-8" onClick={() => copyUrl('/open-api/v1')}>
             <Copy size={12} className="mr-1" /> 复制
           </Button>
         </div>
         <p className="text-[11px] text-foreground/30 mt-2">
-          外部系统通过此地址访问图片资源。生产环境中建议配置反向代理和 API Key 鉴权。
+          外部系统通过此地址访问图片资源。<strong>服务器模式</strong>需在请求头携带
+          <code className="mx-1 px-1 bg-foreground/[0.04] rounded">Authorization: Bearer lk_live_xxx.&lt;secret&gt;</code>
+          鉴权；本地 Electron 模式无需鉴权。
         </p>
       </div>
 
@@ -138,19 +183,19 @@ function OpenAPITab() {
         <div className="flex gap-2">
           <Button
             variant="outline" size="sm" className="text-[12px]"
-            onClick={() => window.open(`${API_BASE}/open-api/images?limit=5`, '_blank')}
+            onClick={() => window.open(`${API_BASE}/open-api/v1/images?limit=5`, '_blank')}
           >
             <ExternalLink size={12} className="mr-1" /> 图片列表
           </Button>
           <Button
             variant="outline" size="sm" className="text-[12px]"
-            onClick={() => window.open(`${API_BASE}/open-api/tags`, '_blank')}
+            onClick={() => window.open(`${API_BASE}/open-api/v1/tags`, '_blank')}
           >
             <ExternalLink size={12} className="mr-1" /> 标签分布
           </Button>
           <Button
             variant="outline" size="sm" className="text-[12px]"
-            onClick={() => window.open(`${API_BASE}/open-api/stats`, '_blank')}
+            onClick={() => window.open(`${API_BASE}/open-api/v1/stats`, '_blank')}
           >
             <ExternalLink size={12} className="mr-1" /> 统计概览
           </Button>
@@ -167,7 +212,23 @@ function OpenAPITab() {
 }
 
 export default function DistributionCenter() {
-  const [activeTab, setActiveTab] = useState('api')
+  const [activeTab, setActiveTab] = useAtom(distributionActiveTabAtom)
+  const [logsInitialKeyId, setLogsInitialKeyId] = useState<string | undefined>(undefined)
+
+  // 'analytics' tab was moved to 匹配实验室. Self-heal stale atom value
+  // from this session so we don't render an empty tab body.
+  useEffect(() => {
+    if (activeTab === 'analytics') setActiveTab('keys')
+  }, [activeTab, setActiveTab])
+
+  // Apply cross-page deep-link request (from ApiKeyTab "查看日志" button)
+  const [navRequest, setNavRequest] = useAtom(distributionNavRequestAtom)
+  useEffect(() => {
+    if (!navRequest) return
+    if (navRequest.tab) setActiveTab(navRequest.tab)
+    if (navRequest.filterKeyId !== undefined) setLogsInitialKeyId(navRequest.filterKeyId)
+    setNavRequest(null)
+  }, [navRequest, setNavRequest])
 
   return (
     <div className="flex flex-col h-full">
@@ -197,17 +258,10 @@ export default function DistributionCenter() {
         </div>
       </div>
       <div className="flex-1 min-h-0 px-6 py-4 overflow-y-auto">
+        {activeTab === 'keys' && <ApiKeyTab />}
         {activeTab === 'api' && <OpenAPITab />}
-        {activeTab === 'oss' && (
-          <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-            OSS 同步功能开发中
-          </div>
-        )}
-        {activeTab === 'history' && (
-          <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-            操作日志功能开发中
-          </div>
-        )}
+        {activeTab === 'history' && <RequestLogTab initialKeyId={logsInitialKeyId} />}
+        {activeTab === 'oss' && <OssSyncTab />}
       </div>
     </div>
   )

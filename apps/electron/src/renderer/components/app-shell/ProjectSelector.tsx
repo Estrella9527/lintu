@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAtom } from 'jotai'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -10,6 +10,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -20,19 +25,36 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { DirectorySelector } from '@/components/pipeline/DirectorySelector'
-import { Plus } from 'lucide-react'
-import { useState } from 'react'
+import { Check, Pencil, Plus, Settings2, Trash2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface Project {
   id: string
   name: string
   originals_path: string
+  color: string | null
 }
+
+// Curated palette — picked to read well on both light and dark sidebar.
+// First entry (transparent + slash) means "no color".
+const COLOR_PALETTE: { value: string | null; label: string }[] = [
+  { value: null, label: '默认' },
+  { value: '#7c3aed', label: '紫' },
+  { value: '#2563eb', label: '蓝' },
+  { value: '#0891b2', label: '青' },
+  { value: '#16a34a', label: '绿' },
+  { value: '#ca8a04', label: '黄' },
+  { value: '#ea580c', label: '橙' },
+  { value: '#dc2626', label: '红' },
+  { value: '#db2777', label: '粉' },
+  { value: '#64748b', label: '灰' },
+]
 
 export function ProjectSelector() {
   const queryClient = useQueryClient()
   const [activeId, setActiveId] = useAtom(activeProjectIdAtom)
   const [showCreate, setShowCreate] = useState(false)
+  const [showManage, setShowManage] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDir, setNewDir] = useState<string | null>(null)
 
@@ -69,17 +91,29 @@ export function ProjectSelector() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const activeProject = projects?.find((p) => p.id === activeId) || null
+
   return (
     <>
       <div className="flex items-center gap-1 px-2 mb-2">
         <Select value={activeId || ''} onValueChange={setActiveId}>
           <SelectTrigger className="h-7 text-[12px] flex-1 border-foreground/5">
-            <SelectValue placeholder="选择项目" />
+            <SelectValue placeholder="选择项目">
+              {activeProject && (
+                <span className="inline-flex items-center gap-1.5 truncate">
+                  <ColorDot color={activeProject.color} />
+                  <span className="truncate">{activeProject.name}</span>
+                </span>
+              )}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {projects?.map((p) => (
               <SelectItem key={p.id} value={p.id} className="text-[12px]">
-                {p.name}
+                <span className="inline-flex items-center gap-1.5">
+                  <ColorDot color={p.color} />
+                  <span>{p.name}</span>
+                </span>
               </SelectItem>
             ))}
           </SelectContent>
@@ -88,7 +122,17 @@ export function ProjectSelector() {
           variant="ghost"
           size="sm"
           className="h-7 w-7 p-0 shrink-0"
+          onClick={() => setShowManage(true)}
+          title="管理项目"
+        >
+          <Settings2 size={13} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 p-0 shrink-0"
           onClick={() => setShowCreate(true)}
+          title="新建项目"
         >
           <Plus size={14} />
         </Button>
@@ -125,6 +169,260 @@ export function ProjectSelector() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ManageProjectsDialog
+        open={showManage}
+        onClose={() => setShowManage(false)}
+        projects={projects || []}
+        activeId={activeId}
+        onActiveDeleted={(remaining) => {
+          // If we just deleted the active project, fall back to whichever
+          // is left (or null if none).
+          setActiveId(remaining[0]?.id || '')
+        }}
+      />
     </>
+  )
+}
+
+
+function ColorDot({ color }: { color: string | null }) {
+  if (!color) {
+    return (
+      <span
+        className="inline-block h-2.5 w-2.5 rounded-full border border-foreground/15 shrink-0"
+        aria-hidden
+      />
+    )
+  }
+  return (
+    <span
+      className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+      style={{ backgroundColor: color }}
+      aria-hidden
+    />
+  )
+}
+
+
+function ManageProjectsDialog({
+  open, onClose, projects, activeId, onActiveDeleted,
+}: {
+  open: boolean
+  onClose: () => void
+  projects: Project[]
+  activeId: string | null
+  onActiveDeleted: (remaining: Project[]) => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-[15px]">管理项目</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-1 py-1">
+          {projects.length === 0 ? (
+            <div className="text-center py-6 text-[12px] text-foreground/40">还没有项目</div>
+          ) : (
+            projects.map((p) => (
+              <ProjectRow
+                key={p.id}
+                project={p}
+                isActive={p.id === activeId}
+                onDeleted={() => {
+                  if (p.id === activeId) {
+                    onActiveDeleted(projects.filter((x) => x.id !== p.id))
+                  }
+                }}
+              />
+            ))
+          )}
+        </div>
+        <DialogFooter>
+          <Button size="sm" onClick={onClose}>完成</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+
+function ProjectRow({
+  project, isActive, onDeleted,
+}: {
+  project: Project
+  isActive: boolean
+  onDeleted: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draftName, setDraftName] = useState(project.name)
+
+  const saveName = useMutation({
+    mutationFn: async (name: string) => {
+      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: () => {
+      setEditing(false)
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      toast.success('已重命名')
+    },
+    onError: (e: Error) => toast.error(`重命名失败：${e.message}`),
+  })
+
+  const saveColor = useMutation({
+    mutationFn: async (color: string | null) => {
+      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ color: color ?? '' }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onError: (e: Error) => toast.error(`颜色保存失败：${e.message}`),
+  })
+
+  const deleteProject = useMutation({
+    mutationFn: async () => {
+      // Fetch image count for the confirm dialog so the user knows the
+      // blast radius. Cheap query.
+      const sres = await fetch(`http://localhost:7879/api/projects/${project.id}/stats`)
+      const stats = sres.ok ? await sres.json() : { image_count: 0 }
+      const count = stats.image_count ?? 0
+      const ok = window.confirm(
+        `删除项目「${project.name}」？\n\n` +
+        `数据库里 ${count.toLocaleString()} 张图片记录、所有标签、衍生关系都会被清除。\n` +
+        `磁盘上的图片文件不会被删除（位于 ${project.originals_path}）。\n\n` +
+        `此操作不可撤销。`
+      )
+      if (!ok) throw new Error('已取消')
+      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      onDeleted()
+      toast.success(`项目「${project.name}」已删除`)
+    },
+    onError: (e: Error) => {
+      if (e.message !== '已取消') toast.error(`删除失败：${e.message}`)
+    },
+  })
+
+  return (
+    <div className={cn(
+      'flex items-center gap-2 px-2 py-2 rounded-md border',
+      isActive ? 'border-accent/40 bg-accent/[0.04]' : 'border-foreground/8',
+    )}>
+      <ColorPickerPopover
+        value={project.color}
+        onChange={(c) => saveColor.mutate(c)}
+        disabled={saveColor.isPending}
+      />
+      {editing ? (
+        <Input
+          value={draftName}
+          onChange={(e) => setDraftName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') saveName.mutate(draftName.trim())
+            else if (e.key === 'Escape') { setEditing(false); setDraftName(project.name) }
+          }}
+          onBlur={() => {
+            const next = draftName.trim()
+            if (next && next !== project.name) saveName.mutate(next)
+            else { setEditing(false); setDraftName(project.name) }
+          }}
+          autoFocus
+          className="h-7 text-[12.5px] flex-1"
+        />
+      ) : (
+        <span
+          className="text-[12.5px] text-foreground/85 flex-1 truncate cursor-text"
+          onDoubleClick={() => setEditing(true)}
+          title="双击重命名"
+        >
+          {project.name}
+          {isActive && (
+            <span className="ml-2 text-[10px] text-accent">当前</span>
+          )}
+        </span>
+      )}
+      {!editing && (
+        <Button
+          variant="ghost" size="sm"
+          className="h-6 w-6 p-0 text-foreground/40 hover:text-foreground/70"
+          onClick={() => setEditing(true)}
+          title="重命名"
+        >
+          <Pencil size={11} />
+        </Button>
+      )}
+      <Button
+        variant="ghost" size="sm"
+        className="h-6 w-6 p-0 text-foreground/40 hover:text-destructive"
+        onClick={() => deleteProject.mutate()}
+        disabled={deleteProject.isPending}
+        title="删除项目"
+      >
+        <Trash2 size={11} />
+      </Button>
+    </div>
+  )
+}
+
+
+function ColorPickerPopover({
+  value, onChange, disabled,
+}: {
+  value: string | null
+  onChange: (color: string | null) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className="shrink-0 h-6 w-6 rounded-full border border-foreground/15 flex items-center justify-center hover:ring-2 hover:ring-foreground/15 transition disabled:opacity-50"
+          style={value ? { backgroundColor: value, borderColor: 'transparent' } : undefined}
+          title="选择颜色"
+        />
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-2" align="start">
+        <div className="grid grid-cols-5 gap-1.5">
+          {COLOR_PALETTE.map((opt) => {
+            const selected = (opt.value ?? '') === (value ?? '')
+            return (
+              <button
+                key={opt.label}
+                type="button"
+                onClick={() => { onChange(opt.value); setOpen(false) }}
+                className={cn(
+                  'h-7 w-7 rounded-full border flex items-center justify-center transition',
+                  selected ? 'ring-2 ring-foreground/40 border-transparent' : 'border-foreground/15 hover:ring-2 hover:ring-foreground/15',
+                )}
+                style={opt.value ? { backgroundColor: opt.value, borderColor: 'transparent' } : undefined}
+                title={opt.label}
+              >
+                {selected && <Check size={11} className={opt.value ? 'text-white' : 'text-foreground/60'} />}
+              </button>
+            )
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -1,13 +1,16 @@
 import { useState } from 'react'
+import { useAtom } from 'jotai'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { useTaskProgress } from '@/hooks/useTaskProgress'
+import { taskCenterActiveTabAtom } from '@/atoms/ui-state'
 import { TabPage } from '@/components/shared/TabPage'
 import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import { DetailDrawer } from '@/components/shared/DetailDrawer'
 import { Badge } from '@/components/ui/badge'
-import { Play, Clock, CheckCircle, XCircle } from 'lucide-react'
+import { Play, Clock, CheckCircle, Copy, XCircle, Layers } from 'lucide-react'
 import type { TaskRecord } from '@/lib/types'
+import { BatchList } from '@/components/task-center/BatchList'
 
 const STATUS_MAP: Record<string, string[]> = {
   running: ['running'],
@@ -38,9 +41,6 @@ function TaskList({ statuses }: { statuses: string[] }) {
     refetchInterval: 3000,
   })
 
-  const activeTaskId = tasks?.find((t: TaskRecord) => t.status === 'running')?.id ?? null
-  const progress = useTaskProgress(activeTaskId)
-
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -66,7 +66,6 @@ function TaskList({ statuses }: { statuses: string[] }) {
           <div key={task.id} className="cursor-pointer" onClick={() => setSelectedTask(task)}>
             <TaskProgressCard
               task={task}
-              progress={task.id === activeTaskId ? progress : null}
               onPause={
                 task.status === 'running'
                   ? () => { api.tasks.pause(task.id); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
@@ -121,8 +120,20 @@ function TaskList({ statuses }: { statuses: string[] }) {
             )}
             {selectedTask.error_message && (
               <div>
-                <span className="text-foreground/40">错误信息</span>
-                <p className="mt-1 p-2 rounded bg-destructive/10 text-destructive text-[12px]">
+                <div className="flex items-center gap-2">
+                  <span className="text-foreground/40">错误信息</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedTask.error_message!)
+                      toast.success('已复制错误信息')
+                    }}
+                    className="text-foreground/35 hover:text-foreground/75 inline-flex items-center gap-1 text-[10.5px]"
+                    title="复制完整错误"
+                  >
+                    <Copy size={10} /> 复制
+                  </button>
+                </div>
+                <p className="mt-1 p-2 rounded bg-destructive/10 text-destructive text-[12px] whitespace-pre-wrap select-text">
                   {selectedTask.error_message}
                 </p>
               </div>
@@ -152,7 +163,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function TaskCenter() {
-  const [activeTab, setActiveTab] = useState('running')
+  const [activeTab, setActiveTab] = useAtom(taskCenterActiveTabAtom)
 
   // Fetch all tasks once to get badge counts
   const { data: allTasks } = useQuery({
@@ -165,6 +176,12 @@ export default function TaskCenter() {
     allTasks?.filter((t: TaskRecord) => statuses.includes(t.status)).length ?? 0
 
   const TABS = [
+    {
+      id: 'batches',
+      label: '批次',
+      icon: Layers,
+      content: <BatchList />,
+    },
     {
       id: 'running',
       label: '进行中',

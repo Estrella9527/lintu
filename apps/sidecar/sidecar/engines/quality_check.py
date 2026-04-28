@@ -85,13 +85,21 @@ async def run_quality_check(task: Task, progress_cb):
     brightness_min = params.get("brightness_min", get_setting("quality_brightness_min"))
     brightness_max = params.get("brightness_max", get_setting("quality_brightness_max"))
     min_file_size_kb = params.get("min_file_size_kb", get_setting("quality_min_file_size_kb"))
+    # Re-run scope: explicit list of images forces reprocessing regardless of
+    # current quality_status. Used by the asset-library bulk-action bar.
+    image_ids: list[str] = params.get("image_ids") or []
 
     async with async_session() as db:
-        result = await db.execute(
-            select(Image)
-            .where(Image.project_id == task.project_id)
-            .where(Image.quality_status == "pending")
-        )
+        if image_ids:
+            result = await db.execute(
+                select(Image).where(Image.id.in_(image_ids))
+            )
+        else:
+            result = await db.execute(
+                select(Image)
+                .where(Image.project_id == task.project_id)
+                .where(Image.quality_status == "pending")
+            )
         images = result.scalars().all()
         total = len(images)
         await progress_cb(total=total, processed=0, passed_count=0, failed_count=0)

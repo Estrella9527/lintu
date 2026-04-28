@@ -6,7 +6,7 @@ import { ThumbnailImage } from './ThumbnailImage'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
-import { Download, FolderOpen, Trash2 } from 'lucide-react'
+import { Cpu, Download, FolderOpen, Sparkles, Trash2 } from 'lucide-react'
 import type { ImageRecord } from '@/lib/types'
 
 interface ImageDetailDrawerProps {
@@ -52,7 +52,7 @@ export function ImageDetailDrawer({ image, open, onClose }: ImageDetailDrawerPro
     <DetailDrawer open={open} onClose={onClose} title={img.file_name}>
       <div className="space-y-5">
         {/* Large preview */}
-        <ThumbnailImage imageId={img.id} size={800} className="w-full aspect-video" />
+        <ThumbnailImage imageId={img.id} size={800} version={img.updated_at} className="w-full aspect-video" />
 
         {/* Action buttons */}
         <div className="flex gap-2">
@@ -85,8 +85,18 @@ export function ImageDetailDrawer({ image, open, onClose }: ImageDetailDrawerPro
               img.quality_status === 'passed' ? '✓ 通过' :
               img.quality_status === 'rejected' ? `✗ 淘汰 (${img.reject_reason || ''})` : '待检'
             } />
+            <InfoRow label="文件夹" value={img.relative_dir || '根目录'} />
+            <InfoRow label="入库时间" value={img.created_at ? new Date(img.created_at).toLocaleString('zh-CN') : '—'} />
           </div>
         </section>
+
+        {/* Generation provenance — only for AI-generated images */}
+        {img.source_type === 'generated' && img.generation_metadata && (
+          <>
+            <Separator />
+            <GenerationInfo meta={img.generation_metadata} />
+          </>
+        )}
 
         <Separator />
 
@@ -144,4 +154,45 @@ function groupTagsByDimension(tags: Array<{ dimension: string; value: string }>)
     groups[t.dimension].push(t.value)
   }
   return groups
+}
+
+function GenerationInfo({ meta }: { meta: NonNullable<ImageRecord['generation_metadata']> }) {
+  const formatLatency = (ms?: number | null) => {
+    if (ms == null) return '—'
+    if (ms < 1000) return `${ms} ms`
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`
+    return `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`
+  }
+  return (
+    <section>
+      <h3 className="text-[13px] font-medium text-foreground/80 mb-2 flex items-center gap-1.5">
+        <Sparkles size={13} className="text-info" /> AI 生成信息
+      </h3>
+      <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[12px]">
+        <InfoRow label="Provider" value={meta.provider || '—'} />
+        <InfoRow label="生成耗时" value={formatLatency(meta.latency_ms)} />
+        <InfoRow label="成本" value={meta.cost_usd != null ? `$${meta.cost_usd.toFixed(4)}` : '—'} />
+        <InfoRow label="重试" value={String(meta.retry_count ?? 0)} />
+        <InfoRow label="生成时间" value={meta.generated_at ? new Date(meta.generated_at).toLocaleString('zh-CN') : '—'} />
+        <InfoRow label="所属批次" value={meta.batch_name || '—'} />
+        <InfoRow label="种子图" value={meta.seed_file_name || '—'} />
+        <InfoRow label="种子文件夹" value={meta.seed_relative_dir || '根目录'} />
+      </div>
+
+      {meta.prompt_name && (
+        <div className="mt-3 rounded-md border border-info/20 bg-info/[0.04] p-3">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Cpu size={11} className="text-info" />
+            <span className="text-[11px] font-medium text-foreground/80">使用的 Prompt</span>
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-auto">{meta.prompt_name}</Badge>
+          </div>
+          {meta.prompt_content && (
+            <p className="text-[11px] text-foreground/55 leading-relaxed whitespace-pre-wrap">
+              {meta.prompt_content}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  )
 }

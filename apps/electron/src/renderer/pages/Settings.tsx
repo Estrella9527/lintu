@@ -1,21 +1,29 @@
-import { useState } from 'react'
-import { Cog, Cpu, FileText, Tags, Cloud, Info } from 'lucide-react'
+import { useAtom } from 'jotai'
+import { Cloud, Cog, Cpu, FileText, Info, Tags, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { settingsTabAtom, type SettingsTabId } from '@/atoms/navigation'
 import { GeneralTab } from './settings/GeneralTab'
 import { AIProviderTab } from './settings/AIProviderTab'
 import { TagSchemaTab } from './settings/TagSchemaTab'
 import { PromptLibraryTab } from './settings/PromptLibraryTab'
 
-const TABS = [
-  { id: 'general', label: '通用', icon: Cog },
-  { id: 'ai-provider', label: 'AI服务商', icon: Cpu },
-  { id: 'prompt-library', label: '提示词库', icon: FileText },
-  { id: 'tag-system', label: '标签体系', icon: Tags },
-  { id: 'oss-config', label: 'OSS连接', icon: Cloud },
-  { id: 'about', label: '关于', icon: Info },
+interface NavItem {
+  id: SettingsTabId
+  label: string
+  desc: string
+  icon: LucideIcon
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'general',         label: '通用',       desc: '工作区、外观、偏好', icon: Cog },
+  { id: 'ai-provider',     label: 'AI 服务商',  desc: '模型分配、Provider 凭证', icon: Cpu },
+  { id: 'prompt-library',  label: '提示词库',   desc: 'Prompt 管理、文档导入', icon: FileText },
+  { id: 'tag-system',      label: '标签体系',   desc: '维度与取值', icon: Tags },
+  { id: 'oss-config',      label: 'OSS 连接',   desc: '分发目标', icon: Cloud },
+  { id: 'about',           label: '关于',       desc: '版本与许可', icon: Info },
 ]
 
-function TabContent({ id }: { id: string }) {
+function TabContent({ id }: { id: SettingsTabId }) {
   switch (id) {
     case 'general': return <GeneralTab />
     case 'ai-provider': return <AIProviderTab />
@@ -23,16 +31,16 @@ function TabContent({ id }: { id: string }) {
     case 'tag-system': return <TagSchemaTab />
     case 'oss-config': return (
       <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
-        分发目标 OSS/CDN 配置
+        分发目标 OSS / CDN 配置（开发中）
       </div>
     )
     case 'about': return (
       <div className="max-w-md">
-        <h3 className="text-[15px] font-semibold text-foreground mb-2">灵图</h3>
-        <p className="text-[13px] text-foreground/50 mb-4">景区图片 AI 生产平台</p>
-        <div className="space-y-1 text-[12px] text-foreground/40">
-          <p>版本: 0.1.0</p>
-          <p>技术栈: Electron + React + Tailwind</p>
+        <h3 className="text-[15px] font-semibold text-foreground/85 mb-2">灵图</h3>
+        <p className="text-[13px] text-foreground/55 mb-4">景区图片 AI 生产平台</p>
+        <div className="space-y-1 text-[12px] text-foreground/45">
+          <p>版本: 0.2.0</p>
+          <p>技术栈: Electron + React + Tailwind + FastAPI</p>
         </div>
       </div>
     )
@@ -41,43 +49,58 @@ function TabContent({ id }: { id: string }) {
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('general')
+  const [activeTab, setActiveTab] = useAtom(settingsTabAtom)
+  const current = NAV_ITEMS.find((it) => it.id === activeTab) ?? NAV_ITEMS[0]
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-6 h-[48px] shrink-0 border-b border-foreground/5">
-        <h1 className="text-[15px] font-semibold text-foreground">设置</h1>
-      </div>
-
-      {/* Tab bar - plain buttons, no Radix */}
-      <div className="px-6 pt-3 shrink-0">
-        <div className="flex gap-1">
-          {TABS.map((tab) => {
-            const Icon = tab.icon
-            const isActive = activeTab === tab.id
+    <div className="flex h-full">
+      {/* Left: secondary nav (Craft Agent style) */}
+      <aside className="w-[220px] shrink-0 border-r border-foreground/5 flex flex-col">
+        <div className="px-5 h-[40px] flex items-center shrink-0">
+          <h1 className="text-[13px] font-semibold text-foreground/85">设置</h1>
+        </div>
+        <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon
+            const active = activeTab === item.id
             return (
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-md transition-colors',
-                  isActive
-                    ? 'bg-accent/10 text-accent'
-                    : 'text-foreground/60 hover:text-foreground/80 hover:bg-foreground/[0.03]',
+                  'w-full text-left rounded-md px-2.5 py-1.5 transition-colors flex items-start gap-2',
+                  active
+                    ? 'bg-foreground/[0.07] text-foreground'
+                    : 'text-foreground/65 hover:bg-foreground/[0.03] hover:text-foreground/85',
                 )}
               >
-                <Icon size={14} strokeWidth={1.5} />
-                {tab.label}
+                <Icon
+                  size={14}
+                  strokeWidth={active ? 2 : 1.5}
+                  className="shrink-0 mt-0.5"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] font-medium leading-tight">{item.label}</div>
+                  <div className="text-[10.5px] text-foreground/45 leading-tight mt-0.5 truncate">
+                    {item.desc}
+                  </div>
+                </div>
               </button>
             )
           })}
-        </div>
-      </div>
+        </nav>
+      </aside>
 
-      {/* Content - conditional render */}
-      <div className="flex-1 min-h-0 px-6 py-4 overflow-y-auto">
-        <TabContent id={activeTab} />
-      </div>
+      {/* Right: detail */}
+      <section className="flex-1 min-w-0 flex flex-col">
+        <header className="px-6 h-[40px] flex items-center shrink-0 border-b border-foreground/5">
+          <h2 className="text-[13px] font-medium text-foreground/85">{current.label}</h2>
+          <span className="text-[11px] text-foreground/45 ml-3">{current.desc}</span>
+        </header>
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <TabContent id={activeTab} />
+        </div>
+      </section>
     </div>
   )
 }

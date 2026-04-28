@@ -7,15 +7,12 @@ import logging
 
 from PIL import Image as PILImage
 
+from sidecar.engines.image_utils import register_heif
 from sidecar.providers.base import ImageProvider
 
 logger = logging.getLogger(__name__)
 
-try:
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
-except ImportError:
-    pass
+register_heif()
 
 
 class GeminiProvider(ImageProvider):
@@ -28,11 +25,11 @@ class GeminiProvider(ImageProvider):
         except ImportError:
             raise ImportError("google-generativeai required. Run: uv add google-generativeai")
 
-    def _load_image(self, image_path: str) -> PILImage.Image:
+    def _load_image(self, image_path: str, max_size: int = 2048) -> PILImage.Image:
         img = PILImage.open(image_path)
         if img.mode in ("RGBA", "P", "LA"):
             img = img.convert("RGB")
-        img.thumbnail((1024, 1024))
+        img.thumbnail((max_size, max_size))
         return img
 
     # ── Vision / Tagging ──

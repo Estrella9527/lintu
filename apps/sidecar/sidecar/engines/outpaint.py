@@ -10,7 +10,10 @@ from sqlalchemy import select
 from sidecar.config import WORKSPACE_DIR
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
-from sidecar.engines.generation_utils import get_generation_provider, get_prompt_template, save_generated_image
+from sidecar.engines.generation_pipeline import pipeline
+from sidecar.engines.generation_utils import get_prompt_template, save_generated_image
+from sidecar.engines.image_utils import effective_file_path
+from sidecar.providers.base import ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +52,9 @@ async def run_outpaint(task: Task, progress_cb):
     target_w, target_h = RATIO_SIZES.get(ratio, (1920, 1080))
 
     prompt = get_prompt_template("outpaint", DEFAULT_PROMPT, ratio=ratio)
+    allow_pil_fallback = bool(params.get("allow_pil_fallback", True))
     output_dir = WORKSPACE_DIR / "generated" / "outpaint"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    provider = None
-    try:
-        provider = get_generation_provider()
-    except Exception:
-        pass
 
     async with async_session() as db:
         if image_ids:
@@ -71,13 +69,14 @@ async def run_outpaint(task: Task, progress_cb):
         for idx, img_record in enumerate(images):
             out_path = output_dir / f"{img_record.id}_outpaint_{ratio.replace(':', 'x')}.jpg"
             try:
-                if provider:
-                    gen = await provider.generate_image(img_record.file_path, prompt)
-                    save_generated_image(gen["image_data"], out_path)
-                else:
-                    raise NotImplementedError
-            except Exception:
-                src = PILImage.open(img_record.file_path).convert("RGB")
+                src_path = effective_file_path(img_record)
+                gen = await pipeline.execute(src_path, prompt)
+                save_generated_image(gen.image_data, out_path)
+            except (ProviderError, Exception) as e:
+                if not allow_pil_fallback:
+                    logger.error("outpaint failed for %s (no PIL fallback): %s", img_record.id, e)
+                    raise
+                src = PILImage.open(effective_file_path(img_record)).convert("RGB")
                 _extend_canvas_pil(src, target_w, target_h).save(str(out_path), "JPEG", quality=90)
 
             w, h = PILImage.open(str(out_path)).size

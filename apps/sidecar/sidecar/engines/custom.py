@@ -10,6 +10,7 @@ from sidecar.config import WORKSPACE_DIR
 from sidecar.db.models import Image, Strategy, Task
 from sidecar.db.session import async_session
 from sidecar.engines.generation_utils import get_generation_provider, save_generated_image
+from sidecar.engines.image_utils import effective_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,8 @@ async def run_custom(task: Task, progress_cb):
             generated = False
             if provider:
                 try:
-                    gen = await provider.generate_image(img_record.file_path, prompt)
+                    src_path = effective_file_path(img_record)
+                    gen = await provider.generate_image(src_path, prompt)
                     save_generated_image(gen["image_data"], out_path)
                     generated = True
                 except Exception as e:
@@ -69,7 +71,7 @@ async def run_custom(task: Task, progress_cb):
 
             if not generated:
                 # No AI fallback for custom — just copy original
-                src = PILImage.open(img_record.file_path).convert("RGB")
+                src = PILImage.open(effective_file_path(img_record)).convert("RGB")
                 src.save(str(out_path), "JPEG", quality=90)
 
             w, h = PILImage.open(str(out_path)).size

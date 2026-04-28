@@ -1,0 +1,42 @@
+# 灵图 Sidecar — Server-mode deployment.
+#
+# Usage:
+#   cp .env.example .env       # then fill in CORS origins, etc.
+#   docker compose up -d
+#   docker compose logs -f sidecar
+#
+# What this gives you:
+#   - sidecar bound to 0.0.0.0:7879 (front it with nginx/caddy for TLS)
+#   - SQLite + workspace persisted to ./data
+#   - LINTU_MODE=server     → /api/* admin routes are disabled
+#   - LINTU_ALLOW_CORS      → CORS allowlist for browser callers (H5)
+#   - Bearer auth enforced on /open-api/* — manage keys from the desktop app
+#     (electron mode), then point this server at the same SQLite file or use
+#     a separate DB per deployment.
+
+services:
+  sidecar:
+    build:
+      context: ../apps/sidecar
+      dockerfile: Dockerfile
+    image: lintu-sidecar:0.2
+    container_name: lintu-sidecar
+    restart: unless-stopped
+    ports:
+      - "7879:7879"
+    volumes:
+      - ./data:/data
+    environment:
+      LINTU_MODE: server
+      LINTU_PORT: "7879"
+      LINTU_DATA_DIR: /data
+      # Comma-separated origins. Use *.example.com for subdomain wildcard.
+      LINTU_ALLOW_CORS: "${LINTU_ALLOW_CORS:-}"
+      # Optional: enable request body capture in audit logs (off by default for privacy)
+      LINTU_AUDIT_BODY: "${LINTU_AUDIT_BODY:-0}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7879/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

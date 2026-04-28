@@ -1,34 +1,134 @@
-import { useState, useCallback } from 'react'
-import { useAtomValue } from 'jotai'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAtom, useAtomValue } from 'jotai'
+import { assetLibraryNavRequestAtom } from '@/atoms/navigation'
+import {
+  assetLibraryActiveTabAtom,
+  assetLibraryFilterAtom,
+  assetLibrarySelectedFolderAtom,
+} from '@/atoms/ui-state'
 import { cn } from '@/lib/utils'
-import { LayoutGrid, GitFork, Star, Trash2 } from 'lucide-react'
+import { Copy, GitFork, LayoutGrid, Star, Trash2 } from 'lucide-react'
 import { ImageGrid } from '@/components/asset-library/ImageGrid'
-import { FilterBar, type FilterState } from '@/components/asset-library/FilterBar'
-import { ImageDetailDrawer } from '@/components/asset-library/ImageDetailDrawer'
+import { FilterBar, EMPTY_FILTER } from '@/components/asset-library/FilterBar'
+import { ImageInspector } from '@/components/asset-library/ImageInspector'
+import { ImageLightbox } from '@/components/asset-library/ImageLightbox'
 import { BatchActionBar } from '@/components/asset-library/BatchActionBar'
+import { FolderTree } from '@/components/asset-library/FolderTree'
+import { DuplicateGroupsTab } from '@/components/asset-library/DuplicateGroupsTab'
 import { activeProjectIdAtom } from '@/atoms/project'
 import type { ImageRecord } from '@/lib/types'
 
 const TABS = [
   { id: 'all', label: '全部图片', icon: LayoutGrid },
+  { id: 'duplicates', label: '相似组', icon: Copy },
   { id: 'derivatives', label: '衍生关系', icon: GitFork },
   { id: 'favorites', label: '收藏夹', icon: Star },
   { id: 'trash', label: '回收站', icon: Trash2 },
 ]
 
 export default function AssetLibrary() {
-  const [activeTab, setActiveTab] = useState('all')
-  const [filter, setFilter] = useState<FilterState>({ search: '', status: 'all', source: 'all' })
-  const [selectedImage, setSelectedImage] = useState<ImageRecord | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [activeTab, setActiveTab] = useAtom(assetLibraryActiveTabAtom)
+
+  // 'match' tab was removed (moved to 匹配实验室). Self-heal a stale value
+  // from this session's atom so the page doesn't render an empty branch.
+  useEffect(() => {
+    if (activeTab === 'match') setActiveTab('all')
+  }, [activeTab, setActiveTab])
+
+  // Allow sibling components (e.g. DuplicateGroupsTab's completion CTA) to
+  // navigate to the Trash sub-tab without prop-drilling.
+  useEffect(() => {
+    const onOpenTrash = () => setActiveTab('trash')
+    window.addEventListener('lintu:open-trash', onOpenTrash)
+    return () => window.removeEventListener('lintu:open-trash', onOpenTrash)
+  }, [])
+  const [filter, setFilter] = useAtom(assetLibraryFilterAtom)
+
+  // Apply cross-page deep-link request (set by TaskCenter / Pipeline / Drawer).
+  // Once consumed we clear the atom so re-mount doesn't re-apply stale state.
+  const [navRequest, setNavRequest] = useAtom(assetLibraryNavRequestAtom)
+  useEffect(() => {
+    if (!navRequest) return
+    if (navRequest.tab) setActiveTab(navRequest.tab)
+    setFilter((cur) => ({
+      ...cur,
+      ...(navRequest.status ? { status: navRequest.status } : {}),
+      ...(navRequest.source ? { source: navRequest.source } : {}),
+      ...(navRequest.promptId !== undefined ? {
+        prompt_id: navRequest.promptId,
+        prompt_label: navRequest.promptLabel || '',
+      } : {}),
+      ...(navRequest.parentId !== undefined ? {
+        parent_id: navRequest.parentId,
+        parent_label: navRequest.parentLabel || '',
+      } : {}),
+      ...(navRequest.tags ? { tags: { ...EMPTY_FILTER.tags, ...navRequest.tags } } : {}),
+    }))
+    if (navRequest.folderPrefix !== undefined) {
+      setSelectedFolder(navRequest.folderPrefix || null)
+    }
+    setNavRequest(null)
+  }, [navRequest, setNavRequest])
+  const [activeImage, setActiveImage] = useState<ImageRecord | null>(null)
+  const [activeList, setActiveList] = useState<ImageRecord[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectedFolder, setSelectedFolder] = useAtom(assetLibrarySelectedFolderAtom)
+  const [lightboxState, setLightboxState] = useState<{ open: boolean; images: ImageRecord[]; index: number }>({
+    open: false, images: [], index: 0,
+  })
+  // Keep latest activeImage / activeList accessible from key handler without
+  // re-binding the listener every render
+  const activeImageRef = useRef<ImageRecord | null>(null)
+  const activeListRef = useRef<ImageRecord[]>([])
+  activeImageRef.current = activeImage
+  activeListRef.current = activeList
 
   const projectId = useAtomValue(activeProjectIdAtom)
 
-  const handleClickImage = useCallback((img: ImageRecord) => {
-    setSelectedImage(img)
-    setDrawerOpen(true)
+  // Eagle behavior:
+  //   click            → updates inspector (right panel)
+  //   double-click     → opens lightbox
+  //   spacebar (focus) → opens lightbox for active image
+  const handleClickImage = useCallback((img: ImageRecord, list?: ImageRecord[]) => {
+    setActiveImage(img)
+    if (list && list !== activeList) setActiveList(list)
+  }, [activeList])
+
+  const handleDoubleClickImage = useCallback((img: ImageRecord, list?: ImageRecord[]) => {
+    const fullList = list && list.length > 0 ? list : activeList
+    const idx = Math.max(0, fullList.findIndex((it) => it.id === img.id))
+    setActiveImage(img)
+    setActiveList(fullList)
+    setLightboxState({ open: true, images: fullList, index: idx })
+  }, [activeList])
+
+  const openLightboxForActive = useCallback(() => {
+    const img = activeImageRef.current
+    const list = activeListRef.current
+    if (!img || list.length === 0) return
+    const idx = Math.max(0, list.findIndex((it) => it.id === img.id))
+    setLightboxState({ open: true, images: list, index: idx })
   }, [])
+
+  // Spacebar opens lightbox for whichever image is in the inspector. Space
+  // is reserved for preview ONLY — we always preventDefault outside text
+  // inputs (including key-repeat events while Space is held) so the browser
+  // never falls back to its "scroll page by viewport" behavior. The action
+  // (open/toggle) only fires on the first press, but the swallow happens
+  // every tick.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement)?.isContentEditable) return
+      e.preventDefault()
+      if (e.repeat) return
+      if (lightboxState.open) return
+      openLightboxForActive()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [openLightboxForActive, lightboxState.open])
 
   const handleToggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -44,23 +144,21 @@ export default function AssetLibrary() {
   const handleSelectAll = useCallback((ids: string[]) => {
     setSelectedIds((prev) => {
       const allSelected = ids.every((id) => prev.has(id))
-      if (allSelected) return new Set() // deselect all
+      if (allSelected) return new Set()
       return new Set(ids)
     })
   }, [])
 
   const gridStatus = activeTab === 'trash' ? 'rejected' : (filter.status !== 'all' ? filter.status : undefined)
 
+  const showWorkBench = activeTab === 'all' || activeTab === 'trash'
+
   return (
     <>
       <div className="flex flex-col h-full">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 h-[48px] shrink-0 border-b border-foreground/5">
-          <h1 className="text-[15px] font-semibold text-foreground">资产库</h1>
-        </div>
-
-        {/* Tab bar */}
-        <div className="px-6 pt-3 shrink-0">
+        {/* Header + tabs combined in single 40px row */}
+        <div className="flex items-center gap-5 px-5 h-[40px] shrink-0 border-b border-foreground/5">
+          <h1 className="text-[13px] font-semibold text-foreground/85 shrink-0">资产库</h1>
           <div className="flex gap-1">
             {TABS.map((tab) => {
               const Icon = tab.icon
@@ -68,15 +166,21 @@ export default function AssetLibrary() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => { setActiveTab(tab.id); handleClearSelection() }}
+                  onClick={() => {
+                    setActiveTab(tab.id)
+                    handleClearSelection()
+                    // Trash has no folder tree — drop any folder filter so
+                    // the trash grid doesn't accidentally stay scoped.
+                    if (tab.id === 'trash') setSelectedFolder(null)
+                  }}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-md transition-colors',
+                    'flex items-center gap-1.5 px-2.5 py-1 text-[12.5px] rounded-md transition-colors',
                     isActive
                       ? 'bg-accent/10 text-accent'
-                      : 'text-foreground/60 hover:text-foreground/80 hover:bg-foreground/[0.03]',
+                      : 'text-foreground/55 hover:text-foreground/80 hover:bg-foreground/[0.03]',
                   )}
                 >
-                  <Icon size={14} strokeWidth={1.5} />
+                  <Icon size={13} strokeWidth={1.5} />
                   {tab.label}
                 </button>
               )
@@ -84,45 +188,101 @@ export default function AssetLibrary() {
           </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-h-0 px-6 py-4 overflow-y-auto">
-          {activeTab === 'all' || activeTab === 'trash' ? (
+        {/* 3-pane content (Eagle layout) */}
+        <div className="flex-1 min-h-0 overflow-hidden flex">
+          {showWorkBench ? (
             projectId ? (
-              <div>
-                {activeTab === 'all' && <FilterBar filter={filter} onChange={setFilter} />}
-                <BatchActionBar
-                  selectedCount={selectedIds.size}
-                  selectedIds={selectedIds}
-                  onClear={handleClearSelection}
+              <>
+                {/* Left: folder tree — only on "全部图片" tab.
+                    Hidden on 回收站 because folder counts are whole-library
+                    (not trash-scoped) and would mislead users; trash is a
+                    flat review workspace. */}
+                {activeTab === 'all' && (
+                  <aside className="w-56 shrink-0 overflow-y-auto px-3 py-3 border-r border-foreground/5">
+                    <h3 className="text-[11px] font-medium text-foreground/50 mb-2 px-1.5">按文件夹筛选</h3>
+                    <FolderTree
+                      projectId={projectId}
+                      selected={selectedFolder}
+                      onSelect={(p) => { setSelectedFolder(p); handleClearSelection() }}
+                    />
+                  </aside>
+                )}
+
+                {/* Center: filter bar + grid. The toolbar (filter + batch
+                    actions) is `sticky top-0` so it stays in view while the
+                    grid scrolls — operations are always reachable, no matter
+                    how far down the user has scrolled. */}
+                <div className="flex-1 min-w-0 overflow-y-auto">
+                  <div className="sticky top-0 z-20 bg-background px-5 pt-3 pb-2 border-b border-foreground/5">
+                    {activeTab === 'all' && <FilterBar filter={filter} onChange={setFilter} />}
+                    {activeTab === 'trash' && (
+                      <div className="mb-2 rounded-lg border border-foreground/8 bg-foreground/[0.015] px-3 py-2 text-[11.5px] text-foreground/60 leading-relaxed">
+                        这里是被标记为「淘汰」或被去重流程判定为副本的图片，<strong className="text-foreground/80">尚未从磁盘删除</strong>。
+                        选中后可<strong className="text-success">恢复</strong>回全部图片，或确认无误后<strong className="text-destructive">永久删除</strong>。
+                      </div>
+                    )}
+                    <BatchActionBar
+                      selectedCount={selectedIds.size}
+                      selectedIds={selectedIds}
+                      onClear={handleClearSelection}
+                      mode={activeTab === 'trash' ? 'trash' : 'library'}
+                    />
+                  </div>
+                  <div className="px-5 pt-3 pb-3">
+                    <ImageGrid
+                      projectId={projectId}
+                      search={activeTab === 'all' ? (filter.search || undefined) : undefined}
+                      status={gridStatus}
+                      sourceType={activeTab === 'all' ? (filter.source !== 'all' ? filter.source : undefined) : undefined}
+                      folder={selectedFolder}
+                      tagFilters={activeTab === 'all' ? filter.tags : undefined}
+                      promptId={activeTab === 'all' ? (filter.prompt_id || undefined) : undefined}
+                      parentId={activeTab === 'all' ? (filter.parent_id || undefined) : undefined}
+                      selectedIds={selectedIds}
+                      activeId={activeImage?.id ?? null}
+                      onToggleSelect={handleToggleSelect}
+                      onSelectAll={handleSelectAll}
+                      onClickImage={handleClickImage}
+                      onDoubleClickImage={handleDoubleClickImage}
+                    />
+                  </div>
+                </div>
+
+                {/* Right: persistent inspector */}
+                <ImageInspector
+                  image={activeImage}
+                  onPreview={(img) => {
+                    const list = activeListRef.current
+                    const idx = Math.max(0, list.findIndex((it) => it.id === img.id))
+                    setLightboxState({ open: true, images: list.length ? list : [img], index: idx })
+                  }}
                 />
-                <ImageGrid
-                  projectId={projectId}
-                  search={activeTab === 'all' ? (filter.search || undefined) : undefined}
-                  status={gridStatus}
-                  sourceType={activeTab === 'all' ? (filter.source !== 'all' ? filter.source : undefined) : undefined}
-                  selectedIds={selectedIds}
-                  onToggleSelect={handleToggleSelect}
-                  onSelectAll={handleSelectAll}
-                  onClickImage={handleClickImage}
-                />
-              </div>
+              </>
             ) : (
-              <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30">
+              <div className="flex-1 flex items-center justify-center text-[13px] text-foreground/30">
                 请先在流水线中选择目录并扫描图片
               </div>
             )
+          ) : activeTab === 'duplicates' ? (
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <DuplicateGroupsTab />
+            </div>
           ) : (
-            <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
+            <div className="flex-1 flex items-center justify-center text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10 mx-6 my-4">
               {activeTab === 'derivatives' ? '图谱可视化（V3.0 预留）' : '收藏夹功能开发中'}
             </div>
           )}
         </div>
       </div>
 
-      <ImageDetailDrawer
-        image={selectedImage}
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+      <ImageLightbox
+        open={lightboxState.open}
+        images={lightboxState.images}
+        initialIndex={lightboxState.index}
+        onClose={() => setLightboxState((s) => ({ ...s, open: false }))}
+        // Eagle: pressing Esc / clicking 详情 returns focus to inspector — already
+        // showing this image in the right panel
+        onShowDetails={(img) => setActiveImage(img)}
       />
     </>
   )

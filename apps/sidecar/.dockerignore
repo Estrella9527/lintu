@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+.venv
+.uv-cache
+.pytest_cache
+.coverage
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
+data/
+workspace/

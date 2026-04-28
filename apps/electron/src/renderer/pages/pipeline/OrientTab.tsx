@@ -11,7 +11,8 @@ import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import type { TaskRecord } from '@/lib/types'
 
 const MODES = [
-  { value: 'auto', label: '自动纠正', desc: '根据 EXIF 信息自动旋转到正确方向' },
+  { value: 'auto', label: '自动纠正（EXIF）', desc: '免费，只处理 EXIF orientation tag' },
+  { value: 'auto+ai', label: 'EXIF + AI 辅助', desc: 'EXIF 无果时用通用模型判断方向（消耗 AI 额度）' },
   { value: 'rotate_cw', label: '顺时针 90°', desc: '所有选中图片顺时针旋转 90°' },
   { value: 'rotate_ccw', label: '逆时针 90°', desc: '所有选中图片逆时针旋转 90°' },
   { value: 'rotate_180', label: '旋转 180°', desc: '所有选中图片旋转 180°' },
@@ -21,6 +22,7 @@ export function OrientTab() {
   const queryClient = useQueryClient()
   const projectId = useAtomValue(activeProjectIdAtom)
   const [mode, setMode] = useState('auto')
+  const [maxAi, setMaxAi] = useState(500)
 
   const { data: tasks } = useQuery({
     queryKey: ['tasks', 'orient'],
@@ -38,6 +40,7 @@ export function OrientTab() {
       return api.tasks.create('orient', {
         project_id: projectId,
         mode,
+        ...(mode === 'auto+ai' ? { max_ai_images: maxAi } : {}),
       } as any)
     },
     onSuccess: () => {
@@ -68,12 +71,33 @@ export function OrientTab() {
               </button>
             ))}
           </div>
+
+          {mode === 'auto+ai' && (
+            <div className="space-y-1 rounded-md bg-info/5 border border-info/20 p-3">
+              <label className="text-[12px] text-foreground/60">
+                本次 AI 额度上限：<span className="text-foreground/80 tabular-nums">{maxAi}</span> 张
+              </label>
+              <input
+                type="range"
+                min={50}
+                max={2000}
+                step={50}
+                value={maxAi}
+                onChange={(e) => setMaxAi(Number(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-[10px] text-foreground/50">
+                只处理 EXIF 无效的图片；已经 AI 判过的自动跳过。
+                使用「设置 → AI 服务商 → 模型分配」里选中的<strong>通用模型</strong>判断方向。
+              </p>
+            </div>
+          )}
         </div>
 
         <Button
           onClick={() => startMutation.mutate()}
           disabled={!projectId || startMutation.isPending || !!activeTask}
-          className="w-full"
+          className="w-full mt-3"
         >
           {activeTask ? '任务运行中' : '开始纠正'}
         </Button>
@@ -87,8 +111,11 @@ export function OrientTab() {
           onCancel={activeTask ? () => api.tasks.cancel(activeTask.id) : undefined}
           extraStats={
             <div className="flex gap-4 text-[12px]">
-              <span className="text-success">✓ 已纠正 {progress?.fixed ?? 0}</span>
-              <span className="text-foreground/40">跳过 {progress?.skipped ?? 0}</span>
+              <span className="text-success">✓ 已纠正 {(progress as any)?.fixed ?? 0}</span>
+              <span className="text-foreground/40">跳过 {(progress as any)?.skipped ?? 0}</span>
+              {(progress as any)?.ai_calls ? (
+                <span className="text-info">AI {(progress as any).ai_calls}</span>
+              ) : null}
             </div>
           }
         />

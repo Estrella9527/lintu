@@ -8,13 +8,17 @@ interface ThumbnailImageProps {
   size?: 128 | 300 | 800
   className?: string
   onClick?: () => void
+  /** Version tag (e.g. image.updated_at) — appended as ?v= to bust HTTP cache
+   * when the underlying file changes (orient, re-encode, etc.). */
+  version?: string | null
 }
 
-export function ThumbnailImage({ imageId, alt, size = 300, className, onClick }: ThumbnailImageProps) {
+export function ThumbnailImage({ imageId, alt, size = 300, className, onClick, version }: ThumbnailImageProps) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
 
-  const src = `http://localhost:7879/api/images/${imageId}/thumbnail?size=${size}`
+  const v = version ? `&v=${encodeURIComponent(version)}` : ''
+  const src = `http://localhost:7879/api/images/${imageId}/thumbnail?size=${size}${v}`
 
   return (
     <div

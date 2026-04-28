@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { matchIcon } from '@/lib/icon-map'
-import { workshopPresetAtom } from '@/atoms/workshop'
+import { batchClonePresetAtom, batchSeedQueueAtom, workshopPresetAtom } from '@/atoms/workshop'
 import { StrategyPage } from '@/components/workshop/StrategyPage'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,7 +11,8 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
-import { Plus, Settings2 } from 'lucide-react'
+import { Plus, Rocket, Settings2 } from 'lucide-react'
+import { BatchRunDialog } from '@/components/workshop/BatchRunDialog'
 import { toast } from 'sonner'
 import type { FieldConfig } from '@/components/workshop/ParameterForm'
 
@@ -35,6 +36,23 @@ export default function AIWorkshop() {
   const [preset, setPreset] = useAtom(workshopPresetAtom)
   const [showCreate, setShowCreate] = useState(false)
   const [editingStrategy, setEditingStrategy] = useState<StrategyRecord | null>(null)
+  const [showBatch, setShowBatch] = useState(false)
+  const [seedQueue, setSeedQueue] = useAtom(batchSeedQueueAtom)
+  const [clonePreset, setClonePreset] = useAtom(batchClonePresetAtom)
+
+  // Cross-page hand-off from Asset Library: when seedQueue is set, auto-open
+  // the batch dialog with those images preselected. Atom is cleared on close.
+  useEffect(() => {
+    if (seedQueue && seedQueue.length > 0 && !showBatch) {
+      setShowBatch(true)
+    }
+  }, [seedQueue, showBatch])
+  // Same idea for "复用批次配置" — TaskCenter pushes the full config here.
+  useEffect(() => {
+    if (clonePreset && !showBatch) {
+      setShowBatch(true)
+    }
+  }, [clonePreset, showBatch])
 
   const { data: strategies, isLoading } = useQuery<StrategyRecord[]>({
     queryKey: ['strategies'],
@@ -76,16 +94,25 @@ export default function AIWorkshop() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 h-[48px] shrink-0 border-b border-foreground/5">
-        <h1 className="text-[15px] font-semibold text-foreground">AI工坊</h1>
-        <Button variant="outline" size="sm" className="text-[12px] h-7" onClick={() => setShowCreate(true)}>
-          <Plus size={12} className="mr-1" /> 新建策略
-        </Button>
+      {/* Header — combined title + actions in 40px row */}
+      <div className="flex items-center justify-between px-5 h-[40px] shrink-0 border-b border-foreground/5">
+        <h1 className="text-[13px] font-semibold text-foreground/85">AI工坊</h1>
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            className="text-[12px] h-7"
+            onClick={() => setShowBatch(true)}
+          >
+            <Rocket size={12} className="mr-1" /> 批量生产
+          </Button>
+          <Button variant="outline" size="sm" className="text-[12px] h-7" onClick={() => setShowCreate(true)}>
+            <Plus size={12} className="mr-1" /> 新建策略
+          </Button>
+        </div>
       </div>
 
       {/* Strategy tabs */}
-      <div className="px-6 pt-3 shrink-0">
+      <div className="px-5 pt-2 shrink-0">
         <div className="flex gap-1 flex-wrap">
           {strategies?.map((s) => {
             const Icon = matchIcon(s.icon_keyword, s.name)
@@ -95,7 +122,7 @@ export default function AIWorkshop() {
                 key={s.id}
                 onClick={() => setActiveId(s.id)}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-md transition-colors group',
+                  'flex items-center gap-1.5 px-2.5 py-1 text-[12.5px] rounded-md transition-colors group',
                   isActive
                     ? 'bg-accent/10 text-accent'
                     : 'text-foreground/60 hover:text-foreground/80 hover:bg-foreground/[0.03]',
@@ -132,6 +159,27 @@ export default function AIWorkshop() {
           </div>
         )}
       </div>
+
+      {/* Batch run dialog */}
+      <BatchRunDialog
+        open={showBatch}
+        onClose={() => {
+          setShowBatch(false)
+          setSeedQueue(null)        // clear cross-page hand-offs when dialog closes
+          setClonePreset(null)
+        }}
+        defaultTaskType={clonePreset?.taskType || activeStrategy?.task_type}
+        defaultStrategyId={activeStrategy?.id}
+        initialSeeds={clonePreset?.seeds || seedQueue || undefined}
+        preset={clonePreset ? {
+          name: clonePreset.name,
+          promptIds: clonePreset.promptIds,
+          concurrency: clonePreset.concurrency,
+          maxRetry: clonePreset.maxRetry,
+          budgetUsd: clonePreset.budgetUsd,
+          providerChain: clonePreset.providerChain,
+        } : undefined}
+      />
 
       {/* Create / Edit Dialog */}
       <StrategyDialog

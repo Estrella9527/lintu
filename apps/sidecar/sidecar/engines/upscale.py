@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sidecar.config import WORKSPACE_DIR
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
+from sidecar.engines.image_utils import effective_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ async def run_upscale(task: Task, progress_cb):
 
         for idx, img_record in enumerate(images):
             try:
-                src = PILImage.open(img_record.file_path)
+                src = PILImage.open(effective_file_path(img_record))
                 new_size = (src.size[0] * scale, src.size[1] * scale)
                 upscaled = src.resize(new_size, PILImage.Resampling.LANCZOS)
 

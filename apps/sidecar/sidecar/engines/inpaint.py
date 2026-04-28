@@ -10,7 +10,10 @@ from sqlalchemy import select
 from sidecar.config import WORKSPACE_DIR
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
-from sidecar.engines.generation_utils import get_generation_provider, get_prompt_template, save_generated_image
+from sidecar.engines.generation_pipeline import pipeline
+from sidecar.engines.generation_utils import get_prompt_template, save_generated_image
+from sidecar.engines.image_utils import effective_file_path
+from sidecar.providers.base import ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +74,9 @@ async def run_inpaint(task: Task, progress_cb):
 
     edit_prompt = EDIT_PROMPTS.get(edit_type, EDIT_PROMPTS["去水印"])
     prompt = get_prompt_template("inpaint", DEFAULT_PROMPT, edit_prompt=edit_prompt)
+    allow_pil_fallback = bool(params.get("allow_pil_fallback", True))
     output_dir = WORKSPACE_DIR / "generated" / "inpaint"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    provider = None
-    try:
-        provider = get_generation_provider()
-    except Exception:
-        pass
 
     pil_fn = PIL_FALLBACKS.get(edit_type, PIL_FALLBACKS["去水印"])
 
@@ -95,13 +93,14 @@ async def run_inpaint(task: Task, progress_cb):
         for idx, img_record in enumerate(images):
             out_path = output_dir / f"{img_record.id}_{edit_type}.jpg"
             try:
-                if provider:
-                    gen = await provider.generate_image(img_record.file_path, prompt)
-                    save_generated_image(gen["image_data"], out_path)
-                else:
-                    raise NotImplementedError
-            except Exception:
-                src = PILImage.open(img_record.file_path).convert("RGB")
+                src_path = effective_file_path(img_record)
+                gen = await pipeline.execute(src_path, prompt)
+                save_generated_image(gen.image_data, out_path)
+            except (ProviderError, Exception) as e:
+                if not allow_pil_fallback:
+                    logger.error("inpaint failed for %s (no PIL fallback): %s", img_record.id, e)
+                    raise
+                src = PILImage.open(effective_file_path(img_record)).convert("RGB")
                 edited = pil_fn(src)
                 if edited.mode != "RGB":
                     edited = edited.convert("RGB")

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { TabPage } from '@/components/shared/TabPage'
-import { ShieldCheck, Copy, Tags, RotateCw } from 'lucide-react'
+import { ShieldCheck, Copy, Sparkles, Tags, RotateCw } from 'lucide-react'
 import { QualityCheckTab } from './pipeline/QualityCheckTab'
 import { DedupTab } from './pipeline/DedupTab'
+import { EmbedTab } from './pipeline/EmbedTab'
 import { TaggingTab } from './pipeline/TaggingTab'
 import { OrientTab } from './pipeline/OrientTab'
 
@@ -11,6 +12,7 @@ const TABS = [
   { id: 'orient', label: '视角纠正', icon: RotateCw, content: <OrientTab /> },
   { id: 'dedup', label: '去重', icon: Copy, content: <DedupTab /> },
   { id: 'tagging', label: '标注', icon: Tags, content: <TaggingTab /> },
+  { id: 'embed', label: '向量化', icon: Sparkles, content: <EmbedTab /> },
 ]
 
 export default function Pipeline() {

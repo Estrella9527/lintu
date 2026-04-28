@@ -50,9 +50,44 @@ async def get_config():
     return safe
 
 
+def _looks_masked(value: str) -> bool:
+    return isinstance(value, str) and "****" in value
+
+
 @router.put("")
 async def update_config(body: UpdateConfigBody):
     config = _read_config()
-    config.update(body.data)
+    incoming = dict(body.data)
+
+    # Preserve existing secrets when caller sent the masked placeholder back.
+    # The GET endpoint masks api_key / *_key / *_secret values; if the UI
+    # round-trips them unchanged, we must NOT overwrite the real value.
+    for k, v in list(incoming.items()):
+        if k == "custom_relays" and isinstance(v, str):
+            try:
+                new_relays = json.loads(v)
+                old_relays = json.loads(config.get("custom_relays", "[]"))
+                old_by_name = {r.get("name"): r for r in old_relays if r.get("name")}
+                for r in new_relays:
+                    key = r.get("api_key", "")
+                    if _looks_masked(key):
+                        prev = old_by_name.get(r.get("name"))
+                        if prev and prev.get("api_key"):
+                            r["api_key"] = prev["api_key"]
+                incoming[k] = json.dumps(new_relays, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif ("key" in k.lower() or "secret" in k.lower()) and _looks_masked(v):
+            if k in config:
+                incoming[k] = config[k]
+
+    config.update(incoming)
     _write_config(config)
+
+    # Notify subsystems that depend on cached config snapshots
+    try:
+        from sidecar.engines.oss_sync import invalidate_storage_cache
+        invalidate_storage_cache()
+    except ImportError:
+        pass
     return {"ok": True}

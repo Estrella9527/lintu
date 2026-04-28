@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { activeModuleAtom, assetLibraryNavRequestAtom } from '@/atoms/navigation'
+import { ArrowRight, CheckCircle2, XCircle } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
@@ -15,6 +17,11 @@ import type { TaskRecord } from '@/lib/types'
 export function QualityCheckTab() {
   const queryClient = useQueryClient()
   const projectId = useAtomValue(activeProjectIdAtom)
+  const setActiveModule = useSetAtom(activeModuleAtom)
+  const setNavRequest = useSetAtom(assetLibraryNavRequestAtom)
+  const goAssetLibrary = (req: Parameters<typeof setNavRequest>[0]) => {
+    setNavRequest(req); setActiveModule('asset-library')
+  }
 
   const [directory, setDirectory] = useState<string | null>(null)
   const [minResolution, setMinResolution] = useState(720)
@@ -153,12 +160,27 @@ export function QualityCheckTab() {
         />
       )}
 
-      {/* Results placeholder */}
+      {/* Results — one-click filters back to asset library */}
       {lastTask?.status === 'completed' && (
         <div className="rounded-lg border border-foreground/5 p-4">
           <h3 className="text-[13px] font-medium text-foreground/60 mb-3">质检结果</h3>
-          <div className="text-[12px] text-foreground/40">
-            任务完成，可在资产库中查看通过/淘汰的图片
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline" size="sm" className="h-8 text-[12px]"
+              onClick={() => goAssetLibrary({ status: 'passed' })}
+            >
+              <CheckCircle2 size={12} className="mr-1 text-success" />
+              看通过的图
+              <ArrowRight size={11} className="ml-1 text-foreground/40" />
+            </Button>
+            <Button
+              variant="outline" size="sm" className="h-8 text-[12px]"
+              onClick={() => goAssetLibrary({ status: 'rejected' })}
+            >
+              <XCircle size={12} className="mr-1 text-destructive" />
+              看淘汰的图
+              <ArrowRight size={11} className="ml-1 text-foreground/40" />
+            </Button>
           </div>
         </div>
       )}

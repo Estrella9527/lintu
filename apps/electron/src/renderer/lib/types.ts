@@ -30,6 +30,23 @@ export interface ImageRecord {
   description: string | null
   source_type: 'original' | 'generated'
   parent_id: string | null
+  relative_dir: string | null
+  generation_metadata?: {
+    provider?: string | null
+    model?: string | null
+    prompt_id?: string | null
+    prompt_name?: string | null
+    prompt_content?: string | null
+    batch_id?: string | null
+    batch_name?: string | null
+    seed_image_id?: string | null
+    seed_file_name?: string | null
+    seed_relative_dir?: string | null
+    cost_usd?: number | null
+    latency_ms?: number | null
+    retry_count?: number | null
+    generated_at?: string | null
+  } | null
   created_at: string
   updated_at: string
   tags: TagRecord[]
@@ -111,6 +128,14 @@ export interface TaskProgressEvent {
   cost_usd?: number
   passed_count?: number
   failed_count?: number
+  // Orient engine
+  fixed?: number
+  skipped?: number
+  ai_calls?: number
+  // Dedup engine
+  groups?: number
+  duplicates?: number
+  imported?: number
 }
 
 export interface ImageFilter {

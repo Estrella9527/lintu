@@ -8,3 +8,12 @@ __pycache__/
 bun.lock
 .DS_Store
 lintu-data/
+
+# Build artifacts
+release/
+apps/electron/release/
+apps/sidecar/dist/
+apps/sidecar/build/
+*.spec
+.pytest_cache/
+.ruff_cache/

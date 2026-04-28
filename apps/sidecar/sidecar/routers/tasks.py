@@ -30,6 +30,17 @@ class BatchTaskBody(BaseModel):
     tasks: list[CreateTaskBody]
 
 
+def _initial_total(parameters: dict) -> int:
+    """Pre-compute task.total at creation time so queued cards in the UI
+    show a meaningful "0 / N" instead of "0 / 0". Only known when the
+    caller scoped the work to an explicit `image_ids` set; project-wide
+    runs still discover their total inside the engine."""
+    ids = parameters.get("image_ids")
+    if isinstance(ids, list):
+        return len(ids)
+    return 0
+
+
 @router.post("/batch")
 async def create_batch(body: BatchTaskBody, db: AsyncSession = Depends(get_db)):
     """Create multiple tasks at once."""
@@ -40,6 +51,7 @@ async def create_batch(body: BatchTaskBody, db: AsyncSession = Depends(get_db)):
             type=t.type,
             parameters=json.dumps(t.parameters),
             status="queued",
+            total=_initial_total(t.parameters),
         )
         db.add(task)
         await db.flush()
@@ -55,6 +67,7 @@ async def create_task(body: CreateTaskBody, db: AsyncSession = Depends(get_db)):
         type=body.type,
         parameters=json.dumps(body.parameters),
         status="queued",
+        total=_initial_total(body.parameters),
     )
     db.add(task)
     await db.commit()

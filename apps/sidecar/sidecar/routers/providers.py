@@ -2,14 +2,24 @@
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+_VERSION_SEGMENT = re.compile(r"/v\d+(?:/|$)")
+
+from sidecar.providers.registry import list_available_providers
 from sidecar.routers.config_api import _read_config
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/available")
+async def available_providers():
+    """List all currently-configured providers (powers the role-assignment dropdowns)."""
+    return list_available_providers()
 
 
 class TestProviderBody(BaseModel):
@@ -81,7 +91,9 @@ async def _test_openai_compatible(base_url: str | None, api_key: str | None, mod
     try:
         import httpx
         base = base_url.rstrip("/")
-        if base.endswith("/v1"):
+        # Skip /v1 prefix when base already contains a version segment
+        # (e.g. Volcengine Ark /api/v3, or any /v2, /v3 base).
+        if _VERSION_SEGMENT.search(base):
             url = base + "/models"
         else:
             url = base + "/v1/models"
