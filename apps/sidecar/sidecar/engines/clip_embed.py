@@ -44,7 +44,7 @@ MODEL_PRETRAINED = "laion2b_s34b_b79k"   # public OpenCLIP weight; smaller than 
 EMBEDDING_TAG_LOCAL = "clip-ViT-B-32-f16"
 EMBEDDING_TAG = EMBEDDING_TAG_LOCAL      # legacy alias used by dedup
 BATCH_SIZE = 16
-API_CONCURRENCY = 5                      # parallel /v1/embeddings calls
+API_CONCURRENCY = 16                     # parallel /v1/embeddings calls (provider may throttle past 10 RPS)
 
 
 # Lazy-initialised module-level singletons — cheap once loaded.
