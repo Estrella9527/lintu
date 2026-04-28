@@ -324,19 +324,32 @@ async def match_text_to_images(
     scope = scope or MatchScope()
     weights = resolve_weights(strategy, weights_override)
 
+    import asyncio
+
     # 1. keyword extraction (cheap, sync — for tag-hit identification)
     kw = extract_keywords(text)
 
-    # 2. parallel: query expansion (LLM) + text embedding (network) — kick
-    #    both before any SQL work.
-    import asyncio
+    # 2. Fan out the slow network calls in parallel.
+    #    expand_query and embed_query_text both make external API calls; their
+    #    latencies dominate the request. We additionally kick keyword recall
+    #    against the jieba tokens in parallel — the LLM-expanded set will be
+    #    re-checked after expand_query resolves, but the jieba-only recall
+    #    almost always overlaps the final superset, so it's not wasted work
+    #    when the user's text is short.
+    #
+    #    expand_query has its own internal timeout (now 1.5s by default);
+    #    when it times out we still proceed with jieba-only keywords, so the
+    #    pipeline never blocks longer than the embed call (typically <2s).
     expand_task = asyncio.create_task(expand_query(text))
     embed_task = asyncio.create_task(embed_query_text(text))
     expanded_keywords, qv = await asyncio.gather(expand_task, embed_task)
 
-    # 3. embedding recall — multi-shard if scope is set, single-shard fallback
+    # 3. embedding recall — fan out per project shard concurrently. Sequential
+    #    awaits cost ~50ms per project on a warm shard; this gets us back into
+    #    a single-shard's worth of latency regardless of project count.
     decision: ScopeDecision | None = None
     emb_hits: list[RecallHit] = []
+    kw_recall_task: asyncio.Task | None = None
     if qv is not None:
         if scope.primary_project_id or scope.force_single_project:
             decision = await _compute_scope_quotas(
@@ -348,22 +361,34 @@ async def match_text_to_images(
             # Over-fetch per project so re-ranking has headroom for diversity
             # / filter loss. Factor 8 mirrors the previous single-shard top_k=200
             # for limit=25 (8x).
-            for pid, q in decision.quotas.items():
-                hits = await recall_by_qv(qv, project_id=pid, top_k=max(200, q * 8))
+            recall_tasks = [
+                recall_by_qv(qv, project_id=pid, top_k=max(200, q * 8))
+                for pid, q in decision.quotas.items()
+            ]
+            # Kick keyword recall in parallel with embedding recalls — both
+            # hit different code paths (in-memory matrix vs SQL) and the
+            # candidate pools are unioned after.
+            keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
+            kw_scope_pid = filters.project_id if not scope.primary_project_id else None
+            kw_recall_task = asyncio.create_task(
+                recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=200)
+            )
+            for hits in await asyncio.gather(*recall_tasks):
                 emb_hits.extend(hits)
         else:
+            keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
+            kw_recall_task = asyncio.create_task(
+                recall_by_keywords(keyword_set, project_id=filters.project_id, top_k=200)
+            )
             emb_hits = await recall_by_qv(qv, project_id=filters.project_id, top_k=200)
+    else:
+        keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
+        kw_scope_pid = filters.project_id if not scope.primary_project_id else None
+        kw_recall_task = asyncio.create_task(
+            recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=200)
+        )
 
-    # Re-run keyword recall against the EXPANDED set so the LLM-derived
-    # synonyms ("孩子→儿童/小朋友/宝宝") light up images they otherwise miss.
-    # Always include the jieba-extracted keywords so we don't regress when
-    # the LLM call fails (expand_query falls back to [text] in that case).
-    keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
-    # Keyword recall stays cross-project when we're in scope mode — the
-    # candidate pool is filtered later by the in-scope project_id check on
-    # each enriched row.
-    kw_scope_pid = filters.project_id if not scope.primary_project_id else None
-    kw_hits = await recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=200)
+    kw_hits = await kw_recall_task if kw_recall_task else []
 
     # 3. RRF (Reciprocal Rank Fusion) — combines two ranked lists by summing
     #    1/(k + rank). More robust than additive scores because it doesn't

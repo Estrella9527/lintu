@@ -90,7 +90,7 @@ def _hash_key(text: str) -> str:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
-async def expand_query(text: str, *, timeout_sec: float = 8.0) -> list[str]:
+async def expand_query(text: str, *, timeout_sec: float = 1.5) -> list[str]:
     """Return an expanded keyword list. Always returns at least [text] on failure.
 
     Side-effect: caches SUCCESSFUL results by SHA-256(normalized text). Failure
