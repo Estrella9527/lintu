@@ -220,6 +220,15 @@ _CLOUD_RELEVANT_KEYS = (
     "custom_relays",
     "match_strategy_weights",
     "match_max_limit",
+    # OSS read-only fields. We deliberately DO NOT push oss_access_key /
+    # oss_access_secret — cloud sidecar never uploads, and is_read_configured()
+    # is satisfied by endpoint+bucket alone, so URL synthesis works without
+    # leaking write credentials to the read-only deployment.
+    "oss_provider",
+    "oss_endpoint",
+    "oss_bucket",
+    "oss_cdn_base",
+    "oss_signed_url_ttl_sec",
 )
 
 

@@ -51,7 +51,7 @@ def _image_payload(img: Image) -> dict:
 
     storage = get_storage()
     cdn_path = getattr(img, "cdn_path", None)
-    if cdn_path and storage.is_configured():
+    if cdn_path and storage.is_read_configured():
         # Original URL straight from CDN
         original_url = storage.public_url(cdn_path)
         # Thumb URLs follow the {id}_{size}.jpg convention from oss_sync
@@ -385,7 +385,7 @@ class MatchBody(BaseModel):
 
 def _public_url_for_match(image_id: str, cdn_path: str | None) -> tuple[str, str]:
     storage = get_storage()
-    if cdn_path and storage.is_configured():
+    if cdn_path and storage.is_read_configured():
         original = storage.public_url(cdn_path)
         thumb = storage.public_url(object_key_for(image_id, "thumb_300", "jpg"))
         return original, thumb

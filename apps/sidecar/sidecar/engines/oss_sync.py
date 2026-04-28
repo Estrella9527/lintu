@@ -47,7 +47,8 @@ class UploadResult:
 class ObjectStorage(Protocol):
     def upload(self, *, object_key: str, local_path: str, content_type: str) -> UploadResult: ...
     def public_url(self, object_key: str) -> str: ...
-    def is_configured(self) -> bool: ...
+    def is_configured(self) -> bool: ...           # writable (has access keys)
+    def is_read_configured(self) -> bool: ...      # read-only public URL synthesis is possible
 
 
 # ── Aliyun OSS ──────────────────────────────────────────────────────────────
@@ -77,7 +78,18 @@ class AliyunOSSStorage:
         self._lock = threading.Lock()
 
     def is_configured(self) -> bool:
+        """True only if we can actually UPLOAD (have access keys). Used by
+        the OssSyncWorker on the desktop sidecar."""
         return bool(self.endpoint and self.bucket_name and self.access_key and self.access_secret)
+
+    def is_read_configured(self) -> bool:
+        """True if we can synthesize a public URL for a known object_key,
+        even WITHOUT access keys. Cloud sidecar deployments only need this:
+        they receive cdn_path via /internal/sync and turn it into a CDN
+        URL string for UGC — no API call to OSS, so no credentials needed."""
+        if self.cdn_base:
+            return True
+        return bool(self.endpoint and self.bucket_name)
 
     def _ensure_bucket(self):
         if self._bucket is not None:
@@ -163,6 +175,8 @@ class AliyunOSSStorage:
 
 class NullStorage:
     def is_configured(self) -> bool:
+        return False
+    def is_read_configured(self) -> bool:
         return False
     def upload(self, **_kwargs):  # pragma: no cover
         raise RuntimeError("OSS not configured")
