@@ -81,21 +81,42 @@ class _IndexCache:
             logger.info("text_search: no embeddings for project=%s", project_id)
             return None
 
-        ids: list[str] = []
-        vecs: list[np.ndarray] = []
-        dim: int | None = None
-        model_tag = ""
-        skipped_dim_mismatch = 0
+        # Two-pass build to make the shard's `dim` robust against a single
+        # outlier row. Background: a debug-injected or stale row with a
+        # mismatched dimension used to land first in SQL row order, which
+        # locked shard.dim to the WRONG value and silently dropped every
+        # legitimate row. Now we vote: the dim that the majority of rows
+        # have wins. Minority dims are skipped with a loud warning so the
+        # operator can clean up.
+        from collections import Counter
+        parsed: list[tuple[str, str | None, np.ndarray]] = []
         for img_id, blob, em in rows:
             v = deserialize_vector(blob)
             if v is None or v.size == 0:
                 continue
-            if dim is None:
-                dim = v.size
-                model_tag = em or ""
-            elif v.size != dim:
+            parsed.append((img_id, em, v))
+        if not parsed:
+            return None
+
+        dim_counts = Counter(v.size for _, _, v in parsed)
+        majority_dim, majority_n = dim_counts.most_common(1)[0]
+        if len(dim_counts) > 1:
+            minority = {d: n for d, n in dim_counts.items() if d != majority_dim}
+            logger.warning(
+                "text_search: project=%s mixed embedding dims %s — using majority %d (%d rows), skipping minority %s",
+                project_id, dict(dim_counts), majority_dim, majority_n, minority,
+            )
+
+        ids: list[str] = []
+        vecs: list[np.ndarray] = []
+        model_tag = ""
+        skipped_dim_mismatch = 0
+        for img_id, em, v in parsed:
+            if v.size != majority_dim:
                 skipped_dim_mismatch += 1
                 continue
+            if not model_tag:
+                model_tag = em or ""
             n = float(np.linalg.norm(v))
             if n == 0:
                 continue
@@ -107,20 +128,15 @@ class _IndexCache:
 
         matrix = np.vstack(vecs)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        if skipped_dim_mismatch:
-            logger.warning(
-                "text_search: skipped %d rows with mismatched dim during build",
-                skipped_dim_mismatch,
-            )
         logger.info(
-            "text_search: built shard project=%s n=%d dim=%d in %dms",
-            project_id, len(ids), dim, elapsed_ms,
+            "text_search: built shard project=%s n=%d dim=%d in %dms (skipped_mismatched=%d)",
+            project_id, len(ids), majority_dim, elapsed_ms, skipped_dim_mismatch,
         )
         return IndexShard(
             project_id=project_id,
             image_ids=ids,
             matrix=matrix,
-            dim=dim,
+            dim=majority_dim,
             built_at=time.time(),
             embedding_model=model_tag,
         )
