@@ -13,15 +13,12 @@ dependencies = [
     "imagehash>=4.3",
     "jieba>=0.42",
     "numpy>=2.4.4",
-    "open-clip-torch>=2.24",
     "openpyxl>=3.1",
     "oss2>=2.18",
     "pillow>=10.0",
     "pymupdf>=1.24",
     "python-docx>=1.1",
     "python-multipart>=0.0.20",
-    "scipy>=1.17.1",
-    "torch>=2.3",
     "sqlalchemy>=2.0",
     "uvicorn[standard]>=0.30.0",
     # PostgreSQL drivers — only required in cloud (LINTU_MODE=server) but
@@ -29,4 +26,16 @@ dependencies = [
     # runtime via LINTU_DB_URL without a separate build.
     "asyncpg>=0.30",                 # async runtime
     "psycopg[binary]>=3.2",          # sync, used by Alembic migrations
+]
+
+[project.optional-dependencies]
+# Local CLIP fallback for image embedding when no API provider is configured.
+# Pulls torch + open_clip + scipy + ~1.5GB of NVIDIA CUDA wheels — opt in only
+# for desktop/dev: `uv sync --extra local-clip`. The cloud Docker image
+# intentionally excludes this group; cloud uses API embedding (Doubao Ark) and
+# only RECEIVES pre-computed embeddings via /internal/sync/images.
+local-clip = [
+    "torch>=2.3",
+    "open-clip-torch>=2.24",
+    "scipy>=1.17.1",
 ]

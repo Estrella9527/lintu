@@ -905,7 +905,6 @@ dependencies = [
     { name = "imagehash" },
     { name = "jieba" },
     { name = "numpy" },
-    { name = "open-clip-torch" },
     { name = "openpyxl" },
     { name = "oss2" },
     { name = "pillow" },
@@ -913,10 +912,15 @@ dependencies = [
     { name = "pymupdf" },
     { name = "python-docx" },
     { name = "python-multipart" },
-    { name = "scipy" },
     { name = "sqlalchemy" },
-    { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+local-clip = [
+    { name = "open-clip-torch" },
+    { name = "scipy" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -931,7 +935,7 @@ requires-dist = [
     { name = "imagehash", specifier = ">=4.3" },
     { name = "jieba", specifier = ">=0.42" },
     { name = "numpy", specifier = ">=2.4.4" },
-    { name = "open-clip-torch", specifier = ">=2.24" },
+    { name = "open-clip-torch", marker = "extra == 'local-clip'", specifier = ">=2.24" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "oss2", specifier = ">=2.18" },
     { name = "pillow", specifier = ">=10.0" },
@@ -939,11 +943,12 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.24" },
     { name = "python-docx", specifier = ">=1.1" },
     { name = "python-multipart", specifier = ">=0.0.20" },
-    { name = "scipy", specifier = ">=1.17.1" },
+    { name = "scipy", marker = "extra == 'local-clip'", specifier = ">=1.17.1" },
     { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "torch", specifier = ">=2.3" },
+    { name = "torch", marker = "extra == 'local-clip'", specifier = ">=2.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
 ]
+provides-extras = ["local-clip"]
 
 [[package]]
 name = "lxml"

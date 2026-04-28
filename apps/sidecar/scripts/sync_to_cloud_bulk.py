@@ -100,7 +100,25 @@ async def push_images(client: httpx.AsyncClient) -> int:
     from sidecar.engines.clip_embed import deserialize_vector
     total_pushed = 0
     async with async_session() as db:
-        all_ids = [r[0] for r in (await db.execute(select(Image.id))).all()]
+        # Originals first, then generated. Image.parent_id has a FK to images.id,
+        # so children must arrive after their parents — otherwise the cloud's
+        # PostgreSQL rejects the row with a 500.
+        all_ids = [r[0] for r in (await db.execute(
+            select(Image.id).order_by(
+                (Image.source_type != "original"),  # False (=original) sorts first
+                Image.id,
+            )
+        )).all()]
+    # Set of original IDs only — these are the only parent_ids guaranteed to
+    # already be in the cloud when we push generated rows (originals are
+    # ordered first). For multi-generation chains (gen → gen) and orphans,
+    # we sanitize parent_id to NULL: cloud doesn't need the lineage graph,
+    # and keeping it would require a full topological sort of the generated
+    # subset, which isn't worth ~30 rows of lineage info.
+    async with async_session() as db:
+        valid_id_set = set((await db.execute(
+            select(Image.id).where(Image.source_type == "original")
+        )).scalars().all())
     total = len(all_ids)
     if total == 0:
         return 0
@@ -144,7 +162,7 @@ async def push_images(client: httpx.AsyncClient) -> int:
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,
-                "parent_id": img.parent_id,
+                "parent_id": img.parent_id if (img.parent_id is None or img.parent_id in valid_id_set) else None,
                 "rotated_file_path": img.rotated_file_path,
                 "orient_status": img.orient_status,
                 "cdn_path": img.cdn_path,
