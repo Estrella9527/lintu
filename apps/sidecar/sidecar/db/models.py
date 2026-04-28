@@ -395,6 +395,27 @@ class OssSyncJob(Base):
 Index("idx_oss_sync_status_created", OssSyncJob.status, OssSyncJob.created_at)
 
 
+class CloudSyncJob(Base):
+    """Pending or in-flight local→cloud sync event. CloudSyncWorker drains
+    this in `pending` order, batches by entity_type, POSTs to the cloud
+    sidecar's /internal/sync/* endpoints. Persisted so app restart never
+    loses an unsynced write."""
+    __tablename__ = "cloud_sync_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_type = Column(String, nullable=False, index=True)   # 'image'|'project'|'api_key'|'synonyms'|'tag_schema'
+    entity_id = Column(String, index=True)                     # NULL for whole-dict syncs
+    op = Column(String, nullable=False)                        # 'upsert' | 'delete'
+    status = Column(String, default="pending", index=True)
+    attempts = Column(Integer, default=0)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+Index("idx_cloud_sync_status_created", CloudSyncJob.status, CloudSyncJob.created_at)
+
+
 class MatchFeedback(Base):
     """One row per (matched image, optional 'was_chosen' flag) emitted from
     the UGC app via POST /open-api/v1/images/{id}/track-usage. Used to

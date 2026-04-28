@@ -17,7 +17,23 @@ DATA_DIR = Path(os.environ.get("LINTU_DATA_DIR", Path.home() / "lintu-data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "lintu.db"
-DB_URL = f"sqlite+aiosqlite:///{DB_PATH}"
+# DB connection — defaults to local SQLite for desktop/electron mode.
+# Cloud (LINTU_MODE=server) MUST override with LINTU_DB_URL pointing at a
+# PostgreSQL instance, e.g.
+#   LINTU_DB_URL=postgresql+asyncpg://user:pass@rds-host:5432/lintu
+# Why PG in server mode:
+#   - SQLite can't handle concurrent UGC traffic (~100ms write lock)
+#   - Cross-modal vector search benefits from pgvector's HNSW index
+#   - We can run multiple gunicorn workers safely
+DB_URL = os.environ.get("LINTU_DB_URL") or f"sqlite+aiosqlite:///{DB_PATH}"
+DB_DIALECT = "postgresql" if DB_URL.startswith("postgresql") else "sqlite"
+
+# Server-mode-only: token shared between local sync_worker and the cloud
+# sidecar's /internal/sync/* endpoints. NOT a public ApiKey — never
+# exposed to UGC. Set on both ends; cloud rejects writes if missing.
+LINTU_INTERNAL_SYNC_TOKEN = os.environ.get("LINTU_INTERNAL_SYNC_TOKEN", "").strip()
+# Where the local sync_worker pushes to. Empty = sync disabled (electron-only).
+LINTU_CLOUD_SYNC_URL = os.environ.get("LINTU_CLOUD_SYNC_URL", "").strip()
 
 # 工作空间子目录
 WORKSPACE_DIR = DATA_DIR / "workspace"

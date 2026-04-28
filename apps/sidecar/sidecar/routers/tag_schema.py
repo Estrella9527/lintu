@@ -135,6 +135,16 @@ def _write_schema(data: dict):
     SCHEMA_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
 
 
+async def _enqueue_cloud_sync() -> None:
+    """Mirror local schema changes to the cloud sidecar. No-op if cloud
+    sync is disabled (LINTU_CLOUD_SYNC_URL unset)."""
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_tag_schema_replace
+        await enqueue_tag_schema_replace()
+    except Exception:
+        pass
+
+
 def get_tag_values(dimension: str) -> list:
     """Get allowed values for a dimension. Used by matrix router."""
     schema = _read_schema()
@@ -177,6 +187,7 @@ async def update_dimension(dimension: str, body: UpdateDimensionBody):
     if body.multi:
         schema[dimension]["multi"] = True
     _write_schema(schema)
+    await _enqueue_cloud_sync()
     return {"ok": True}
 
 
@@ -187,6 +198,7 @@ async def remove_value(dimension: str, value: str):
         values = schema[dimension].get("values", [])
         schema[dimension]["values"] = [v for v in values if v != value]
         _write_schema(schema)
+        await _enqueue_cloud_sync()
     return {"ok": True}
 
 
@@ -204,4 +216,5 @@ async def add_value(dimension: str, body: AddValueBody):
         values.append(body.value)
         schema[dimension]["values"] = values
         _write_schema(schema)
+        await _enqueue_cloud_sync()
     return {"ok": True}

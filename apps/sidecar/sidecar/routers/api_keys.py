@@ -109,10 +109,21 @@ async def create_key(body: ApiKeyCreate, db: AsyncSession = Depends(get_db)):
     db.add(key)
     await db.commit()
     await db.refresh(key)
+    await _enqueue_cloud_upsert(key.id)
     payload = _to_public(key)
     payload["secret"] = secret  # plaintext — shown ONCE
     payload["secret_hint"] = "Save this secret now. It will not be shown again."
     return payload
+
+
+async def _enqueue_cloud_upsert(key_id: str) -> None:
+    """Push key change to the cloud sidecar so UGC's auth middleware sees
+    it. No-op when LINTU_CLOUD_SYNC_URL is unset."""
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_api_key_upsert
+        await enqueue_api_key_upsert(key_id)
+    except Exception:
+        pass
 
 
 @router.get("/{key_pk}")
@@ -132,6 +143,7 @@ async def update_key(key_pk: str, body: ApiKeyUpdate, db: AsyncSession = Depends
         setattr(key, field, value)
     await db.commit()
     await db.refresh(key)
+    await _enqueue_cloud_upsert(key.id)
     return _to_public(key)
 
 
@@ -144,6 +156,7 @@ async def rotate_secret(key_pk: str, db: AsyncSession = Depends(get_db)):
     key.key_secret_hash = _hash_secret(secret)
     await db.commit()
     await db.refresh(key)
+    await _enqueue_cloud_upsert(key.id)
     payload = _to_public(key)
     payload["secret"] = secret
     payload["secret_hint"] = "Old secret is now invalid. Save the new secret immediately."
@@ -158,6 +171,7 @@ async def delete_key(key_pk: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "ApiKey not found")
     key.is_active = False
     await db.commit()
+    await _enqueue_cloud_upsert(key.id)  # propagates is_active=False to cloud
     return {"ok": True, "deactivated": True}
 
 

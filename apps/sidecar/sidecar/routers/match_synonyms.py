@@ -82,6 +82,7 @@ async def add_synonym(body: SynonymBody):
     entries[alias] = canonical
     data["entries"] = entries
     _write(data)
+    await _enqueue_cloud_sync()
     return {"ok": True, "version": data["version"], "entries": entries}
 
 
@@ -93,4 +94,13 @@ async def delete_synonym(alias: str):
         del entries[alias]
         data["entries"] = entries
         _write(data)
+        await _enqueue_cloud_sync()
     return {"ok": True, "version": data["version"], "entries": entries}
+
+
+async def _enqueue_cloud_sync() -> None:
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_synonyms_replace
+        await enqueue_synonyms_replace()
+    except Exception:
+        pass

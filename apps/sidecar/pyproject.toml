@@ -24,4 +24,9 @@ dependencies = [
     "torch>=2.3",
     "sqlalchemy>=2.0",
     "uvicorn[standard]>=0.30.0",
+    # PostgreSQL drivers — only required in cloud (LINTU_MODE=server) but
+    # always installed because the wheels are tiny and lets us swap DB at
+    # runtime via LINTU_DB_URL without a separate build.
+    "asyncpg>=0.30",                 # async runtime
+    "psycopg[binary]>=3.2",          # sync, used by Alembic migrations
 ]

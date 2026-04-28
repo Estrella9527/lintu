@@ -32,8 +32,9 @@ from sidecar.middleware.rate_limit import RateLimitMiddleware
 from sidecar.scheduler.engine import TaskScheduler
 from sidecar.scheduler.batch_engine import batch_scheduler
 from sidecar.scheduler.oss_worker import oss_worker
+from sidecar.scheduler.cloud_sync_worker import cloud_sync_worker
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync
 
 logging.basicConfig(level=logging.INFO)
 
@@ -79,7 +80,11 @@ async def lifespan(app: FastAPI):
     await scheduler.start()
     await batch_scheduler.start()
     await oss_worker.start()
+    # Cloud sync runs only when LINTU_CLOUD_SYNC_URL is set; in pure local
+    # mode it self-disables and returns immediately. Safe to always call.
+    await cloud_sync_worker.start()
     yield
+    await cloud_sync_worker.stop()
     await oss_worker.stop()
     await batch_scheduler.stop()
     await scheduler.stop()
@@ -150,6 +155,12 @@ if LINTU_MODE == "electron":
     app.include_router(oss.router, prefix="/api/oss", tags=["oss"])
     app.include_router(match_analytics.router, prefix="/api/match", tags=["match-analytics"])
     app.include_router(match_synonyms.router, prefix="/api/match-synonyms", tags=["match-synonyms"])
+
+# /internal/sync/* — local sidecar pushes here, never exposed to UGC.
+# Only mounted in server mode (cloud deploy) — local has no need to
+# receive its own writes.
+if LINTU_MODE == "server":
+    app.include_router(internal_sync.router, prefix="/internal/sync", tags=["internal-sync"])
 
 # /open-api/v1/* — public-facing API. Always mounted. Auth is enforced via
 # AuthMiddleware in server mode (electron mode leaves it open for local use).

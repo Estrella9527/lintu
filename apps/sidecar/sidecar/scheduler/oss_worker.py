@@ -167,6 +167,17 @@ class OssSyncWorker:
                 )
             await db.commit()
 
+        # Once the original is on OSS, the image is "ready for cloud" — push
+        # its metadata + embedding + tags to the cloud sidecar so UGC's
+        # /match can return it. Cloud sync is a no-op when LINTU_CLOUD_SYNC_URL
+        # is unset (pure local mode).
+        if job.asset_kind == "original":
+            try:
+                from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+                await enqueue_image_upsert(job.image_id)
+            except Exception as e:
+                logger.debug("cloud_sync enqueue failed (non-fatal): %s", e)
+
     async def _lazy_generate_thumb(self, job: OssSyncJob) -> None:
         """If a thumbnail file doesn't exist on disk, generate it now from the
         source image. This happens when an image is uploaded but the thumb

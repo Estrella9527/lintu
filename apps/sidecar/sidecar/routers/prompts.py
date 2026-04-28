@@ -88,12 +88,12 @@ async def list_prompts_with_output_counts(
     BatchScheduler on every successful subtask). A prompt that has never
     been used returns count=0 — caller may filter.
 
-    Implementation note: SQLite `json_extract` lets us aggregate without
-    pulling all generation_metadata rows into Python. PostgreSQL would
-    use `->>'prompt_id'` instead.
+    Implementation note: aggregates server-side via json_field() (SQLite
+    json_extract or PG ->>), avoiding a full table scan into Python.
     """
+    from sidecar.db.json_ops import json_field
     img_q = select(
-        func.json_extract(Image.generation_metadata, "$.prompt_id").label("pid"),
+        json_field(Image.generation_metadata, "prompt_id").label("pid"),
         func.count(Image.id).label("n"),
     ).where(Image.generation_metadata.is_not(None))
     if project_id:

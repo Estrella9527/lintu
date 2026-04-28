@@ -34,7 +34,16 @@ async def create_project(body: CreateProjectBody, db: AsyncSession = Depends(get
     db.add(project)
     await db.commit()
     await db.refresh(project)
+    await _enqueue_cloud_upsert(project.id)
     return _project_to_dict(project)
+
+
+async def _enqueue_cloud_upsert(project_id: str) -> None:
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_project_upsert
+        await enqueue_project_upsert(project_id)
+    except Exception:
+        pass
 
 
 @router.get("")
@@ -70,6 +79,7 @@ async def update_project(
         project.color = body.color.strip() or None
     await db.commit()
     await db.refresh(project)
+    await _enqueue_cloud_upsert(project.id)
     return _project_to_dict(project)
 
 
@@ -99,6 +109,13 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
         deleted_tags += 1  # rowcount on tags is per-batch, kept loose
     await db.delete(project)
     await db.commit()
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_project_delete, enqueue_image_delete
+        for img_id in image_ids:
+            await enqueue_image_delete(img_id)
+        await enqueue_project_delete(project_id)
+    except Exception:
+        pass
     return {
         "ok": True,
         "deleted_images": deleted_images,

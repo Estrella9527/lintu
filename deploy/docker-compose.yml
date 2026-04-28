@@ -1,20 +1,40 @@
-# 灵图 Sidecar — Server-mode deployment.
+# 灵图 Sidecar — Cloud (server-mode) deployment.
+#
+# Architecture (see docs/部署架构与对外接口.md):
+#   - 本地 sidecar 是控制面，跑打标 / 生图 / 调试
+#   - 这台云端 sidecar 是只读数据面：从本地 sync_worker 收 metadata + embedding，
+#     给 UGC 提供 /open-api/v1/* 服务
+#   - 图片二进制不经过 sidecar — UGC 拿到的是阿里云 OSS CDN URL
 #
 # Usage:
-#   cp .env.example .env       # then fill in CORS origins, etc.
+#   cp .env.example .env             # 填 CORS / DB / 内部 sync token / OSS
 #   docker compose up -d
 #   docker compose logs -f sidecar
+#   # 第一次启动后回到本地机器跑：scripts/sync_to_cloud_bulk.py 全量回填
 #
-# What this gives you:
-#   - sidecar bound to 0.0.0.0:7879 (front it with nginx/caddy for TLS)
-#   - SQLite + workspace persisted to ./data
-#   - LINTU_MODE=server     → /api/* admin routes are disabled
-#   - LINTU_ALLOW_CORS      → CORS allowlist for browser callers (H5)
-#   - Bearer auth enforced on /open-api/* — manage keys from the desktop app
-#     (electron mode), then point this server at the same SQLite file or use
-#     a separate DB per deployment.
+# Front this with nginx/caddy for TLS (api.example.com).
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lintu-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lintu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:-lintu}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      # Expose only on localhost — sidecar talks to it over docker network.
+      # Comment out if you don't need direct DB access from the host.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lintu} -d ${POSTGRES_DB:-lintu}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   sidecar:
     build:
       context: ../apps/sidecar
@@ -22,6 +42,9 @@ services:
     image: lintu-sidecar:0.2
     container_name: lintu-sidecar
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "7879:7879"
     volumes:
@@ -30,13 +53,27 @@ services:
       LINTU_MODE: server
       LINTU_PORT: "7879"
       LINTU_DATA_DIR: /data
+      # PostgreSQL — pgvector image already has the extension installed; we
+      # only need to CREATE EXTENSION inside the DB on first boot (handled
+      # in initial migration / startup).
+      LINTU_DB_URL: "postgresql+asyncpg://${POSTGRES_USER:-lintu}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lintu}"
+      # Bearer token shared with the local sync_worker. Long random string.
+      LINTU_INTERNAL_SYNC_TOKEN: "${LINTU_INTERNAL_SYNC_TOKEN:?required}"
       # Comma-separated origins. Use *.example.com for subdomain wildcard.
       LINTU_ALLOW_CORS: "${LINTU_ALLOW_CORS:-}"
       # Optional: enable request body capture in audit logs (off by default for privacy)
       LINTU_AUDIT_BODY: "${LINTU_AUDIT_BODY:-0}"
+      # Provider config (optional — only needed if cloud sidecar should run
+      # query expansion / on-demand embedding). For pure cross-modal match
+      # the cloud only needs the SAME embedding model name + key the local
+      # used, so it can embed query text. Configure via the desktop app's
+      # Settings → AI 服务商 (it syncs via tag_schema/synonyms paths) OR
+      # bake into a config blob at startup.
+      LINTU_DEFAULT_IMAGE_EMBEDDING_PROVIDER: "${LINTU_DEFAULT_IMAGE_EMBEDDING_PROVIDER:-}"
+      LINTU_CUSTOM_RELAYS: "${LINTU_CUSTOM_RELAYS:-}"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7879/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s

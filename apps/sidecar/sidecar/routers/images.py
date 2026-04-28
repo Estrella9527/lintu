@@ -86,12 +86,11 @@ def _apply_image_filters(
             query = query.where(Image.id.in_(subq))
 
     # Filter by which prompt generated the image. Stored in
-    # generation_metadata JSON column. Uses SQLite json_extract — for
-    # PostgreSQL we'd switch to ->> 'prompt_id'.
+    # generation_metadata JSON column. json_field() picks the right SQL for
+    # the active backend (SQLite json_extract / PG ->>).
     if prompt_id:
-        query = query.where(
-            func.json_extract(Image.generation_metadata, "$.prompt_id") == prompt_id
-        )
+        from sidecar.db.json_ops import json_field
+        query = query.where(json_field(Image.generation_metadata, "prompt_id") == prompt_id)
     if parent_id:
         query = query.where(Image.parent_id == parent_id)
     return query
@@ -376,6 +375,11 @@ async def delete_image(image_id: str, db: AsyncSession = Depends(get_db)):
         await db.delete(tag)
     await db.delete(img)
     await db.commit()
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_image_delete
+        await enqueue_image_delete(image_id)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -409,6 +413,13 @@ async def batch_delete(body: BatchActionBody, db: AsyncSession = Depends(get_db)
         result = await db.execute(sql_delete(Image).where(Image.id.in_(chunk)))
         deleted += result.rowcount or 0
     await db.commit()
+    # Mirror the deletes to the cloud so UGC can't match orphan rows.
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_image_delete
+        for img_id in body.image_ids:
+            await enqueue_image_delete(img_id)
+    except Exception:
+        pass
     return {"ok": True, "deleted": deleted}
 
 
