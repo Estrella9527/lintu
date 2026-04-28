@@ -114,13 +114,12 @@ class MatchScope:
 
     `primary_project_id` is the call's "home" project — typically the project
     bound to the API key, or in the playground, the operator's currently
-    selected project. The auto-quota algorithm will give primary at least
-    `primary_floor_ratio` of the slots, then split the remainder across
-    other projects based on actual relevance.
+    selected project. The matcher recalls per-project shards independently
+    (no cross-shard pollution) but the final result is taken entirely from
+    the primary project; other projects do not contribute slots.
 
-    `force_single_project` is a debug-only override: when true, recall is
-    strictly limited to primary, no cross-project leakage. Wired to the
-    playground's "强制单项目" toggle.
+    `force_single_project` is retained as an explicit short-circuit; with the
+    primary-only quota policy it produces the same outcome as default.
     """
     primary_project_id: Optional[str] = None
     force_single_project: bool = False
@@ -155,7 +154,7 @@ _PRIMARY_BOOST = 1.3          # primary project's signal gets bumped before thre
 _ABS_THRESHOLD = 0.10         # cross-project signal must be at least this above noise
 _REL_THRESHOLD = 0.40         # cross-project signal must reach this fraction of primary's
 _TEMPERATURE = 0.3            # softmax temperature; low = sharp distribution
-_PRIMARY_FLOOR_RATIO = 0.75   # primary always gets at least this share of slots
+_PRIMARY_FLOOR_RATIO = 1.0    # primary takes the full limit; no cross-project leakage
 _SIGNAL_TOP_K = 5             # mean of top-K cosines defines the per-project signal
 
 
@@ -350,7 +349,7 @@ async def match_text_to_images(
             # / filter loss. Factor 8 mirrors the previous single-shard top_k=200
             # for limit=25 (8x).
             for pid, q in decision.quotas.items():
-                hits = await recall_by_qv(qv, project_id=pid, top_k=max(40, q * 8))
+                hits = await recall_by_qv(qv, project_id=pid, top_k=max(200, q * 8))
                 emb_hits.extend(hits)
         else:
             emb_hits = await recall_by_qv(qv, project_id=filters.project_id, top_k=200)
