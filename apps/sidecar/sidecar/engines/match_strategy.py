@@ -590,6 +590,17 @@ async def _enrich_and_filter(
         else:
             parent_tags = {}
 
+    # Compute cdn_required once: when OSS / CDN is configured (cloud
+    # deployment), images without cdn_path can't be served via the public
+    # URL — including such rows in the API response yields broken-image
+    # frames in UGC. In pure-local mode (no OSS) the /file endpoint serves
+    # source files directly, so we keep all rows.
+    try:
+        from sidecar.engines.oss_sync import get_storage
+        cdn_required = get_storage().is_read_configured()
+    except Exception:
+        cdn_required = False
+
     out: list[dict] = []
     for img_id in image_ids:
         if img_id not in meta:
@@ -600,6 +611,9 @@ async def _enrich_and_filter(
 
         # filter: source_type
         if filters.source_type and m[5] != filters.source_type:
+            continue
+        # filter: cdn_path required when OSS is configured (see below).
+        if cdn_required and not (m[9] or "").strip():  # m[9] = cdn_path
             continue
         # filter: relative_dir prefix
         if filters.folder_prefix:
