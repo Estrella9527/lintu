@@ -382,6 +382,8 @@ class MatchBody(BaseModel):
     weights: Optional[dict] = None          # override preset
     diversity: Optional[str] = "balanced"  # strict | balanced | none
     randomness: Optional[float] = 0.0      # 0=deterministic, 0.3-0.6=fresh-on-refresh, 1=heavy shuffle within score band
+    exclude_ids: Optional[list[str]] = None  # image_ids to skip (UGC: pass last shown set for "fresh on refresh")
+    unique_per_source: Optional[bool] = True  # True = at most 1 image per source-photo family (incl. AI variants); False = legacy ≤2
 
 
 def _public_url_for_match(image_id: str, cdn_path: str | None) -> tuple[str, str]:
@@ -451,6 +453,8 @@ async def match_images(body: MatchBody):
         weights_override=body.weights,
         diversity_mode=body.diversity or "balanced",
         randomness=max(0.0, min(1.0, float(body.randomness or 0.0))),
+        exclude_ids=body.exclude_ids or None,
+        unique_per_source=True if body.unique_per_source is None else bool(body.unique_per_source),
     )
     took_ms = int((_time.perf_counter() - t0) * 1000)
 
@@ -466,6 +470,10 @@ async def match_images(body: MatchBody):
             "matched_tags": m.matched_tags,
             "url": url,
             "thumbnail_url": thumb,
+            # `fallback_url` = original image URL. UGC frontend uses this
+            # when thumbnail_url 404s (rare but possible if thumb generation
+            # failed for that asset). Pattern: <img onerror="src=fallback_url">
+            "fallback_url": url,
             "cdn_synced": bool(m.cdn_path),
             "file_name": m.file_name,
             "width": m.width,
@@ -630,6 +638,10 @@ async def find_similar_images(body: SimilarBody, db: AsyncSession = Depends(get_
             "embedding_sim": round(m.embedding_sim, 4),
             "url": url,
             "thumbnail_url": thumb,
+            # `fallback_url` = original image URL. UGC frontend uses this
+            # when thumbnail_url 404s (rare but possible if thumb generation
+            # failed for that asset). Pattern: <img onerror="src=fallback_url">
+            "fallback_url": url,
             "cdn_synced": bool(m.cdn_path),
             "file_name": m.file_name,
             "width": m.width,

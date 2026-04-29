@@ -56,17 +56,25 @@ _EXPAND_PROMPT = """你是一个搜索词扩展助手。给定一段中文文本
 
 
 class _LRUCache:
-    def __init__(self, maxsize: int = 1024):
+    def __init__(self, maxsize: int = 256, ttl_sec: float = 3600):
         self._d: "OrderedDict[str, tuple[float, list[str]]]" = OrderedDict()
         self._max = maxsize
+        self._ttl = ttl_sec
         self._lock = asyncio.Lock()
 
     async def get(self, key: str) -> list[str] | None:
         async with self._lock:
             if key not in self._d:
                 return None
+            ts, value = self._d[key]
+            # TTL: stale entries get evicted on access. Without this, popular
+            # queries lock into the same expansion forever, which compounds
+            # the homogenization problem at the matcher.
+            if self._ttl and (time.time() - ts) > self._ttl:
+                self._d.pop(key, None)
+                return None
             self._d.move_to_end(key)
-            return self._d[key][1]
+            return value
 
     async def put(self, key: str, value: list[str]) -> None:
         async with self._lock:
@@ -76,7 +84,10 @@ class _LRUCache:
                 self._d.popitem(last=False)
 
 
-_cache = _LRUCache(maxsize=1024)
+# 256 entries × 1 hour TTL: fresh enough that the LLM gets re-asked daily for
+# popular queries (so it can pick up new tag schema or training drift) but
+# still cheap on duplicate calls within a session.
+_cache = _LRUCache(maxsize=256, ttl_sec=3600)
 
 
 def _normalize(text: str) -> str:

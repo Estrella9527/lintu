@@ -59,8 +59,12 @@ class StrategyWeights:
 
 STRATEGY_PRESETS: dict[str, StrategyWeights] = {
     "precise":  StrategyWeights(embedding=0.55, tag=0.35, quality=0.05, diversity=0.05, business=0.00),
-    "balanced": StrategyWeights(embedding=0.45, tag=0.30, quality=0.10, diversity=0.10, business=0.05),
-    "diverse":  StrategyWeights(embedding=0.30, tag=0.20, quality=0.15, diversity=0.30, business=0.05),
+    # balanced: lowered quality (0.10→0.05) and business (0.05→0.02) so the
+    # "always-the-same-sharpest-original" cluster doesn't dominate; diversity
+    # bumped (0.10→0.13) to compensate. Net effect: more variety per-call
+    # without sacrificing relevance — embedding+tag still drive ranking.
+    "balanced": StrategyWeights(embedding=0.45, tag=0.35, quality=0.05, diversity=0.13, business=0.02),
+    "diverse":  StrategyWeights(embedding=0.30, tag=0.20, quality=0.10, diversity=0.38, business=0.02),
 }
 
 
@@ -308,6 +312,8 @@ async def match_text_to_images(
     weights_override: dict | None = None,
     diversity_mode: str = "balanced",     # strict | balanced | none
     randomness: float = 0.0,              # 0.0 = deterministic, 0.3-0.6 = mild variety, 1.0 = heavy shuffle within score band
+    exclude_ids: list[str] | None = None, # image_ids to skip (UGC passes "already shown" set for fresh-on-refresh)
+    unique_per_source: bool = True,       # True = at most 1 image per parent_id family (incl. originals + variants)
 ) -> tuple[list[MatchedImage], dict]:
     """Run the full text→image match pipeline.
 
@@ -360,10 +366,12 @@ async def match_text_to_images(
                 force_single_project=scope.force_single_project,
             )
             # Over-fetch per project so re-ranking has headroom for diversity
-            # / filter loss. Factor 8 mirrors the previous single-shard top_k=200
-            # for limit=25 (8x).
+            # / filter loss / exclude_ids. Floor doubled to 400 (was 200) so
+            # the long-tail of mid-quality candidates has a real chance of
+            # surfacing once randomness / exclude_ids push the obvious top
+            # picks out of the way.
             recall_tasks = [
-                recall_by_qv(qv, project_id=pid, top_k=max(200, q * 8))
+                recall_by_qv(qv, project_id=pid, top_k=max(400, q * 16))
                 for pid, q in decision.quotas.items()
             ]
             # Kick keyword recall in parallel with embedding recalls — both
@@ -372,21 +380,21 @@ async def match_text_to_images(
             keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
             kw_scope_pid = filters.project_id if not scope.primary_project_id else None
             kw_recall_task = asyncio.create_task(
-                recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=200)
+                recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=400)
             )
             for hits in await asyncio.gather(*recall_tasks):
                 emb_hits.extend(hits)
         else:
             keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
             kw_recall_task = asyncio.create_task(
-                recall_by_keywords(keyword_set, project_id=filters.project_id, top_k=200)
+                recall_by_keywords(keyword_set, project_id=filters.project_id, top_k=400)
             )
-            emb_hits = await recall_by_qv(qv, project_id=filters.project_id, top_k=200)
+            emb_hits = await recall_by_qv(qv, project_id=filters.project_id, top_k=400)
     else:
         keyword_set = list(dict.fromkeys((expanded_keywords or []) + kw.keywords))
         kw_scope_pid = filters.project_id if not scope.primary_project_id else None
         kw_recall_task = asyncio.create_task(
-            recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=200)
+            recall_by_keywords(keyword_set, project_id=kw_scope_pid, top_k=400)
         )
 
     kw_hits = await kw_recall_task if kw_recall_task else []
@@ -410,6 +418,15 @@ async def match_text_to_images(
 
     # 5. fetch metadata + 6. apply filters in one DB pass
     enriched = await _enrich_and_filter(list(candidates.keys()), candidates, filters)
+
+    # 6b. apply caller-supplied exclude_ids ("user has already seen these,
+    # don't show again"). UGC stores recently-shown image_ids in localStorage
+    # and passes them on each refresh — turns the API into a "stream of fresh
+    # results" instead of a deterministic top-N.
+    if exclude_ids:
+        excluded_set = set(exclude_ids)
+        enriched = [row for row in enriched if row["id"] not in excluded_set]
+
     if not enriched:
         empty = {
             "kw_tokens": kw.keywords[:20],
@@ -457,13 +474,13 @@ async def match_text_to_images(
         per_project_final: list[dict] = []
         for pid, q in decision.quotas.items():
             bucket = by_project.get(pid, [])
-            picked = _apply_diversity(bucket, limit=q, mode=diversity_mode, weights=weights)
+            picked = _apply_diversity(bucket, limit=q, mode=diversity_mode, weights=weights, unique_per_source=unique_per_source)
             per_project_final.extend(picked)
         # Re-sort globally so the response is monotone-decreasing in score.
         per_project_final.sort(key=lambda r: r["score"], reverse=True)
         final = per_project_final[:limit]
     else:
-        final = _apply_diversity(enriched, limit=limit, mode=diversity_mode, weights=weights)
+        final = _apply_diversity(enriched, limit=limit, mode=diversity_mode, weights=weights, unique_per_source=unique_per_source)
 
     debug = {
         "kw_tokens": kw.keywords[:20],
@@ -693,23 +710,33 @@ def _apply_diversity(
     limit: int,
     mode: str,
     weights: StrategyWeights,
+    unique_per_source: bool = True,
 ) -> list[dict]:
     """Penalise consecutive picks from the same seed / dir / scene-tag combo.
 
-    mode='none'    → return top N by raw score
-    mode='balanced'→ at most 2 from the same parent_id / relative_dir / scene+facility tag combo
-    mode='strict'  → at most 1 from the same parent_id / relative_dir / scene+facility tag combo
+    mode='none'    → return top N by raw score (no diversity)
+    mode='balanced'→ caps: parent_id ≤1 (when unique_per_source) else ≤2,
+                     relative_dir ≤2, scene+facility tag combo ≤2
+    mode='strict'  → caps: every group key ≤1
 
-    The scene+facility tag combo grouping is what makes balanced/strict
-    actually feel diverse: many candidates share parent_id when they're
-    AI-generated derivatives of the same source, but the deeper
-    homogeneity is "10 photos of 玻璃滑道 in 山地景观" all looking the same.
-    Capping by tag combo forces the picker to mix in other scenes.
+    `unique_per_source=True` (default) tightens the parent_id cap to 1 even
+    in balanced mode, so a single original + all its AI variants count as
+    one "image family" — only the highest-scoring representative is shown.
+    Pass False to allow up to 2 variants of the same source (legacy behavior
+    pre-optimization).
+
+    The scene+facility tag combo grouping makes balanced/strict feel diverse
+    even when candidates have unique parents: many photos may share a
+    "山地景观 + 玻璃滑道" depiction. Capping by tag combo forces a mix.
     """
     if mode == "none" or weights.diversity == 0:
         return sorted_rows[:limit]
 
-    cap_per_group = 1 if mode == "strict" else 2
+    base_cap = 1 if mode == "strict" else 2
+    parent_cap = 1 if (mode == "strict" or unique_per_source) else base_cap
+    dir_cap = base_cap
+    tag_cap = base_cap
+
     seen_parent: dict[str, int] = {}
     seen_dir: dict[str, int] = {}
     seen_tag_combo: dict[tuple, int] = {}
@@ -719,18 +746,15 @@ def _apply_diversity(
     for row in sorted_rows:
         p = row.get("parent_id") or row["id"]
         d = row.get("relative_dir") or ""
-        # Build a coarse "what does this image depict" signature from the two
-        # most photographically meaningful tag dimensions. Sorted tuple so
-        # ordering of tag arrays doesn't change the key.
         tags_by_dim = row.get("tags_by_dim") or {}
         tag_combo = (
             tuple(sorted(set(tags_by_dim.get("scene", []))))[:2],
             tuple(sorted(set(tags_by_dim.get("facility", []))))[:2],
         )
         if (
-            seen_parent.get(p, 0) >= cap_per_group
-            or seen_dir.get(d, 0) >= cap_per_group
-            or seen_tag_combo.get(tag_combo, 0) >= cap_per_group
+            seen_parent.get(p, 0) >= parent_cap
+            or seen_dir.get(d, 0) >= dir_cap
+            or seen_tag_combo.get(tag_combo, 0) >= tag_cap
         ):
             runners_up.append(row)
             continue
