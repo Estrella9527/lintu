@@ -381,6 +381,7 @@ class MatchBody(BaseModel):
     strategy: Optional[str] = "balanced"   # precise | balanced | diverse
     weights: Optional[dict] = None          # override preset
     diversity: Optional[str] = "balanced"  # strict | balanced | none
+    randomness: Optional[float] = 0.0      # 0=deterministic, 0.3-0.6=fresh-on-refresh, 1=heavy shuffle within score band
 
 
 def _public_url_for_match(image_id: str, cdn_path: str | None) -> tuple[str, str]:
@@ -449,6 +450,7 @@ async def match_images(body: MatchBody):
         strategy=body.strategy or "balanced",
         weights_override=body.weights,
         diversity_mode=body.diversity or "balanced",
+        randomness=max(0.0, min(1.0, float(body.randomness or 0.0))),
     )
     took_ms = int((_time.perf_counter() - t0) * 1000)
 

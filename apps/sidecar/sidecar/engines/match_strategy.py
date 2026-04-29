@@ -307,6 +307,7 @@ async def match_text_to_images(
     strategy: str = "balanced",
     weights_override: dict | None = None,
     diversity_mode: str = "balanced",     # strict | balanced | none
+    randomness: float = 0.0,              # 0.0 = deterministic, 0.3-0.6 = mild variety, 1.0 = heavy shuffle within score band
 ) -> tuple[list[MatchedImage], dict]:
     """Run the full text→image match pipeline.
 
@@ -427,6 +428,20 @@ async def match_text_to_images(
     expected_tags = sum(len(v) for v in kw.tag_hits.values()) or 1
     for row in enriched:
         row.update(_score_one(row, kw, weights, quality_max=quality_max, expected_tags=expected_tags))
+
+    # 7b. optional score jitter for variety. With randomness=0 (default) the
+    # output is fully deterministic. With randomness>0 we add a uniform [0, R*max_score)
+    # perturbation per row, which lets mid-pack candidates occasionally bubble
+    # into the top-N on different calls — useful when UGC text is repetitive
+    # and the same query keeps surfacing the same images. The jitter is
+    # bounded so very-high-score rows still dominate; only ties / near-ties
+    # get reshuffled.
+    if randomness and randomness > 0 and enriched:
+        import random
+        max_score = max(r["score"] for r in enriched) or 1.0
+        amplitude = float(randomness) * max_score * 0.5
+        for r in enriched:
+            r["score"] = float(r["score"]) + random.uniform(0, amplitude)
 
     enriched.sort(key=lambda r: r["score"], reverse=True)
 
@@ -679,11 +694,17 @@ def _apply_diversity(
     mode: str,
     weights: StrategyWeights,
 ) -> list[dict]:
-    """Penalise consecutive picks from the same seed/dir to spread results.
+    """Penalise consecutive picks from the same seed / dir / scene-tag combo.
 
     mode='none'    → return top N by raw score
-    mode='balanced'→ at most 2 from the same parent_id / relative_dir
-    mode='strict'  → at most 1 from the same parent_id / relative_dir
+    mode='balanced'→ at most 2 from the same parent_id / relative_dir / scene+facility tag combo
+    mode='strict'  → at most 1 from the same parent_id / relative_dir / scene+facility tag combo
+
+    The scene+facility tag combo grouping is what makes balanced/strict
+    actually feel diverse: many candidates share parent_id when they're
+    AI-generated derivatives of the same source, but the deeper
+    homogeneity is "10 photos of 玻璃滑道 in 山地景观" all looking the same.
+    Capping by tag combo forces the picker to mix in other scenes.
     """
     if mode == "none" or weights.diversity == 0:
         return sorted_rows[:limit]
@@ -691,17 +712,31 @@ def _apply_diversity(
     cap_per_group = 1 if mode == "strict" else 2
     seen_parent: dict[str, int] = {}
     seen_dir: dict[str, int] = {}
+    seen_tag_combo: dict[tuple, int] = {}
     picked: list[dict] = []
     runners_up: list[dict] = []
 
     for row in sorted_rows:
-        p = row.get("parent_id") or row["id"]   # original photos have no parent → key by self
+        p = row.get("parent_id") or row["id"]
         d = row.get("relative_dir") or ""
-        if seen_parent.get(p, 0) >= cap_per_group or seen_dir.get(d, 0) >= cap_per_group:
+        # Build a coarse "what does this image depict" signature from the two
+        # most photographically meaningful tag dimensions. Sorted tuple so
+        # ordering of tag arrays doesn't change the key.
+        tags_by_dim = row.get("tags_by_dim") or {}
+        tag_combo = (
+            tuple(sorted(set(tags_by_dim.get("scene", []))))[:2],
+            tuple(sorted(set(tags_by_dim.get("facility", []))))[:2],
+        )
+        if (
+            seen_parent.get(p, 0) >= cap_per_group
+            or seen_dir.get(d, 0) >= cap_per_group
+            or seen_tag_combo.get(tag_combo, 0) >= cap_per_group
+        ):
             runners_up.append(row)
             continue
         seen_parent[p] = seen_parent.get(p, 0) + 1
         seen_dir[d] = seen_dir.get(d, 0) + 1
+        seen_tag_combo[tag_combo] = seen_tag_combo.get(tag_combo, 0) + 1
         picked.append(row)
         if len(picked) >= limit:
             break
