@@ -183,14 +183,53 @@ def _resolve_embedding_relay() -> dict | None:
     }
 
 
+# Cached query embeddings: text/model → unit vector. Doubao Ark API call is
+# the dominant latency in /images/match (~1.5s). The same UGC text often hits
+# us multiple times (different randomness/exclude_ids/limit on refresh, or
+# many users seeing the same auto-generated note), so an LRU cache here turns
+# the second-and-onwards calls from ~1.9s end-to-end into ~300-500ms.
+#
+# TTL keeps the cache from holding stale vectors after the operator switches
+# embedding providers (vector dim/space would change). 30min is short enough
+# that a model swap reflects within an hour without manual invalidation, and
+# long enough that high-traffic UGC sees ~100% hit rate on its hot queries.
+_query_embed_cache: "OrderedDict[str, tuple[float, np.ndarray]]" = None  # lazy init
+_query_embed_cache_lock: asyncio.Lock | None = None
+_QUERY_EMBED_CACHE_MAX = 512
+_QUERY_EMBED_CACHE_TTL = 1800  # 30 minutes
+
+
+def _query_cache_key(text: str, model_tag: str) -> str:
+    import hashlib
+    norm = (text or "").strip().lower()
+    return hashlib.sha256(f"{model_tag}|{norm}".encode("utf-8")).hexdigest()[:24]
+
+
 async def embed_query_text(text: str) -> np.ndarray | None:
     """Run the configured image-embedding provider on text input. Returns a
     L2-normalized float32 vector (same space as image embeddings) or None
-    if no embedding provider is configured.
+    if no embedding provider is configured. Caches successful results by
+    (model, normalized text) for ~30 min; cache miss falls through to API.
     """
+    global _query_embed_cache, _query_embed_cache_lock
     target = _resolve_embedding_relay()
     if not target:
         return None
+
+    cache_key = _query_cache_key(text, target.get("model") or "")
+    if _query_embed_cache is None:
+        from collections import OrderedDict
+        _query_embed_cache = OrderedDict()
+        _query_embed_cache_lock = asyncio.Lock()
+
+    async with _query_embed_cache_lock:
+        hit = _query_embed_cache.get(cache_key)
+        if hit:
+            ts, vec = hit
+            if time.time() - ts < _QUERY_EMBED_CACHE_TTL:
+                _query_embed_cache.move_to_end(cache_key)
+                return vec
+            _query_embed_cache.pop(cache_key, None)
 
     provider = OpenAICompatProvider(
         base_url=target["base_url"],
@@ -206,7 +245,14 @@ async def embed_query_text(text: str) -> np.ndarray | None:
     n = float(np.linalg.norm(arr))
     if n == 0:
         return None
-    return arr / n
+    unit = arr / n
+
+    async with _query_embed_cache_lock:
+        _query_embed_cache[cache_key] = (time.time(), unit)
+        _query_embed_cache.move_to_end(cache_key)
+        while len(_query_embed_cache) > _QUERY_EMBED_CACHE_MAX:
+            _query_embed_cache.popitem(last=False)
+    return unit
 
 
 async def recall_by_text(
