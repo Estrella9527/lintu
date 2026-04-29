@@ -384,6 +384,7 @@ class MatchBody(BaseModel):
     randomness: Optional[float] = 0.0      # 0=deterministic, 0.3-0.6=fresh-on-refresh, 1=heavy shuffle within score band
     exclude_ids: Optional[list[str]] = None  # image_ids to skip (UGC: pass last shown set for "fresh on refresh")
     unique_per_source: Optional[bool] = True  # True = at most 1 image per source-photo family (incl. AI variants); False = legacy ≤2
+    no_people: Optional[bool] = True  # True = exclude images with people in them (any people tag except 无人); UGC default-on so user-posted scenes don't show stranger faces
 
 
 def _public_url_for_match(image_id: str, cdn_path: str | None) -> tuple[str, str]:
@@ -419,6 +420,15 @@ async def match_images(body: MatchBody):
     limit = max(1, min(int(body.limit or 8), int(get_setting("match_max_limit") or 50)))
 
     f = body.filters or MatchFiltersBody()
+    exclude_tags = dict(f.exclude_tags or {})
+    # Default-on `no_people`: exclude any image whose people tag is anything
+    # other than "无人" (or absent). Stops UGC from showing tourist faces in
+    # match results — those are the operator's photos but become other
+    # people's faces from the UGC user's perspective.
+    if body.no_people is None or bool(body.no_people):
+        existing_people = set(exclude_tags.get("people") or [])
+        existing_people.update(["少量游客", "人群", "儿童", "工作人员"])
+        exclude_tags["people"] = list(existing_people)
     filters = MatchFilters(
         scene=f.scene or [],
         facility=f.facility or [],
@@ -427,7 +437,7 @@ async def match_images(body: MatchBody):
         angle=f.angle or [],
         people=f.people or [],
         usage=f.usage or [],
-        exclude_tags=f.exclude_tags or {},
+        exclude_tags=exclude_tags,
         source_type=f.source_type,
         project_id=f.project_id,         # legacy hard scope
         folder_prefix=f.folder_prefix,

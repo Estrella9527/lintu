@@ -561,6 +561,7 @@ async def _enrich_and_filter(
         )
         meta = {r[0]: r for r in img_rows.all()}
 
+        # Tags for the candidate images themselves.
         tag_rows = await db.execute(
             select(Tag.image_id, Tag.dimension, Tag.value).where(Tag.image_id.in_(image_ids))
         )
@@ -568,13 +569,34 @@ async def _enrich_and_filter(
         for img_id, dim, val in tag_rows.all():
             tags_by_img.setdefault(img_id, {}).setdefault(dim, []).append(val)
 
+        # Parent-tag fallback: many AI-generated variants share the visual
+        # content of their source image but haven't been re-tagged
+        # individually. Without inheriting the parent's tags, downstream
+        # filters (scene/people/etc) and diversity grouping (tag_combo)
+        # silently fail to constrain these variants — which is what made
+        # all 8 results show "blue raft on rapids" in user reports.
+        # We pull tags for any parent_id whose child has no own tags.
+        orphan_parents = {
+            r[8] for r in meta.values()
+            if r[8] and r[0] not in tags_by_img
+        }
+        if orphan_parents:
+            parent_tag_rows = await db.execute(
+                select(Tag.image_id, Tag.dimension, Tag.value).where(Tag.image_id.in_(orphan_parents))
+            )
+            parent_tags: dict[str, dict[str, list[str]]] = {}
+            for pid, dim, val in parent_tag_rows.all():
+                parent_tags.setdefault(pid, {}).setdefault(dim, []).append(val)
+        else:
+            parent_tags = {}
+
     out: list[dict] = []
     for img_id in image_ids:
         if img_id not in meta:
             continue
         m = meta[img_id]
         cand = candidates[img_id]
-        img_tags = tags_by_img.get(img_id, {})
+        img_tags = tags_by_img.get(img_id) or parent_tags.get(m[8] or "", {})
 
         # filter: source_type
         if filters.source_type and m[5] != filters.source_type:
@@ -735,7 +757,11 @@ def _apply_diversity(
     base_cap = 1 if mode == "strict" else 2
     parent_cap = 1 if (mode == "strict" or unique_per_source) else base_cap
     dir_cap = base_cap
-    tag_cap = base_cap
+    # When unique_per_source is on we also tighten the tag-combo cap to 1.
+    # Two images sharing exact (scene, facility) tags are visually the same
+    # depiction even when their parent_ids differ — the user wants those
+    # treated as one slot too.
+    tag_cap = 1 if (mode == "strict" or unique_per_source) else base_cap
 
     seen_parent: dict[str, int] = {}
     seen_dir: dict[str, int] = {}
