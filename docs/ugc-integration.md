@@ -118,6 +118,8 @@ UGC 真正需要的只有 3 个：
   "strategy": "balanced",                // 可选: precise | balanced | diverse
   "diversity": "balanced",               // 可选: strict | balanced | none
   "randomness": 0.0,                     // 0=完全确定（同 query 永远同结果）；0.3-0.5=刷新有变化；1.0=分数带内大幅打乱
+  "unique_per_source": true,             // 默认 true：同一原图 + 它的所有 AI 风格化变体最多出 1 张代表
+  "exclude_ids": ["uuid1","uuid2",...]   // 上次返回的 image_id 列表 — 后端会跳过，让用户每次刷新看到全新一组
   "scope": {
     "primary_project_id": "uuid"         // 推荐传，让我知道这条文案对应哪个景区
   },
@@ -150,6 +152,8 @@ UGC 真正需要的只有 3 个：
 | `strategy` | 信号权重预设。`precise`=embedding 主导；`diverse`=多样性主导 | `balanced` |
 | `diversity` | 同 parent / 同文件夹 / 同 scene+facility tag 组最多几张 | `balanced`=每组 ≤2 |
 | `randomness` | 0=完全确定，每次同结果；0.3-0.5=刷新页面会换一些（推荐生产用）；1.0=分数带内大幅打乱 | `0` — 文案重复时建议升到 0.3-0.5 让用户每次刷新看到新图 |
+| `unique_per_source` | true=同一原图 + 它的 AI 风格化变体最多挑 1 张代表；false=最多 2 张（旧行为） | `true` — 想看更多变体时再传 false |
+| `exclude_ids` | 一组要跳过的 image_id。UGC 在前端 `localStorage` 累计已展示的 id，下次匹配传过来 → 后端不再返回这些。**真正实现"刷新就有新图"的机制** | 不传 — 主动用上能极大提升用户体感 |
 
 ### 响应字段（精简）
 
@@ -357,6 +361,53 @@ UI 建议：显示"暂无匹配图片，试试[换景区/移除筛选]"，而不
 **应该做的事**：
 - ✅ 每次刷新页面时调 match 拿最新 url
 - ✅ 浏览器直接 `<img src>` 加载
+- ✅ **绑定 `<img onerror>` 走 `fallback_url`**（见下节）
+
+---
+
+## 图片加载失败兜底（**强制要求**）
+
+少数情况下 `thumbnail_url` 可能 404（缩略图生成失败 / 已被运营清理）。响应里我们提供 `fallback_url` 字段（= 原图 URL），UGC 应当绑定 `onerror` 自动降级，避免出现"空图框"。
+
+**HTML / Vanilla JS 模板**：
+```html
+<img
+  src="{{ thumbnail_url }}"
+  data-fallback="{{ fallback_url }}"
+  loading="lazy"
+  onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src=this.dataset.fallback}else{this.style.display='none'}"
+/>
+```
+
+**React / Vue**：
+```tsx
+function MatchedImg({ thumb, fallback }: { thumb: string; fallback: string }) {
+  const [src, setSrc] = useState(thumb);
+  const [tried, setTried] = useState<string[]>([thumb]);
+  return (
+    <img
+      src={src}
+      loading="lazy"
+      onError={() => {
+        if (!tried.includes(fallback)) {
+          setTried([...tried, fallback]);
+          setSrc(fallback);
+        } else {
+          // 原图也失败 → 隐藏卡片或显示占位
+          (event.target as HTMLImageElement).style.display = 'none';
+        }
+      }}
+    />
+  );
+}
+```
+
+**降级策略说明**：
+1. 第一次加载试 `thumbnail_url`（小，快）
+2. 失败 → 自动切到 `fallback_url`（原图，大但更稳）
+3. 原图也失败 → 隐藏元素或显示"图片暂时不可用"的占位
+
+千万别让用户看到空图框。
 
 ---
 
