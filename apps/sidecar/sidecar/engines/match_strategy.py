@@ -791,21 +791,44 @@ def _apply_diversity(
         if len(picked) >= limit:
             break
 
-    # Pad with runners_up if we're under limit, but ALWAYS respect the
-    # parent_cap — letting two variants of the same source through during
-    # padding is exactly what unique_per_source is supposed to prevent
-    # (which is also user-reported as the worst symptom). dir / tag caps
-    # are relaxed during padding because hitting limit matters more than
-    # perfect tag spread when the candidate pool runs thin.
+    # Pad with runners_up if we're under limit, but ALWAYS respect parent_cap
+    # AND tag_cap — letting near-duplicate depictions through during padding
+    # defeats the whole point of unique_per_source. dir_cap is relaxed
+    # because folder grouping is the loosest signal. If even that's not
+    # enough we fall back to "any candidate" to fill the last slots so the
+    # caller still gets `limit` results.
     if len(picked) < limit:
+        leftovers: list[dict] = []
         for row in runners_up:
             if len(picked) >= limit:
                 break
             p = row.get("parent_id") or row["id"]
+            tags_by_dim = row.get("tags_by_dim") or {}
+            tag_combo = (
+                tuple(sorted(set(tags_by_dim.get("scene", []))))[:2],
+                tuple(sorted(set(tags_by_dim.get("facility", []))))[:2],
+            )
             if seen_parent.get(p, 0) >= parent_cap:
+                leftovers.append(row)
+                continue
+            if seen_tag_combo.get(tag_combo, 0) >= tag_cap:
+                leftovers.append(row)
                 continue
             seen_parent[p] = seen_parent.get(p, 0) + 1
+            seen_tag_combo[tag_combo] = seen_tag_combo.get(tag_combo, 0) + 1
             picked.append(row)
+        # Last-ditch: if STILL under limit, drop the tag_cap constraint and
+        # just enforce parent_cap. Better to return a near-duplicate than
+        # an empty slot.
+        if len(picked) < limit:
+            for row in leftovers:
+                if len(picked) >= limit:
+                    break
+                p = row.get("parent_id") or row["id"]
+                if seen_parent.get(p, 0) >= parent_cap:
+                    continue
+                seen_parent[p] = seen_parent.get(p, 0) + 1
+                picked.append(row)
     return picked[:limit]
 
 
