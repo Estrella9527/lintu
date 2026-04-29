@@ -90,4 +90,16 @@ async def update_config(body: UpdateConfigBody):
         invalidate_storage_cache()
     except ImportError:
         pass
+
+    # Enqueue cloud sync so operator-tuned defaults (match strategy knobs,
+    # provider config, etc) reach the cloud sidecar within 1s of saving here.
+    # Only fires when LINTU_CLOUD_SYNC_URL is set; pure local mode is no-op.
+    try:
+        from sidecar.scheduler.cloud_sync_worker import (
+            enqueue_config_replace, CLOUD_RELEVANT_CONFIG_KEYS,
+        )
+        if any(k in CLOUD_RELEVANT_CONFIG_KEYS for k in incoming):
+            await enqueue_config_replace()
+    except Exception:
+        pass
     return {"ok": True}

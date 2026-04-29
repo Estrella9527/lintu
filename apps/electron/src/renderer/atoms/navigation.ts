@@ -21,6 +21,7 @@ export type SettingsTabId =
   | 'ai-provider'
   | 'prompt-library'
   | 'tag-system'
+  | 'match-strategy'
   | 'oss-config'
   | 'about'
 export const settingsTabAtom = atom<SettingsTabId>('general')

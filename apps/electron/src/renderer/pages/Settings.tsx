@@ -1,11 +1,12 @@
 import { useAtom } from 'jotai'
-import { Cloud, Cog, Cpu, FileText, Info, Tags, type LucideIcon } from 'lucide-react'
+import { Cloud, Cog, Cpu, FileText, Info, Tags, Sparkles, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { settingsTabAtom, type SettingsTabId } from '@/atoms/navigation'
 import { GeneralTab } from './settings/GeneralTab'
 import { AIProviderTab } from './settings/AIProviderTab'
 import { TagSchemaTab } from './settings/TagSchemaTab'
 import { PromptLibraryTab } from './settings/PromptLibraryTab'
+import { MatchStrategyTab } from './settings/MatchStrategyTab'
 
 interface NavItem {
   id: SettingsTabId
@@ -19,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'ai-provider',     label: 'AI 服务商',  desc: '模型分配、Provider 凭证', icon: Cpu },
   { id: 'prompt-library',  label: '提示词库',   desc: 'Prompt 管理、文档导入', icon: FileText },
   { id: 'tag-system',      label: '标签体系',   desc: '维度与取值', icon: Tags },
+  { id: 'match-strategy',  label: '匹配策略',   desc: 'UGC 端默认参数', icon: Sparkles },
   { id: 'oss-config',      label: 'OSS 连接',   desc: '分发目标', icon: Cloud },
   { id: 'about',           label: '关于',       desc: '版本与许可', icon: Info },
 ]
@@ -29,6 +31,7 @@ function TabContent({ id }: { id: SettingsTabId }) {
     case 'ai-provider': return <AIProviderTab />
     case 'prompt-library': return <PromptLibraryTab />
     case 'tag-system': return <TagSchemaTab />
+    case 'match-strategy': return <MatchStrategyTab />
     case 'oss-config': return (
       <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30 rounded-lg border border-dashed border-foreground/10">
         分发目标 OSS / CDN 配置（开发中）
