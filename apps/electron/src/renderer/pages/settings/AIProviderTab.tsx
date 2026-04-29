@@ -9,6 +9,7 @@ import {
   CheckCircle, Loader2, Eye, EyeOff, Pencil, Plus, Trash2, ExternalLink, ShieldCheck, AlertCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
 
 // ── Provider definitions ──
 
@@ -114,6 +115,20 @@ export function AIProviderTab() {
 
   return (
     <div className="space-y-8 max-w-3xl">
+      <div className="flex justify-end -mb-4">
+        <ExportImportButtons
+          domainLabel="AI 服务商"
+          exportPath="/config/export-providers"
+          importPath="/config/import-providers"
+          exportFilename="lintu-providers.json"
+          exportSecretsToggle={true}
+          importBodyAdapter={(parsed) => ({
+            config: parsed?.config || parsed,
+            mode: 'merge',
+          })}
+          onImportDone={onSaved}
+        />
+      </div>
       <RoleAssignmentSection config={config || {}} onSaved={onSaved} />
 
       <TaggerAuditCard config={config || {}} onSaved={onSaved} />

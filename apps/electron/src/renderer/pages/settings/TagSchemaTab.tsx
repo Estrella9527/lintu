@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { FlaskConical, X, Plus, RefreshCw } from 'lucide-react'
 import { activeModuleAtom, matchLabNavRequestAtom } from '@/atoms/navigation'
 import { matchLabActiveTabAtom } from '@/atoms/ui-state'
+import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
 
 interface DimensionSchema {
   label: string
@@ -70,9 +71,25 @@ export function TagSchemaTab() {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <p className="text-[12px] text-foreground/40">
-        管理标签维度及其预设值。修改后将影响 AI 打标的输出范围和覆盖矩阵的维度选项。
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[12px] text-foreground/40 flex-1">
+          管理标签维度及其预设值。修改后将影响 AI 打标的输出范围和覆盖矩阵的维度选项。
+        </p>
+        <ExportImportButtons
+          domainLabel="标签体系"
+          exportPath="/tag-schema/export"
+          importPath="/tag-schema/import"
+          exportFilename="lintu-tag-schema.json"
+          importBodyAdapter={(parsed) => ({
+            schema_data: parsed?.schema || parsed,
+            mode: 'merge',
+          })}
+          onImportDone={() => {
+            queryClient.invalidateQueries({ queryKey: ['tag-schema'] })
+            queryClient.invalidateQueries({ queryKey: ['tag-schema-usage'] })
+          }}
+        />
+      </div>
       {Object.entries(schema)
         .filter(([, def]) => def && Array.isArray(def.values))
         .map(([dim, def]) => (
