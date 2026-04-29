@@ -765,9 +765,21 @@ def _apply_diversity(
         if len(picked) >= limit:
             break
 
-    # Pad with runners_up if filters left us short
+    # Pad with runners_up if we're under limit, but ALWAYS respect the
+    # parent_cap — letting two variants of the same source through during
+    # padding is exactly what unique_per_source is supposed to prevent
+    # (which is also user-reported as the worst symptom). dir / tag caps
+    # are relaxed during padding because hitting limit matters more than
+    # perfect tag spread when the candidate pool runs thin.
     if len(picked) < limit:
-        picked.extend(runners_up[: (limit - len(picked))])
+        for row in runners_up:
+            if len(picked) >= limit:
+                break
+            p = row.get("parent_id") or row["id"]
+            if seen_parent.get(p, 0) >= parent_cap:
+                continue
+            seen_parent[p] = seen_parent.get(p, 0) + 1
+            picked.append(row)
     return picked[:limit]
 
 
