@@ -218,3 +218,82 @@ async def add_value(dimension: str, body: AddValueBody):
         _write_schema(schema)
         await _enqueue_cloud_sync()
     return {"ok": True}
+
+
+# ── Portable export / import ────────────────────────────────────────────────
+
+
+@router.get("/export")
+async def export_tag_schema():
+    """Download the full tag schema as a self-describing JSON blob.
+    Format is forward-compatible: include a `_meta` section so future
+    importers can detect version + skip incompatible payloads."""
+    from datetime import datetime
+    schema = _read_schema()
+    return {
+        "_meta": {
+            "lintu_export_kind": "tag_schema",
+            "version": 1,
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+        },
+        "schema": schema,
+    }
+
+
+class ImportSchemaBody(BaseModel):
+    schema_data: Dict[str, Dict] = {}     # the schema dict — alias-named to avoid Pydantic shadow warning
+    mode: str = "merge"                   # "merge" = add new dims/values, keep old; "replace" = overwrite whole file
+
+
+@router.post("/import")
+async def import_tag_schema(body: ImportSchemaBody):
+    """Import a tag schema previously exported (or hand-crafted JSON).
+
+    mode='merge' (default): for each incoming dimension, if it already
+    exists locally, union its values; otherwise add the dimension. Old
+    dimensions not in the import are kept. Safest for cross-machine sync.
+
+    mode='replace': overwrite the whole local schema with the incoming
+    one. Use only when you trust the source 100% — old custom values
+    not in the import will be lost. (existing image tags are unaffected
+    — they live in a separate table; the schema only constrains future
+    edits.)
+    """
+    incoming = body.schema_data or {}
+    if not isinstance(incoming, dict) or not incoming:
+        return {"ok": False, "error": "schema_data 为空"}
+
+    existing = _read_schema()
+    if body.mode == "replace":
+        merged = incoming
+    else:
+        merged = dict(existing)
+        for dim, defn in incoming.items():
+            if not isinstance(defn, dict):
+                continue
+            if dim in merged:
+                old_vals = list(merged[dim].get("values", []))
+                new_vals = list(defn.get("values", []))
+                # Append new values that aren't already present (preserves order)
+                seen = set(old_vals)
+                for v in new_vals:
+                    if v not in seen:
+                        old_vals.append(v)
+                        seen.add(v)
+                merged[dim] = {**merged[dim], "values": old_vals}
+                # Allow updating label / multi if the import says so
+                if "label" in defn:
+                    merged[dim]["label"] = defn["label"]
+                if "multi" in defn:
+                    merged[dim]["multi"] = bool(defn["multi"])
+            else:
+                merged[dim] = defn
+
+    _write_schema(merged)
+    await _enqueue_cloud_sync()
+    return {
+        "ok": True,
+        "mode": body.mode,
+        "dimensions_after": len(merged),
+        "values_after": sum(len(d.get("values", [])) for d in merged.values()),
+    }

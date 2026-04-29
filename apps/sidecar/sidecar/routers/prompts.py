@@ -258,3 +258,134 @@ async def delete_prompt(prompt_id: str, db: AsyncSession = Depends(get_db)):
     await db.delete(prompt)
     await db.commit()
     return {"ok": True}
+
+
+# ── Portable export / import ────────────────────────────────────────────────
+
+
+@router.get("/export")
+async def export_prompts(
+    category: Optional[str] = None,
+    task_type: Optional[str] = None,
+    only_active: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Dump prompts as a portable JSON. Filters mirror the list endpoint
+    so operators can export "just balanced + photo task" subsets.
+
+    The export drops `id`, `parent_id`, `created_at`, `updated_at` and
+    `stats` (those are runtime / per-machine fields). On import, rows
+    are matched by `name` to decide create vs update — see /import."""
+    q = select(Prompt).order_by(Prompt.category, Prompt.name)
+    if category:
+        q = q.where(Prompt.category == category)
+    if task_type:
+        q = q.where(Prompt.task_type == task_type)
+    if only_active:
+        q = q.where(Prompt.is_active == True)
+    rows = (await db.execute(q)).scalars().all()
+    items = []
+    for p in rows:
+        items.append({
+            "name": p.name,
+            "category": p.category,
+            "content": p.content,
+            "is_default": bool(p.is_default),
+            "task_type": p.task_type,
+            "negative_prompt": p.negative_prompt,
+            "variables": p.variables,
+            "tags": p.tags,
+            "is_active": bool(p.is_active),
+            "version": p.version or 1,
+            # Source fields kept for audit trail; on import we tag fresh rows
+            # with source="imported" instead of preserving these.
+            "source": p.source,
+        })
+    return {
+        "_meta": {
+            "lintu_export_kind": "prompts",
+            "version": 1,
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "count": len(items),
+        },
+        "prompts": items,
+    }
+
+
+class ImportPromptsBody(BaseModel):
+    prompts: list[dict[str, Any]] = []
+    # mode='skip_existing' (default): create only prompts whose name doesn't
+    # already exist; existing rows are left alone.
+    # mode='upsert': update existing rows (matched by name) in-place with
+    # the imported content; create the rest.
+    # mode='create_new': always create new rows even when a name collision
+    # exists (caller is OK with duplicates).
+    mode: str = "skip_existing"
+
+
+@router.post("/import")
+async def import_prompts(body: ImportPromptsBody, db: AsyncSession = Depends(get_db)):
+    """Import prompts previously exported (or hand-crafted JSON).
+
+    Returns counts: how many created, updated, skipped, invalid.
+    Each created/updated row is tagged source='imported' for audit.
+    """
+    created = 0
+    updated = 0
+    skipped = 0
+    invalid = 0
+
+    if not body.prompts or not isinstance(body.prompts, list):
+        return {"ok": False, "error": "prompts 字段必须是非空数组"}
+
+    # Pre-fetch existing names → ids for O(1) collision lookup.
+    existing_rows = (await db.execute(select(Prompt.id, Prompt.name))).all()
+    by_name: dict[str, str] = {r[1]: r[0] for r in existing_rows}
+
+    for p in body.prompts:
+        name = (p.get("name") or "").strip()
+        category = (p.get("category") or "").strip()
+        content = p.get("content")
+        if not name or not category or content is None:
+            invalid += 1
+            continue
+
+        if name in by_name and body.mode == "skip_existing":
+            skipped += 1
+            continue
+
+        fields = dict(
+            name=name,
+            category=category,
+            content=content,
+            is_default=bool(p.get("is_default", False)),
+            task_type=p.get("task_type"),
+            negative_prompt=p.get("negative_prompt"),
+            variables=p.get("variables"),
+            tags=p.get("tags"),
+            is_active=bool(p.get("is_active", True)),
+            version=int(p.get("version") or 1),
+            source="imported",
+            updated_at=datetime.utcnow(),
+        )
+
+        if name in by_name and body.mode == "upsert":
+            row = await db.get(Prompt, by_name[name])
+            if row:
+                for k, v in fields.items():
+                    setattr(row, k, v)
+                updated += 1
+        else:
+            row = Prompt(**fields)
+            db.add(row)
+            created += 1
+
+    await db.commit()
+    return {
+        "ok": True,
+        "mode": body.mode,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "invalid": invalid,
+    }
