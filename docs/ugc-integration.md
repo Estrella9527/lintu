@@ -116,7 +116,8 @@ UGC 真正需要的只有 3 个：
   "text": "...",                         // 必填，1-2000 字
   "limit": 8,                            // 默认 8，最大 50
   "strategy": "balanced",                // 可选: precise | balanced | diverse
-  "diversity_mode": "balanced",          // 可选: strict | balanced | none
+  "diversity": "balanced",               // 可选: strict | balanced | none
+  "randomness": 0.0,                     // 0=完全确定（同 query 永远同结果）；0.3-0.5=刷新有变化；1.0=分数带内大幅打乱
   "scope": {
     "primary_project_id": "uuid"         // 推荐传，让我知道这条文案对应哪个景区
   },
@@ -147,7 +148,8 @@ UGC 真正需要的只有 3 个：
 | `scope.primary_project_id` | 主景区。结果只来自这个景区，不跨景区污染 | **强烈建议传** |
 | `filters.source_type` | `original`=拍摄原图；`generated`=AI 生成图 | 不传=全部 |
 | `strategy` | 信号权重预设。`precise`=embedding 主导；`diverse`=多样性主导 | `balanced` |
-| `diversity_mode` | 同一文件夹/同一拍摄序列最多几张 | `balanced`=每组 ≤2 |
+| `diversity` | 同 parent / 同文件夹 / 同 scene+facility tag 组最多几张 | `balanced`=每组 ≤2 |
+| `randomness` | 0=完全确定，每次同结果；0.3-0.5=刷新页面会换一些（推荐生产用）；1.0=分数带内大幅打乱 | `0` — 文案重复时建议升到 0.3-0.5 让用户每次刷新看到新图 |
 
 ### 响应字段（精简）
 
