@@ -134,6 +134,7 @@ CLOUD_RELEVANT_CONFIG_KEYS = (
     "match_default_randomness",
     "match_default_unique_per_source",
     "match_default_no_people",
+    "match_recent_cooldown_size",
     "oss_provider",
     "oss_endpoint",
     "oss_bucket",

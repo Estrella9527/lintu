@@ -105,6 +105,29 @@ async def update_config(body: UpdateConfigBody):
     return {"ok": True}
 
 
+# ── Recently-shown cooldown (per project) admin endpoints ───────────────────
+
+
+@router.post("/match-cooldown/reset")
+async def reset_match_cooldown(project_id: str | None = None):
+    """Clear the server-side recent-shown cooldown buffer.
+    Pass ?project_id=... to scope to one project; omit to wipe all.
+    Useful after content changes or when debugging match results."""
+    from sidecar.engines import recent_shown
+    n = recent_shown.reset(project_id)
+    return {"ok": True, "cleared": n, "project_id": project_id}
+
+
+@router.get("/match-cooldown")
+async def get_match_cooldown_state():
+    """Inspect what the cooldown currently holds (debug endpoint)."""
+    from sidecar.engines import recent_shown as _rs
+    out = {}
+    for pid, buf in _rs._buffers.items():
+        out[pid or "(no-project)"] = {"size": len(buf), "max": buf.maxlen, "ids": list(buf)}
+    return out
+
+
 # ── Portable AI-provider export / import ────────────────────────────────────
 # Operators bringing up a second machine want to copy provider config (relays,
 # default model selections, embedding/general/parser pickers) over without

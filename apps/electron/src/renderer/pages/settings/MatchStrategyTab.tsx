@@ -34,6 +34,7 @@ export function MatchStrategyTab() {
   const [randomness, setRandomness] = useState<string>('0.4')
   const [uniquePerSource, setUniquePerSource] = useState<boolean>(true)
   const [noPeople, setNoPeople] = useState<boolean>(true)
+  const [cooldownSize, setCooldownSize] = useState<string>('20')
 
   // Hydrate form from server config when first loaded.
   useEffect(() => {
@@ -48,6 +49,8 @@ export function MatchStrategyTab() {
     setUniquePerSource(u === undefined ? true : Boolean(u) && String(u).toLowerCase() !== 'false')
     const np = config['match_default_no_people']
     setNoPeople(np === undefined ? true : Boolean(np) && String(np).toLowerCase() !== 'false')
+    const cd = config['match_recent_cooldown_size']
+    setCooldownSize(cd === undefined || cd === null || cd === '' ? '20' : String(cd))
   }, [config])
 
   const saveMutation = useMutation({
@@ -61,13 +64,25 @@ export function MatchStrategyTab() {
 
   const handleSave = () => {
     const r = Math.max(0, Math.min(1, Number(randomness) || 0))
+    const cd = Math.max(0, Math.min(500, Math.floor(Number(cooldownSize) || 0)))
     saveMutation.mutate({
       match_default_strategy: strategy,
       match_default_diversity: diversity,
       match_default_randomness: r,
       match_default_unique_per_source: uniquePerSource,
       match_default_no_people: noPeople,
+      match_recent_cooldown_size: cd,
     })
+  }
+
+  const handleResetCooldown = async () => {
+    try {
+      const r = await fetch('http://localhost:7879/api/config/match-cooldown/reset', { method: 'POST' })
+      const data = await r.json()
+      toast.success(`已清空 cooldown — 释放 ${data.cleared} 个 image_id`)
+    } catch (e: any) {
+      toast.error(`清空失败：${e?.message || e}`)
+    }
   }
 
   if (isLoading) {
@@ -139,6 +154,32 @@ export function MatchStrategyTab() {
           offLabel="关闭 · 允许带人物"
           onChange={setNoPeople}
         />
+      </Section>
+
+      <Section title="近期排除窗口 (recent_cooldown)" hint="服务端为每个景区维护一个滑动队列：最近返回过的 N 张图，之后的匹配自动排除，直到它们滑出队列。专门解决「UGC 文案重复 → 永远是这几张图」的问题。0 = 关闭；20 = 最近 20 张静默期；500 上限（更高会让候选枯竭）。改完立刻生效，与 UGC 端 exclude_ids 叠加工作。">
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={cooldownSize}
+            onChange={(e) => setCooldownSize(e.target.value)}
+            className="flex-1 max-w-[280px] accent-accent"
+          />
+          <Input
+            type="number"
+            min="0"
+            max="500"
+            step="1"
+            value={cooldownSize}
+            onChange={(e) => setCooldownSize(e.target.value)}
+            className="w-20 h-8 text-[12px]"
+          />
+          <Button size="sm" variant="outline" onClick={handleResetCooldown} title="立即清空所有项目的 cooldown 队列（不影响配置值）">
+            清空缓冲
+          </Button>
+        </div>
       </Section>
 
       <div className="pt-2 flex items-center gap-3">

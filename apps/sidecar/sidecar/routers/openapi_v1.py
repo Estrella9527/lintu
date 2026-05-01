@@ -446,6 +446,16 @@ async def match_images(body: MatchBody):
     eff_randomness = float(body.randomness) if body.randomness is not None else _cfg_float("match_default_randomness", 0.0)
     eff_unique_per_source = bool(body.unique_per_source) if body.unique_per_source is not None else _cfg_bool("match_default_unique_per_source", True)
     eff_no_people = bool(body.no_people) if body.no_people is not None else _cfg_bool("match_default_no_people", True)
+    # Server-side recent-shown cooldown: 0 disables, positive N keeps the
+    # last N image_ids returned for this project out of new responses
+    # until they age out of the window. Defaults to 20 — small enough to
+    # not starve common queries, large enough to break the obvious
+    # "always the same 8 images" feeling on repetitive UGC text.
+    eff_cooldown_size = int(_cfg_float("match_recent_cooldown_size", 20))
+    if eff_cooldown_size < 0:
+        eff_cooldown_size = 0
+    if eff_cooldown_size > 500:  # safety cap; bigger windows starve recall
+        eff_cooldown_size = 500
 
     f = body.filters or MatchFiltersBody()
     exclude_tags = dict(f.exclude_tags or {})
@@ -480,6 +490,13 @@ async def match_images(body: MatchBody):
         force_single_project=bool(s.force_single_project),
     )
 
+    # Merge server-side cooldown buffer into exclude_ids. Caller-supplied
+    # ids stay first (they're explicit); cooldown ids are appended.
+    from sidecar.engines import recent_shown
+    cooldown_project_id = scope.primary_project_id or filters.project_id
+    cooldown_ids = recent_shown.get_recent_ids(cooldown_project_id) if eff_cooldown_size > 0 else []
+    merged_exclude = list(dict.fromkeys((body.exclude_ids or []) + cooldown_ids)) or None
+
     import time as _time
     t0 = _time.perf_counter()
     matches, debug = await match_text_to_images(
@@ -491,10 +508,20 @@ async def match_images(body: MatchBody):
         weights_override=body.weights,
         diversity_mode=eff_diversity,
         randomness=max(0.0, min(1.0, eff_randomness)),
-        exclude_ids=body.exclude_ids or None,
+        exclude_ids=merged_exclude,
         unique_per_source=eff_unique_per_source,
     )
     took_ms = int((_time.perf_counter() - t0) * 1000)
+
+    # Record what we just served so the next call (against the same
+    # project) automatically excludes them. Done after the match so a
+    # failure doesn't pollute the cooldown.
+    if eff_cooldown_size > 0 and matches:
+        recent_shown.record_served(
+            cooldown_project_id,
+            (m.id for m in matches),
+            cap=eff_cooldown_size,
+        )
 
     out: list[dict] = []
     for rank, m in enumerate(matches, start=1):
