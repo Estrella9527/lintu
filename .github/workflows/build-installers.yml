@@ -141,7 +141,17 @@ jobs:
           if [ "${{ matrix.platform }}" = "win" ]; then
             npx electron-builder --win --x64 --config electron-builder.yml --publish never
           else
-            npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+            # macOS notarization requires APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD
+            # + APPLE_TEAM_ID. If any of those secrets is empty (i.e. user
+            # hasn't registered Apple Developer yet), produce an unsigned
+            # build instead of failing the whole job.
+            if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+              echo "::warning::APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID not set — building unsigned + un-notarized macOS artifact (Gatekeeper will block on end-user Macs)"
+              npx electron-builder --mac --arm64 --config electron-builder.yml --publish never \
+                -c.mac.notarize=false -c.mac.identity=null
+            else
+              npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+            fi
           fi
 
       - name: List release artifacts
@@ -165,7 +175,9 @@ jobs:
           }
 
       - name: Verify macOS signature + notarization
-        if: matrix.platform == 'mac' && steps.sign-setup.outputs.csc_link != ''
+        if: matrix.platform == 'mac' && steps.sign-setup.outputs.csc_link != '' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
         shell: bash
         working-directory: apps/electron
         run: |
