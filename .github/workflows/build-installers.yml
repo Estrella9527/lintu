@@ -179,7 +179,8 @@ jobs:
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature $f
             Write-Host "$f -> $($sig.Status)"
-            if ($sig.Status -ne "Valid") { throw "Signature check failed for $f: $($sig.Status)" }
+            # ${f}: instead of $f: — PowerShell otherwise reads $f: as a drive scope
+            if ($sig.Status -ne "Valid") { throw "Signature check failed for ${f}: $($sig.Status)" }
           }
 
       - name: Verify macOS signature + notarization
@@ -208,55 +209,59 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ── Set up ossutil (per-OS binary) ────────────────────────────────────
-      - name: Set up ossutil (Windows)
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'win'
-        shell: pwsh
-        run: |
-          $url = "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\ossutil.exe"
-          "$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Set up ossutil (macOS)
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'mac'
-        shell: bash
-        run: |
-          curl -sL "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutilmac64" -o "$RUNNER_TEMP/ossutil"
-          chmod +x "$RUNNER_TEMP/ossutil"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      # ── Publish to OSS (only on tag push: v*) ─────────────────────────────
+      # ── Publish to Aliyun OSS (only on tag push: v*) ─────────────────────
+      # Cross-platform via the oss2 Python SDK rather than the ossutil CLI.
+      # ossutil 1.x has no native macOS-arm64 build, and 2.x distributes as
+      # zip with platform-specific archive names — both add fragile shell
+      # plumbing. Python is already set up by an earlier step on both OSes;
+      # using oss2 keeps this step ~10 lines and identical between Win/Mac.
       - name: Publish to Aliyun OSS
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
-          OSS_KEY:      ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          OSS_SECRET:   ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          OSS_BUCKET:   ${{ secrets.ALIYUN_OSS_BUCKET }}
-          OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          OSS_KEY:        ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          OSS_SECRET:     ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET:     ${{ secrets.ALIYUN_OSS_BUCKET }}
+          OSS_ENDPOINT:   ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          OSS_PATH:       ${{ matrix.oss_path }}
+          UPDATE_YML:     ${{ matrix.update_yml }}
         working-directory: apps/electron
         run: |
-          bucket="${OSS_BUCKET:-lintu-releases}"
-          endpoint="${OSS_ENDPOINT:-oss-cn-hangzhou.aliyuncs.com}"
-          dest="oss://$bucket/${{ matrix.oss_path }}/"
+          python -m pip install --quiet "oss2>=2.18"
+          python <<'PY'
+          import glob, os, sys
+          import oss2
 
-          # ossutil binary differs by OS but the CLI flags are identical.
-          if [ "${{ matrix.platform }}" = "win" ]; then
-            OSS=ossutil.exe
-          else
-            OSS=ossutil
-          fi
+          bucket_name = os.environ.get("OSS_BUCKET") or "lintu-releases"
+          endpoint    = os.environ.get("OSS_ENDPOINT") or "oss-cn-hangzhou.aliyuncs.com"
+          oss_path    = os.environ["OSS_PATH"]            # "windows" or "mac"
+          update_yml  = os.environ["UPDATE_YML"]          # "latest.yml" or "latest-mac.yml"
 
-          $OSS config -e "$endpoint" -i "$OSS_KEY" -k "$OSS_SECRET" -L EN
+          auth   = oss2.Auth(os.environ["OSS_KEY"], os.environ["OSS_SECRET"])
+          bucket = oss2.Bucket(auth, f"https://{endpoint}", bucket_name)
 
-          # Upload all files matching 灵图-* (.exe / .dmg / .zip / .blockmap)
-          # plus the platform's update YAML. Use --acl public-read so
-          # electron-updater can fetch without signed URLs.
-          for f in release/灵图-* release/${{ matrix.update_yml }}; do
-            [ -f "$f" ] && $OSS cp "$f" "$dest" -f --acl public-read
-          done
+          # Match installer + blockmap + the platform's update yml. Glob is
+          # fine; release/ is a clean output dir produced this run only.
+          targets = sorted(set(glob.glob("release/灵图-*"))) + [f"release/{update_yml}"]
+          public_read = {"x-oss-object-acl": "public-read"}
 
-          $OSS ls "$dest"
+          uploaded = []
+          for path in targets:
+              if not os.path.isfile(path):
+                  print(f"  skip (missing): {path}")
+                  continue
+              key = f"{oss_path}/{os.path.basename(path)}"
+              size_mb = os.path.getsize(path) / 1024 / 1024
+              print(f"  uploading {key} ({size_mb:.1f} MB)")
+              bucket.put_object_from_file(key, path, headers=public_read)
+              uploaded.append(key)
+
+          if not uploaded:
+              print("nothing uploaded — refusing to silently succeed", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"\n✓ {len(uploaded)} file(s) live at oss://{bucket_name}/{oss_path}/")
+          PY
 
   # ── Aggregate release on tag push ───────────────────────────────────────────
   release:
