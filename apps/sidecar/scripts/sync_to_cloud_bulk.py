@@ -210,26 +210,9 @@ async def push_tag_schema(client: httpx.AsyncClient) -> int:
 # also push the general/parser providers so cloud's optional query
 # expansion works. We DO NOT push OSS keys or generation providers
 # because cloud doesn't upload or generate.
-_CLOUD_RELEVANT_KEYS = (
-    "default_image_embedding_provider",
-    "image_embedding_model_override",
-    "default_general_provider",
-    "default_parser_provider",
-    "general_provider_model",
-    "parser_provider_model",
-    "custom_relays",
-    "match_strategy_weights",
-    "match_max_limit",
-    # OSS read-only fields. We deliberately DO NOT push oss_access_key /
-    # oss_access_secret — cloud sidecar never uploads, and is_read_configured()
-    # is satisfied by endpoint+bucket alone, so URL synthesis works without
-    # leaking write credentials to the read-only deployment.
-    "oss_provider",
-    "oss_endpoint",
-    "oss_bucket",
-    "oss_cdn_base",
-    "oss_signed_url_ttl_sec",
-)
+# Single source of truth lives in cloud_sync_worker.CLOUD_RELEVANT_CONFIG_KEYS
+# so manual bulk pushes and the auto-sync worker stay in lockstep.
+from sidecar.scheduler.cloud_sync_worker import CLOUD_RELEVANT_CONFIG_KEYS as _CLOUD_RELEVANT_KEYS  # noqa: E402
 
 
 async def push_config(client: httpx.AsyncClient) -> int:

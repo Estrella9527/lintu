@@ -109,6 +109,40 @@ async def enqueue_tag_schema_replace() -> None:
     await _enqueue("tag_schema", None, "upsert")
 
 
+async def enqueue_config_replace() -> None:
+    """Push the cloud-relevant subset of config.json to cloud's settings.
+    Called from /api/config PUT so operator-tuned defaults (match strategy
+    knobs etc) reach the cloud sidecar without a manual bulk-script run."""
+    await _enqueue("config", None, "upsert")
+
+
+# Keys that get pushed when config changes. Shared with sync_to_cloud_bulk.py
+# so manual + automatic pushes stay consistent. NEVER include OSS write
+# credentials (oss_access_key / oss_access_secret) — cloud is read-only.
+CLOUD_RELEVANT_CONFIG_KEYS = (
+    "default_image_embedding_provider",
+    "image_embedding_model_override",
+    "default_general_provider",
+    "default_parser_provider",
+    "general_provider_model",
+    "parser_provider_model",
+    "custom_relays",
+    "match_strategy_weights",
+    "match_max_limit",
+    "match_default_strategy",
+    "match_default_diversity",
+    "match_default_randomness",
+    "match_default_unique_per_source",
+    "match_default_no_people",
+    "match_recent_cooldown_size",
+    "oss_provider",
+    "oss_endpoint",
+    "oss_bucket",
+    "oss_cdn_base",
+    "oss_signed_url_ttl_sec",
+)
+
+
 # ── Worker ─────────────────────────────────────────────────────────────────
 
 
@@ -243,6 +277,10 @@ class CloudSyncWorker:
             elif entity_type == "tag_schema":
                 payload = self._build_tag_schema_payload()
                 await self._post(client, f"{url_base}/internal/sync/tag-schema", payload)
+            elif entity_type == "config":
+                payload = self._build_config_payload()
+                if payload["settings"]:
+                    await self._post(client, f"{url_base}/internal/sync/config", payload)
             else:
                 raise ValueError(f"unknown entity_type for upsert: {entity_type}")
         elif op == "delete":
@@ -356,6 +394,20 @@ class CloudSyncWorker:
     def _build_tag_schema_payload() -> dict:
         from sidecar.routers.tag_schema import _read_schema
         return {"schema": _read_schema()}
+
+    @staticmethod
+    def _build_config_payload() -> dict:
+        """Read local config.json, return only the cloud-relevant subset.
+        OSS write credentials are explicitly excluded — see CLOUD_RELEVANT_CONFIG_KEYS."""
+        from sidecar.defaults import CONFIG_FILE
+        if not CONFIG_FILE.exists():
+            return {"settings": {}}
+        try:
+            full = json.loads(CONFIG_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {"settings": {}}
+        subset = {k: full[k] for k in CLOUD_RELEVANT_CONFIG_KEYS if k in full}
+        return {"settings": subset}
 
     async def _mark_done(self, ids: list[int]) -> None:
         async with async_session() as db:

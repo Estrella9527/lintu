@@ -419,13 +419,51 @@ async def match_images(body: MatchBody):
         )
     limit = max(1, min(int(body.limit or 8), int(get_setting("match_max_limit") or 50)))
 
+    # ── Operator-tuned defaults ────────────────────────────────────────
+    # UGC clients normally just send {text, scope, limit, exclude_ids}.
+    # Everything below is configured server-side via /internal/sync/config
+    # (or directly in config.json). The body field overrides the default
+    # only when explicitly set — None means "use operator default".
+    def _cfg_bool(key: str, default: bool) -> bool:
+        v = get_setting(key)
+        if v is None or v == "": return default
+        if isinstance(v, bool): return v
+        return str(v).lower() in ("1", "true", "yes", "on")
+
+    def _cfg_float(key: str, default: float) -> float:
+        v = get_setting(key)
+        try:
+            return float(v) if v not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+
+    def _cfg_str(key: str, default: str) -> str:
+        v = get_setting(key)
+        return str(v) if v not in (None, "") else default
+
+    eff_strategy = body.strategy or _cfg_str("match_default_strategy", "balanced")
+    eff_diversity = body.diversity or _cfg_str("match_default_diversity", "balanced")
+    eff_randomness = float(body.randomness) if body.randomness is not None else _cfg_float("match_default_randomness", 0.0)
+    eff_unique_per_source = bool(body.unique_per_source) if body.unique_per_source is not None else _cfg_bool("match_default_unique_per_source", True)
+    eff_no_people = bool(body.no_people) if body.no_people is not None else _cfg_bool("match_default_no_people", True)
+    # Server-side recent-shown cooldown: 0 disables, positive N keeps the
+    # last N image_ids returned for this project out of new responses
+    # until they age out of the window. Defaults to 20 — small enough to
+    # not starve common queries, large enough to break the obvious
+    # "always the same 8 images" feeling on repetitive UGC text.
+    eff_cooldown_size = int(_cfg_float("match_recent_cooldown_size", 20))
+    if eff_cooldown_size < 0:
+        eff_cooldown_size = 0
+    if eff_cooldown_size > 500:  # safety cap; bigger windows starve recall
+        eff_cooldown_size = 500
+
     f = body.filters or MatchFiltersBody()
     exclude_tags = dict(f.exclude_tags or {})
     # Default-on `no_people`: exclude any image whose people tag is anything
     # other than "无人" (or absent). Stops UGC from showing tourist faces in
     # match results — those are the operator's photos but become other
     # people's faces from the UGC user's perspective.
-    if body.no_people is None or bool(body.no_people):
+    if eff_no_people:
         existing_people = set(exclude_tags.get("people") or [])
         existing_people.update(["少量游客", "人群", "儿童", "工作人员"])
         exclude_tags["people"] = list(existing_people)
@@ -452,6 +490,13 @@ async def match_images(body: MatchBody):
         force_single_project=bool(s.force_single_project),
     )
 
+    # Merge server-side cooldown buffer into exclude_ids. Caller-supplied
+    # ids stay first (they're explicit); cooldown ids are appended.
+    from sidecar.engines import recent_shown
+    cooldown_project_id = scope.primary_project_id or filters.project_id
+    cooldown_ids = recent_shown.get_recent_ids(cooldown_project_id) if eff_cooldown_size > 0 else []
+    merged_exclude = list(dict.fromkeys((body.exclude_ids or []) + cooldown_ids)) or None
+
     import time as _time
     t0 = _time.perf_counter()
     matches, debug = await match_text_to_images(
@@ -459,14 +504,24 @@ async def match_images(body: MatchBody):
         limit=limit,
         filters=filters,
         scope=scope,
-        strategy=body.strategy or "balanced",
+        strategy=eff_strategy,
         weights_override=body.weights,
-        diversity_mode=body.diversity or "balanced",
-        randomness=max(0.0, min(1.0, float(body.randomness or 0.0))),
-        exclude_ids=body.exclude_ids or None,
-        unique_per_source=True if body.unique_per_source is None else bool(body.unique_per_source),
+        diversity_mode=eff_diversity,
+        randomness=max(0.0, min(1.0, eff_randomness)),
+        exclude_ids=merged_exclude,
+        unique_per_source=eff_unique_per_source,
     )
     took_ms = int((_time.perf_counter() - t0) * 1000)
+
+    # Record what we just served so the next call (against the same
+    # project) automatically excludes them. Done after the match so a
+    # failure doesn't pollute the cooldown.
+    if eff_cooldown_size > 0 and matches:
+        recent_shown.record_served(
+            cooldown_project_id,
+            (m.id for m in matches),
+            cap=eff_cooldown_size,
+        )
 
     out: list[dict] = []
     for rank, m in enumerate(matches, start=1):

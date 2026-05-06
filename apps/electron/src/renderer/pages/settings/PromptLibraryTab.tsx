@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { FileText, FileUp, GitBranch, Pencil, Plus, Search, Star, Trash2, Upload, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
 
 const API = 'http://localhost:7879/api/prompts'
 const DOCS_API = 'http://localhost:7879/api/prompt-docs'
@@ -158,7 +159,14 @@ export function PromptLibraryTab() {
           </select>
         )}
         <span className="text-[12px] text-foreground/40">{prompts?.length ?? 0} 个模板</span>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex gap-2 items-center">
+          <ExportImportButtons
+            domainLabel="提示词模板"
+            exportPath="/prompts/export"
+            importPath="/prompts/import"
+            exportFilename="lintu-prompts.json"
+            onImportDone={() => queryClient.invalidateQueries({ queryKey: ['prompts'] })}
+          />
           <Button
             size="sm"
             variant="outline"

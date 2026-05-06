@@ -130,8 +130,13 @@ async def expand_query(text: str, *, timeout_sec: float = 1.5) -> list[str]:
         keywords = []
 
     if not keywords:
-        # Fallback: return [text] so caller sees it and treats as no-expansion.
-        # NOT cached — next call will retry the LLM.
+        # Cache the failure for a short window. Without this, every match call
+        # re-pays the full timeout (~1.5s) when the LLM relay is slow — each
+        # request becomes a guaranteed timeout, hiding any chance of recall
+        # benefit. With a 5min "no-LLM" mark we still retry periodically so
+        # transient relay outages self-recover, but a sustained slowdown only
+        # costs us latency once per 5min instead of every call.
+        await _cache.put(cache_key, [text])
         return [text]
 
     # Always include the raw query at the front so direct hits aren't missed

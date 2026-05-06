@@ -111,35 +111,45 @@ UGC 真正需要的只有 3 个：
 
 ### 请求体（JSON）
 
+**UGC 生产正常只需要传 `text + limit + scope + exclude_ids`**，所有调优（策略 / 多样性 / 随机度 / 同源去重 / 排除人物）都由运营在后台配置，UGC 不需要也不该关心：
+
 ```jsonc
 {
-  "text": "...",                         // 必填，1-2000 字
-  "limit": 8,                            // 默认 8，最大 50
-  "strategy": "balanced",                // 可选: precise | balanced | diverse
-  "diversity": "balanced",               // 可选: strict | balanced | none
-  "randomness": 0.0,                     // 0=完全确定（同 query 永远同结果）；0.3-0.5=刷新有变化；1.0=分数带内大幅打乱
-  "unique_per_source": true,             // 默认 true：同一原图 + 它的所有 AI 风格化变体最多出 1 张代表
-  "exclude_ids": ["uuid1","uuid2",...]   // 上次返回的 image_id 列表 — 后端会跳过，让用户每次刷新看到全新一组
-  "scope": {
-    "primary_project_id": "uuid"         // 推荐传，让我知道这条文案对应哪个景区
-  },
-  "filters": {                           // 可选过滤
-    "source_type": "original",           // original | generated（不传=全部）
-    "scene": ["山地景观", "玻璃滑道"],     // 限定 scene 维度（白名单）
-    "season": ["夏季"],                  // 限定 season
-    "exclude_tags": {                    // 排除某些标签（黑名单）
-      "weather": ["雨天"]
-    }
-  },
-  "weights": {                           // 高级：自定义信号权重
-    "embedding": 0.45,
-    "tag": 0.30,
-    "quality": 0.10,
-    "diversity": 0.10,
-    "business": 0.05
-  }
+  "text": "...",                         // 必填
+  "limit": 8,                            // 默认 8
+  "scope": { "primary_project_id": "uuid" },  // 推荐传
+  "exclude_ids": ["uuid1","uuid2",...]   // 推荐传（已展示过的 image_id），实现"刷新就有新图"
 }
 ```
+
+如果你确实需要临时覆盖某个调优（**仅在评测/对比场景**），可以传以下任一字段；不传就用服务端配置的默认：
+
+```jsonc
+{
+  "text": "...",
+  "limit": 8,
+  "scope": { "primary_project_id": "uuid" },
+
+  // 以下都是「可选覆盖」，UGC 生产环境不需要传 —— 留空走运营调好的服务端默认
+  "strategy": "balanced",                // precise | balanced | diverse
+  "diversity": "balanced",               // strict | balanced | none
+  "randomness": 0.4,                     // 0-1，越大每次刷新差异越大
+  "unique_per_source": true,             // 同一原图 + 它的 AI 变体最多出 1 张
+  "no_people": true,                     // 排除带游客 / 人群 / 儿童 / 工作人员的图
+
+  // 以下是真业务过滤（不属于"调优"，按需传）：
+  "filters": {
+    "source_type": "original",           // original | generated（不传=全部）
+    "scene": ["山地景观"],                 // 限定维度白名单
+    "exclude_tags": { "weather": ["雨天"] }
+  },
+
+  // 高级：极少用到
+  "weights": { "embedding": 0.45, "tag": 0.30, "quality": 0.05, "diversity": 0.13, "business": 0.02 }
+}
+```
+
+**这意味着**：运营改了策略调优（比如把 randomness 从 0.4 改成 0.6 让结果更多样），UGC **不用改一行代码**就立刻享受新策略。
 
 ### 字段语义速查
 
