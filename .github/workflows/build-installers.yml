@@ -168,6 +168,12 @@ jobs:
         run: ls -la release/ || true
 
       # ── Verify signature (only when we actually signed) ───────────────────
+      # For self-signed certs the runner returns Status=UnknownError because
+      # the cert isn't in its trust store — the signing itself is fine. Real
+      # failures are NotSigned / HashMismatch (file tampered or signtool
+      # silently no-op'd). Validate by checking the SignerCertificate exists
+      # and matches our subject; promote to a strict "Valid" check once we
+      # switch to a CA-issued (EV) cert.
       - name: Verify Windows signature
         if: matrix.platform == 'win' && steps.sign-setup.outputs.csc_link != ''
         shell: pwsh
@@ -178,9 +184,17 @@ jobs:
           )
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature $f
-            Write-Host "$f -> $($sig.Status)"
-            # ${f}: instead of $f: — PowerShell otherwise reads $f: as a drive scope
-            if ($sig.Status -ne "Valid") { throw "Signature check failed for ${f}: $($sig.Status)" }
+            $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "<none>" }
+            Write-Host "${f}: Status=$($sig.Status) | Signer=$signer"
+            if ($sig.Status -eq "NotSigned" -or $sig.Status -eq "HashMismatch") {
+              throw "Signature check failed for ${f}: $($sig.Status)"
+            }
+            if ($sig.SignerCertificate -eq $null) {
+              throw "No signer certificate on ${f}"
+            }
+            if (-not $sig.SignerCertificate.Subject.Contains("Longchan Tech")) {
+              throw "Wrong signer subject for ${f}: $signer"
+            }
           }
 
       - name: Verify macOS signature + notarization
