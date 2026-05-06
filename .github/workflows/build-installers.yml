@@ -85,7 +85,15 @@ jobs:
 
       # ── Electron (Node) ───────────────────────────────────────────────────
       - name: Install npm deps
-        run: npm install --no-fund --no-audit
+        # npm has a long-standing bug with platform-specific optional deps in
+        # cross-platform lockfiles (https://github.com/npm/cli/issues/4828).
+        # Our package-lock.json is generated on Windows so it lacks
+        # @rollup/rollup-darwin-arm64; vite then crashes on macOS at build
+        # time with MODULE_NOT_FOUND. Workaround: ignore the lockfile in CI
+        # (--no-package-lock). Local dev still uses the lockfile via
+        # `npm install` from a project root.
+        shell: bash
+        run: npm install --no-fund --no-audit --no-package-lock
 
       - name: Bundle main / preload / renderer
         working-directory: apps/electron
