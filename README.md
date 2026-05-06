@@ -127,17 +127,17 @@ uv run alembic upgrade head
 
 ## 构建生产包
 
-打包 + 自动更新链路已经全部落地：Windows 走 NSIS .exe，macOS 走 dmg + zip，签名 + 公证 + 阿里云 OSS 自动上传 + electron-updater 自动推送。日常发版只要改版本号 + 推 tag。
+打包 + 自动更新链路已经全部落地：Windows 走 NSIS .exe，macOS 走 dmg + zip，签名 + 公证 + 阿里云 OSS 自动上传 + electron-updater 自动推送。日常发版一行命令：
 
 ```bash
-# 改 apps/electron/package.json 的 version
-git tag v0.1.x
-git push origin v0.2 --tags
-# CI 同时在 windows-latest 和 macos-latest runner 上构建，
-# 上传到 oss://lintu-releases/{windows,mac}/
+./scripts/release.sh patch              # 0.1.1 → 0.1.2
+./scripts/release.sh minor              # 0.1.1 → 0.2.0
+./scripts/release.sh 0.2.5 "热修匹配 bug"  # 自定义版本号 + 提交信息
 ```
 
-本地手动打包（一般不需要，CI 已自动化）：
+脚本会自动：bump version → commit → tag → push → 守 CI 跑完。CI 同时在 `windows-latest` 和 `macos-latest` runner 上构建并上传到 `oss://lintu-releases/{windows,mac}/`。装机用户在下次启动后 10 秒自动收到推送。
+
+本地手动打包（CI 自动化后一般不需要）：
 
 | 平台 | 脚本 |
 |---|---|
