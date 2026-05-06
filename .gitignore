@@ -14,6 +14,11 @@ release/
 apps/electron/release/
 apps/sidecar/dist/
 apps/sidecar/build/
-*.spec
 .pytest_cache/
 .ruff_cache/
+
+# Code signing material — NEVER commit private keys
+apps/electron/build/codesign.pfx
+apps/electron/build/codesign.cer
+apps/electron/build/*.pfx
+apps/electron/build/*.p12

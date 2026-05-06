@@ -1,0 +1,259 @@
+name: Build installers (Windows + macOS)
+
+# Triggers:
+#   - manual run from the Actions tab
+#   - any tag matching v*  (auto-build on a release tag)
+#   - push to default branch v0.2 that touches build-relevant paths
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: ["v0.2"]
+    paths:
+      - "apps/electron/**"
+      - "apps/sidecar/**"
+      - ".github/workflows/build-installers.yml"
+
+permissions:
+  contents: write   # needed only for the optional release step on tag push
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact_name: lintu-windows-x64
+            update_yml: latest.yml
+            oss_path: windows
+          - os: macos-latest
+            platform: mac
+            artifact_name: lintu-macos-arm64
+            update_yml: latest-mac.yml
+            oss_path: mac
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Toolchain ─────────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # ── Sidecar (Python) ──────────────────────────────────────────────────
+      - name: Sync sidecar deps
+        working-directory: apps/sidecar
+        run: uv sync
+
+      - name: Add PyInstaller
+        working-directory: apps/sidecar
+        run: uv add --dev pyinstaller
+
+      - name: Build sidecar with PyInstaller
+        working-directory: apps/sidecar
+        run: uv run pyinstaller sidecar.spec --noconfirm --clean
+
+      - name: Verify sidecar binary exists
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            test -f apps/sidecar/dist/sidecar/sidecar.exe || (echo "Missing sidecar.exe" && exit 1)
+            ls -la apps/sidecar/dist/sidecar/sidecar.exe
+          else
+            test -f apps/sidecar/dist/sidecar/sidecar || (echo "Missing sidecar" && exit 1)
+            chmod +x apps/sidecar/dist/sidecar/sidecar
+            ls -la apps/sidecar/dist/sidecar/sidecar
+          fi
+
+      # ── Electron (Node) ───────────────────────────────────────────────────
+      - name: Install npm deps
+        run: npm install --no-fund --no-audit
+
+      - name: Bundle main / preload / renderer
+        working-directory: apps/electron
+        shell: bash
+        run: |
+          npx esbuild src/main/index.ts    --bundle --platform=node --format=cjs --outfile=dist/main.cjs    --external:electron
+          npx esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron
+          npx vite build --config vite.config.ts
+
+      # ── Decode signing certificate (per-platform) ─────────────────────────
+      # Windows .pfx and macOS .p12 are both PKCS#12 — we decode either one
+      # the same way. The Windows secret holds a self-signed cert we made
+      # locally; the macOS secret holds the Apple Developer ID Application
+      # certificate exported from Keychain.
+      - name: Decode code-signing certificate
+        id: sign-setup
+        if: |
+          (matrix.platform == 'win' && env.WIN_CSC_BASE64 != '') ||
+          (matrix.platform == 'mac' && env.MAC_CSC_BASE64 != '')
+        shell: bash
+        env:
+          WIN_CSC_BASE64: ${{ secrets.WIN_CODESIGN_PFX_BASE64 }}
+          MAC_CSC_BASE64: ${{ secrets.MAC_CODESIGN_P12_BASE64 }}
+        run: |
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            ext=pfx
+            content="$WIN_CSC_BASE64"
+          else
+            ext=p12
+            content="$MAC_CSC_BASE64"
+          fi
+          path="$RUNNER_TEMP/codesign.$ext"
+          echo "$content" | base64 --decode > "$path"
+          echo "csc_link=$path" >> "$GITHUB_OUTPUT"
+          echo "Code-signing cert decoded ($ext) to $path"
+
+      # ── Build installer (electron-builder) ────────────────────────────────
+      - name: Build installer
+        working-directory: apps/electron
+        env:
+          # PFX/P12 path + password — same env names work for both platforms.
+          CSC_LINK:         ${{ steps.sign-setup.outputs.csc_link }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WIN_CODESIGN_PFX_PASSWORD || secrets.MAC_CODESIGN_P12_PASSWORD }}
+
+          # macOS notarization (ignored on Windows).
+          # electron-builder reads these to call Apple's notary service after
+          # signing. App-specific password generated at appleid.apple.com.
+          APPLE_ID:                   ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID:              ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            npx electron-builder --win --x64 --config electron-builder.yml --publish never
+          else
+            npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+          fi
+
+      - name: List release artifacts
+        shell: bash
+        working-directory: apps/electron
+        run: ls -la release/ || true
+
+      # ── Verify signature (only when we actually signed) ───────────────────
+      - name: Verify Windows signature
+        if: matrix.platform == 'win' && steps.sign-setup.outputs.csc_link != ''
+        shell: pwsh
+        run: |
+          $files = @(
+            "apps/electron/release/win-unpacked/灵图.exe",
+            "apps/electron/release/win-unpacked/resources/sidecar/sidecar.exe"
+          )
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f -> $($sig.Status)"
+            if ($sig.Status -ne "Valid") { throw "Signature check failed for $f: $($sig.Status)" }
+          }
+
+      - name: Verify macOS signature + notarization
+        if: matrix.platform == 'mac' && steps.sign-setup.outputs.csc_link != ''
+        shell: bash
+        working-directory: apps/electron
+        run: |
+          dmg=$(ls release/灵图-*-arm64.dmg | head -1)
+          echo "Verifying: $dmg"
+          codesign --verify --deep --strict --verbose=2 "release/mac-arm64/灵图.app"
+          spctl --assess --type execute --verbose=2 "release/mac-arm64/灵图.app" || true
+          # stapler verifies the notarization ticket is attached to the dmg
+          xcrun stapler validate "$dmg"
+
+      # ── Upload artifacts (always, on every successful build) ──────────────
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            apps/electron/release/灵图-*
+            apps/electron/release/${{ matrix.update_yml }}
+            apps/electron/release/builder-debug.yml
+          retention-days: 30
+          if-no-files-found: error
+
+      # ── Set up ossutil (per-OS binary) ────────────────────────────────────
+      - name: Set up ossutil (Windows)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $url = "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\ossutil.exe"
+          "$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Set up ossutil (macOS)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'mac'
+        shell: bash
+        run: |
+          curl -sL "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutilmac64" -o "$RUNNER_TEMP/ossutil"
+          chmod +x "$RUNNER_TEMP/ossutil"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # ── Publish to OSS (only on tag push: v*) ─────────────────────────────
+      - name: Publish to Aliyun OSS
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          OSS_KEY:      ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          OSS_SECRET:   ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET:   ${{ secrets.ALIYUN_OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+        working-directory: apps/electron
+        run: |
+          bucket="${OSS_BUCKET:-lintu-releases}"
+          endpoint="${OSS_ENDPOINT:-oss-cn-hangzhou.aliyuncs.com}"
+          dest="oss://$bucket/${{ matrix.oss_path }}/"
+
+          # ossutil binary differs by OS but the CLI flags are identical.
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            OSS=ossutil.exe
+          else
+            OSS=ossutil
+          fi
+
+          $OSS config -e "$endpoint" -i "$OSS_KEY" -k "$OSS_SECRET" -L EN
+
+          # Upload all files matching 灵图-* (.exe / .dmg / .zip / .blockmap)
+          # plus the platform's update YAML. Use --acl public-read so
+          # electron-updater can fetch without signed URLs.
+          for f in release/灵图-* release/${{ matrix.update_yml }}; do
+            [ -f "$f" ] && $OSS cp "$f" "$dest" -f --acl public-read
+          done
+
+          $OSS ls "$dest"
+
+  # ── Aggregate release on tag push ───────────────────────────────────────────
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/lintu-windows-x64/*
+            artifacts/lintu-macos-arm64/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

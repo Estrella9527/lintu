@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { dirname, join } from 'path'
-import { mkdirSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
 import { spawn, execSync, type ChildProcess } from 'child_process'
 
 const isDev = !app.isPackaged
+const isWin = process.platform === 'win32'
 const SIDECAR_PORT = 7879
 
 let mainWindow: BrowserWindow | null = null
@@ -20,14 +22,46 @@ let pyProcess: ChildProcess | null = null
 
 function killPortOccupant() {
   try {
-    const pid = execSync(`lsof -ti :${SIDECAR_PORT}`, { encoding: 'utf8' }).trim()
-    if (pid) {
-      console.log(`[sidecar] killing stale process on port ${SIDECAR_PORT}: pid ${pid}`)
-      execSync(`kill -9 ${pid}`)
+    if (isWin) {
+      // netstat -ano lists "  TCP  127.0.0.1:7879  ...  LISTENING  <PID>"
+      const out = execSync(`netstat -ano -p tcp`, { encoding: 'utf8' })
+      const pids = new Set<string>()
+      for (const line of out.split(/\r?\n/)) {
+        if (!/LISTENING/.test(line)) continue
+        if (!new RegExp(`[:.]${SIDECAR_PORT}\\b`).test(line)) continue
+        const pid = line.trim().split(/\s+/).pop()
+        if (pid && /^\d+$/.test(pid) && pid !== '0') pids.add(pid)
+      }
+      for (const pid of pids) {
+        console.log(`[sidecar] killing stale process on port ${SIDECAR_PORT}: pid ${pid}`)
+        try { execSync(`taskkill /F /PID ${pid}`) } catch { /* already gone */ }
+      }
+    } else {
+      const pid = execSync(`lsof -ti :${SIDECAR_PORT}`, { encoding: 'utf8' }).trim()
+      if (pid) {
+        console.log(`[sidecar] killing stale process on port ${SIDECAR_PORT}: pid ${pid}`)
+        execSync(`kill -9 ${pid}`)
+      }
     }
   } catch {
     // No process on port — good
   }
+}
+
+function findUvBin(): string | null {
+  // uv installs into ~/.local/bin on macOS/Linux and %USERPROFILE%\.local\bin on Windows.
+  // Pip-installed uv lands in <Python>/Scripts on Windows.
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  const candidates = isWin
+    ? [
+        join(home, '.local', 'bin', 'uv.exe'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'Scripts', 'uv.exe'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python313', 'Scripts', 'uv.exe'),
+        join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python312', 'Scripts', 'uv.exe'),
+      ]
+    : [join(home, '.local', 'bin', 'uv'), '/opt/homebrew/bin/uv', '/usr/local/bin/uv']
+  for (const c of candidates) if (existsSync(c)) return c
+  return null
 }
 
 function startSidecar() {
@@ -39,21 +73,43 @@ function startSidecar() {
   console.log(`[sidecar] cwd: ${sidecarDir}`)
 
   if (isDev) {
-    // Dev: use uv run uvicorn
-    const uvBin = (process.env.HOME || '') + '/.local/bin/uv'
+    // Dev: use `uv run uvicorn ...`
+    const uvBin = findUvBin()
+    if (!uvBin) {
+      dialog.showErrorBox(
+        '启动失败',
+        '未找到 uv（Python 包管理器）。请安装 uv：\n\n' +
+          '  macOS / Linux: curl -LsSf https://astral.sh/uv/install.sh | sh\n' +
+          '  Windows:        irm https://astral.sh/uv/install.ps1 | iex',
+      )
+      app.quit()
+      return
+    }
     console.log(`[sidecar] launching: ${uvBin} run uvicorn ...`)
-    pyProcess = spawn(uvBin, ['run', 'uvicorn', 'sidecar.main:app', '--port', String(SIDECAR_PORT), '--host', '127.0.0.1'], {
-      cwd: sidecarDir,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-      shell: false,
-    })
+    pyProcess = spawn(
+      uvBin,
+      ['run', 'uvicorn', 'sidecar.main:app', '--port', String(SIDECAR_PORT), '--host', '127.0.0.1'],
+      {
+        cwd: sidecarDir,
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        shell: false,
+      },
+    )
   } else {
-    // Prod: use bundled python
-    const pythonBin = join(sidecarDir, 'python')
-    pyProcess = spawn(pythonBin, ['-m', 'uvicorn', 'sidecar.main:app', '--port', String(SIDECAR_PORT)], {
-      cwd: sidecarDir,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    })
+    // Prod: use PyInstaller-bundled sidecar binary.
+    // Layout: <resources>/sidecar/sidecar(.exe)  + <resources>/sidecar/_internal/
+    const sidecarBin = join(sidecarDir, isWin ? 'sidecar.exe' : 'sidecar')
+    console.log(`[sidecar] launching bundled: ${sidecarBin}`)
+    pyProcess = spawn(
+      sidecarBin,
+      ['--port', String(SIDECAR_PORT), '--host', '127.0.0.1'],
+      {
+        cwd: sidecarDir,
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        // Hide stray console window on Windows
+        windowsHide: true,
+      },
+    )
   }
 
   pyProcess.stdout?.on('data', (data: Buffer) => {
@@ -131,7 +187,10 @@ function watchSidecarSources() {
   }
 }
 
-async function waitForSidecar(timeout = 15000): Promise<boolean> {
+async function waitForSidecar(timeout = 90000): Promise<boolean> {
+  // 90s default — first launch on Windows runs every Alembic migration from
+  // baseline against a fresh SQLite DB, which can take 20-40s on slow disks.
+  // Subsequent launches hit /health within ~2s.
   const start = Date.now()
   while (Date.now() - start < timeout) {
     try {
@@ -232,6 +291,58 @@ ipcMain.handle('open-file', async (_event, filePath: string) => {
   shell.openPath(filePath)
 })
 
+// ── Auto-update (path C: silent check + silent download + restart prompt) ──
+//
+// Boot timeline:
+//   t=0      app.whenReady → spawn sidecar → wait for /health
+//   t=ready  open main window
+//   t+10s    autoUpdater.checkForUpdates() — quiet check, no UI noise
+//   t+~30s   if update available, download finishes silently in background
+//   t+done   notify renderer; user sees a corner toast with [立即重启 / 稍后]
+//   on quit  if user dismissed the toast, NSIS upgrades on app exit anyway
+//
+// Disabling in dev because checking against an OSS URL when running locally
+// against vite is just noise.
+
+autoUpdater.autoDownload = true
+autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.logger = {
+  info:  (m: string) => console.log('[updater]', m),
+  warn:  (m: string) => console.warn('[updater]', m),
+  error: (m: string) => console.error('[updater]', m),
+  debug: (_m: string) => {},
+}
+
+function notifyUpdater(event: string, payload?: unknown) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(`updater:${event}`, payload)
+  }
+}
+
+autoUpdater.on('checking-for-update',  () =>     notifyUpdater('checking'))
+autoUpdater.on('update-available',     (info) => notifyUpdater('available', info))
+autoUpdater.on('update-not-available', (info) => notifyUpdater('not-available', info))
+autoUpdater.on('download-progress',    (p) =>    notifyUpdater('progress', p))
+autoUpdater.on('update-downloaded',    (info) => notifyUpdater('downloaded', info))
+autoUpdater.on('error',                (e) =>    notifyUpdater('error', e?.message ?? String(e)))
+
+ipcMain.handle('updater:check',  async () => {
+  if (isDev) return { ok: false, reason: 'dev mode' }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    return { ok: true, version: result?.updateInfo?.version }
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('updater:quit-and-install', () => {
+  // isSilent=true skips the NSIS UI; isForceRunAfter=true relaunches us.
+  autoUpdater.quitAndInstall(true, true)
+})
+
+ipcMain.handle('app:get-version', () => app.getVersion())
+
 // ── App lifecycle ──
 
 app.whenReady().then(async () => {
@@ -247,6 +358,17 @@ app.whenReady().then(async () => {
   console.log('[main] Sidecar ready')
   mainWindow = createMainWindow()
   watchSidecarSources()
+
+  // Kick off the silent update check 10s after window opens. Avoid checking
+  // immediately at startup — the first impression is "app is loading", users
+  // shouldn't see "downloading update" before they see the home screen.
+  if (!isDev) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((e) =>
+        console.warn('[updater] background check failed:', e?.message ?? e),
+      )
+    }, 10_000)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

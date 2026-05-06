@@ -6,6 +6,7 @@ import { GeneralTab } from './settings/GeneralTab'
 import { AIProviderTab } from './settings/AIProviderTab'
 import { TagSchemaTab } from './settings/TagSchemaTab'
 import { PromptLibraryTab } from './settings/PromptLibraryTab'
+import { AboutTab } from './settings/AboutTab'
 
 interface NavItem {
   id: SettingsTabId
@@ -34,16 +35,8 @@ function TabContent({ id }: { id: SettingsTabId }) {
         分发目标 OSS / CDN 配置（开发中）
       </div>
     )
-    case 'about': return (
-      <div className="max-w-md">
-        <h3 className="text-[15px] font-semibold text-foreground/85 mb-2">灵图</h3>
-        <p className="text-[13px] text-foreground/55 mb-4">景区图片 AI 生产平台</p>
-        <div className="space-y-1 text-[12px] text-foreground/45">
-          <p>版本: 0.2.0</p>
-          <p>技术栈: Electron + React + Tailwind + FastAPI</p>
-        </div>
-      </div>
-    )
+    case 'about': return <AboutTab />
+
     default: return null
   }
 }

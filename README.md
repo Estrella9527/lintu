@@ -58,6 +58,9 @@ lintu/
 | [`docs/MATCH-STRATEGY-DETAILS.md`](docs/MATCH-STRATEGY-DETAILS.md) | 匹配策略调优 | 5 信号评分 + RRF + diversity 后处理细节 |
 | [`docs/OSS-SETUP-GUIDE.md`](docs/OSS-SETUP-GUIDE.md) | 配阿里云 OSS 的同事 | OSS bucket / RAM / CDN 配置步骤 |
 | [`docs/open-api-guide.md`](docs/open-api-guide.md) | API 接入方 | 鉴权 / 错误码 / 完整端点 reference |
+| [`docs/桌面应用更新机制设计.md`](docs/桌面应用更新机制设计.md) | 想了解自动更新设计原理 | 三种路径对比 + OSS 选型 + electron-updater 集成 + 工时估算 |
+| [`docs/桌面应用更新-OSS运维手册.md`](docs/桌面应用更新-OSS运维手册.md) | 配 OSS bucket 与发版的同事 | bucket / RAM 子账号 / GitHub secrets / 发版流程 / 排错速查 |
+| [`docs/桌面应用Mac发布指南.md`](docs/桌面应用Mac发布指南.md) | 在 Mac 上首次打通签名 + 公证 | Apple Developer 注册 / 证书生成 / 本地试打 / GitHub secrets / 验证 |
 
 ---
 
@@ -124,18 +127,24 @@ uv run alembic upgrade head
 
 ## 构建生产包
 
-### macOS
+打包 + 自动更新链路已经全部落地：Windows 走 NSIS .exe，macOS 走 dmg + zip，签名 + 公证 + 阿里云 OSS 自动上传 + electron-updater 自动推送。日常发版只要改版本号 + 推 tag。
 
 ```bash
-cd apps/electron
-bun run build
-bunx electron-builder --mac --arm64
-# 产物：apps/electron/release/灵图-*.dmg
+# 改 apps/electron/package.json 的 version
+git tag v0.1.x
+git push origin v0.2 --tags
+# CI 同时在 windows-latest 和 macos-latest runner 上构建，
+# 上传到 oss://lintu-releases/{windows,mac}/
 ```
 
-### Windows（待落地，详见部署文档）
+本地手动打包（一般不需要，CI 已自动化）：
 
-需要在 Windows 机器上执行 PyInstaller 打包 sidecar，然后 electron-builder 整合。CI/Actions 自动化方案见 `docs/部署架构与对外接口.md` 的"实现工时预估"章节。
+| 平台 | 脚本 |
+|---|---|
+| Windows | `powershell -ExecutionPolicy Bypass -File apps/electron/scripts/build_win.ps1` |
+| macOS   | `cd apps/electron && ./scripts/build_mac.sh` |
+
+首次打通 Mac 端签名 + 公证：见 [`docs/桌面应用Mac发布指南.md`](docs/桌面应用Mac发布指南.md)。
 
 ---
 

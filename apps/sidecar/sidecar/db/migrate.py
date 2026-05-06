@@ -10,6 +10,7 @@ coroutine doesn't block the event loop.
 """
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from alembic import command
@@ -20,7 +21,13 @@ from sidecar.config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
-SIDECAR_ROOT = Path(__file__).resolve().parents[2]  # apps/sidecar/
+# When running from a PyInstaller --onedir bundle, alembic data is unpacked
+# alongside the modules under sys._MEIPASS. Outside the bundle (`uv run`),
+# fall back to the source-tree layout.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    SIDECAR_ROOT = Path(sys._MEIPASS)
+else:
+    SIDECAR_ROOT = Path(__file__).resolve().parents[2]  # apps/sidecar/
 ALEMBIC_INI = SIDECAR_ROOT / "alembic.ini"
 ALEMBIC_DIR = SIDECAR_ROOT / "alembic"
 

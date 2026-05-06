@@ -39,3 +39,8 @@ local-clip = [
     "open-clip-torch>=2.24",
     "scipy>=1.17.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.20.0",
+]

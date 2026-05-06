@@ -2,25 +2,132 @@ appId: com.lintu.app
 productName: 灵图
 copyright: Copyright © 2026
 
+# Pinned because npm workspaces hoist `electron` to the root node_modules,
+# which trips electron-builder's auto-detection (it expects the dependency at
+# apps/electron/node_modules/electron). Bump this to match the installed
+# version when upgrading Electron.
+electronVersion: 39.8.9
+
+# Skip @electron/rebuild + npm rebuild. Both choke on the workspace junction
+# at root_node_modules/@lintu/electron pointing back at this app. We have no
+# native modules in this Electron app, so rebuilds are unnecessary anyway.
+buildDependenciesFromSource: false
+nodeGypRebuild: false
+npmRebuild: false
+
 directories:
   output: release
+  buildResources: build
 
+asar: true
+
+# Files that go into app.asar (Electron-side code only).
+# Sidecar lives in extraResources so it stays unpacked and executable.
 files:
   - dist/**/*
   - resources/**/*
+  - package.json
+  - "!node_modules/**/*"
 
+# Ship the PyInstaller-built sidecar folder under <app>/resources/sidecar/.
+# Mac and Windows put the sidecar binary at the same relative path —
+# resources/sidecar/sidecar(.exe) — so main/index.ts can resolve it
+# uniformly via process.resourcesPath.
+extraResources:
+  - from: ../sidecar/dist/sidecar
+    to: sidecar
+    filter: ["**/*"]
+
+# ── macOS ────────────────────────────────────────────────────────────────────
 mac:
-  target:
-    - target: dmg
-      arch: [arm64, x64]
   category: public.app-category.productivity
+  icon: build/icon.icns      # macOS wants .icns, not .ico — see scripts/build_mac.sh
+  target:
+    # zip is REQUIRED by electron-updater on macOS (Squirrel.Mac downloads
+    # .zip, applies it, restarts). dmg is the user-facing first-install
+    # experience. We ship both.
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  hardenedRuntime: true       # Required for notarization
+  gatekeeperAssess: false     # Skip local Gatekeeper assess (CI doesn't have keychain set up the same way)
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Identity is read from $CSC_LINK / $CSC_KEY_PASSWORD (developer ID .p12) at
+  # build time. If those env vars are absent, electron-builder ships unsigned —
+  # the dmg/zip will be produced but Gatekeeper will refuse to launch it.
+  notarize: true              # Read APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID env vars
+  # Only ship arm64 by default — covers all M-series Macs (2020+). If you need
+  # to target older Intel Macs add `x64` to both targets above and rebuild on
+  # an x64 runner (or accept Rosetta translation, which is slower).
+  publish:
+    - provider: generic
+      url: https://lintu-releases.oss-cn-hangzhou.aliyuncs.com/mac
+      channel: latest
+      useMultipleRangeRequest: false
 
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  # icon: build/icon.icns    # falls back to mac.icon
+  iconSize: 128
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# ── Windows ──────────────────────────────────────────────────────────────────
 win:
   target:
     - target: nsis
       arch: [x64]
+  icon: build/icon.ico
+  # Code signing is wired through env vars (see scripts/build_win.ps1):
+  #   CSC_LINK         path/URL to .pfx
+  #   CSC_KEY_PASSWORD password for the .pfx
+  # Without these set, electron-builder ships unsigned binaries — no error,
+  # but Windows SmartScreen will warn the user "Unknown publisher" on first
+  # run.
+  signtoolOptions:
+    publisherName: "Longchan Tech"
+    signingHashAlgorithms: ["sha256"]
+    rfc3161TimeStampServer: "http://timestamp.digicert.com"
+  # Console child windows are hidden by spawn(..., {windowsHide: true}) in
+  # the main process — no extra config needed here.
+  publish:
+    - provider: generic
+      url: https://lintu-releases.oss-cn-hangzhou.aliyuncs.com/windows
+      channel: latest
+      useMultipleRangeRequest: false
 
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: 灵图
+  installerLanguages: ["zh_CN", "en_US"]
+  language: 2052          # Simplified Chinese
+  deleteAppDataOnUninstall: false
+  artifactName: "${productName}-Setup-${version}-${arch}.${ext}"
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+
+# ── Linux (placeholder, not actively built) ─────────────────────────────────
 linux:
   target:
     - target: AppImage
       arch: [x64]
+
+# ── Auto-update channels ─────────────────────────────────────────────────────
+# Each platform sets its own publish URL inside its `mac:` / `win:` block
+# so the artifacts and YAML manifests live under separate OSS prefixes
+# (windows/, mac/) and can be served via different domains/CDNs later.
+# electron-updater on macOS reads <url>/latest-mac.yml, on Windows reads
+# <url>/latest.yml — both filenames are auto-generated by electron-builder.

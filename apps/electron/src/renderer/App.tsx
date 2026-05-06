@@ -50,6 +50,35 @@ export default function App() {
     return unsub
   }, [])
 
+  // Auto-update toast. We only surface 'downloaded' (the actionable moment)
+  // and 'error' if the check itself failed in a non-network-y way. Silent
+  // on 'checking' / 'progress' / 'not-available' — users don't need to know
+  // we're doing housekeeping in the background.
+  useEffect(() => {
+    const api = (window as any).updaterAPI
+    if (!api?.on) return
+    const unsubs = [
+      api.on('downloaded', (info: { version?: string }) => {
+        toast(`新版本 ${info?.version ? `v${info.version}` : ''} 已就绪`, {
+          description: '重启应用即可使用最新版本（不重启也会在下次退出时自动更新）',
+          duration: Infinity,
+          action: {
+            label: '立即重启',
+            onClick: () => api.quitAndInstall(),
+          },
+        })
+      }),
+      api.on('error', (msg: string) => {
+        // Quiet for transient network errors — the silent check will retry
+        // on next launch. Only surface explicit signature/version failures.
+        if (typeof msg === 'string' && /signature|verify|cert/i.test(msg)) {
+          toast.error('更新失败：签名校验未通过', { description: msg })
+        }
+      }),
+    ]
+    return () => unsubs.forEach((u) => u())
+  }, [])
+
   if (!ready) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background">
