@@ -659,6 +659,10 @@ class BatchScheduler:
                 # surfaces generated images under the same attraction.
                 relative_dir=seed_relative_dir,
                 generation_metadata=gen_meta,
+                # AI-generated images go to the review queue. Operator must
+                # approve before they're eligible for matching / cloud sync.
+                # See routers/image_review.py for the queue endpoints.
+                review_status="pending",
             )
             db.add(new_image)
             await db.flush()

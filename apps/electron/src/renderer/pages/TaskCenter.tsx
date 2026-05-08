@@ -8,9 +8,10 @@ import { TabPage } from '@/components/shared/TabPage'
 import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import { DetailDrawer } from '@/components/shared/DetailDrawer'
 import { Badge } from '@/components/ui/badge'
-import { Play, Clock, CheckCircle, Copy, XCircle, Layers } from 'lucide-react'
+import { Play, Clock, CheckCircle, Copy, XCircle, Layers, Inbox } from 'lucide-react'
 import type { TaskRecord } from '@/lib/types'
 import { BatchList } from '@/components/task-center/BatchList'
+import { EmptyState } from '@/components/shared/EmptyState'
 
 const STATUS_MAP: Record<string, string[]> = {
   running: ['running'],
@@ -52,10 +53,14 @@ function TaskList({ statuses }: { statuses: string[] }) {
   }
 
   if (!tasks || tasks.length === 0) {
+    const which = statuses.includes('running') ? '运行中' : statuses.includes('completed') ? '已完成' : ''
     return (
-      <div className="flex items-center justify-center h-48 text-[13px] text-foreground/30">
-        暂无{statuses.includes('running') ? '运行中' : statuses.includes('completed') ? '已完成' : ''}的任务
-      </div>
+      <EmptyState
+        compact
+        icon={Inbox}
+        title={`没有${which}的任务`}
+        description="去流水线启动一次扫描 / 标注 / 嵌入，任务会出现在这里"
+      />
     )
   }
 

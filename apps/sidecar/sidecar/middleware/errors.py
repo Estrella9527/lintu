@@ -130,6 +130,13 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         logger.exception("Unhandled exception on %s", request.url.path)
+        # logger.exception 在某些 uvicorn 配置下不可见 — 强制 print 兜底
+        import traceback, sys
+        print(
+            f"\n[ERROR] {request.method} {request.url.path}\n"
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+            file=sys.stderr, flush=True,
+        )
         if not request.url.path.startswith(OPEN_API_PREFIX):
             return JSONResponse({"detail": "internal server error"}, status_code=500)
         return error_response(

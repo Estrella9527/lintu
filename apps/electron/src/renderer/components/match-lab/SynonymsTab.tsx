@@ -1,3 +1,4 @@
+import { apiFetchRaw } from '@/lib/api'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -6,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ArrowRight, Plus, X } from 'lucide-react'
 
-const API = 'http://localhost:7879/api/match-synonyms'
+const API = '/match-synonyms'
 
 /**
  * Synonym dictionary editor — alias → canonical map applied before jieba
@@ -19,7 +20,7 @@ export function SynonymsTab() {
   const queryClient = useQueryClient()
   const { data } = useQuery<{ entries: Record<string, string> }>({
     queryKey: ['match-synonyms'],
-    queryFn: () => fetch(API).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(API).then((r) => r.json()),
   })
   const entries = data?.entries ?? {}
   const [alias, setAlias] = useState('')
@@ -29,7 +30,7 @@ export function SynonymsTab() {
 
   const addM = useMutation({
     mutationFn: (body: { alias: string; canonical: string }) =>
-      fetch(API, {
+      apiFetchRaw(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -42,7 +43,7 @@ export function SynonymsTab() {
   })
   const delM = useMutation({
     mutationFn: (a: string) =>
-      fetch(`${API}/${encodeURIComponent(a)}`, { method: 'DELETE' }).then((r) => r.json()),
+      apiFetchRaw(`${API}/${encodeURIComponent(a)}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: invalidate,
   })
 

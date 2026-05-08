@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
+import { apiFetchRaw } from '@/lib/api'
 
 import { activeProjectIdAtom } from '@/atoms/project'
 
@@ -217,7 +218,7 @@ function TagFilterPopover({
 }) {
   const { data: schema } = useQuery<Record<string, { values: string[] }>>({
     queryKey: ['tag-schema'],
-    queryFn: () => fetch('http://localhost:7879/api/tag-schema').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/tag-schema').then((r) => r.json()),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -345,7 +346,7 @@ function PromptFilterPopover({
     queryKey: ['prompts', 'with-output-counts', projectId],
     queryFn: () => {
       const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
-      return fetch(`http://localhost:7879/api/prompts/with-output-counts${qs}`).then((r) => r.json())
+      return apiFetchRaw(`/prompts/with-output-counts${qs}`).then((r) => r.json())
     },
     enabled: !!projectId,
     refetchOnMount: 'always',

@@ -9,6 +9,8 @@ import { FlaskConical, X, Plus, RefreshCw } from 'lucide-react'
 import { activeModuleAtom, matchLabNavRequestAtom } from '@/atoms/navigation'
 import { matchLabActiveTabAtom } from '@/atoms/ui-state'
 import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
+import { apiFetchRaw } from '@/lib/api'
+import { InfoHint } from '@/components/shared/InfoHint'
 
 interface DimensionSchema {
   label: string
@@ -20,7 +22,7 @@ interface DimensionSchema {
 type SchemaData = Record<string, DimensionSchema>
 
 async function fetchSchema(): Promise<SchemaData> {
-  const res = await fetch('http://localhost:7879/api/tag-schema')
+  const res = await apiFetchRaw('/tag-schema')
   if (!res.ok) {
     const text = await res.text()
     throw new Error(`HTTP ${res.status}: ${text}`)
@@ -42,7 +44,7 @@ export function TagSchemaTab() {
 
   const { data: usage } = useQuery<Record<string, Record<string, number>>>({
     queryKey: ['tag-schema-usage'],
-    queryFn: () => fetch('http://localhost:7879/api/tag-schema/usage').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/tag-schema/usage').then((r) => r.json()),
     staleTime: 30_000,
   })
 
@@ -71,10 +73,8 @@ export function TagSchemaTab() {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-[12px] text-foreground/40 flex-1">
-          管理标签维度及其预设值。修改后将影响 AI 打标的输出范围和覆盖矩阵的维度选项。
-        </p>
+      <div className="flex items-center justify-between gap-3">
+        <InfoHint text="管理标签维度及其预设值。修改后将影响 AI 打标的输出范围和覆盖矩阵的维度选项。" />
         <ExportImportButtons
           domainLabel="标签体系"
           exportPath="/tag-schema/export"
@@ -150,7 +150,7 @@ function DimensionCard({ dimension, schema, usage, onChanged }: {
 
   const addMutation = useMutation({
     mutationFn: (value: string) =>
-      fetch(`http://localhost:7879/api/tag-schema/${dimension}/values`, {
+      apiFetchRaw(`/tag-schema/${dimension}/values`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value }),
@@ -160,7 +160,7 @@ function DimensionCard({ dimension, schema, usage, onChanged }: {
 
   const removeMutation = useMutation({
     mutationFn: (value: string) =>
-      fetch(`http://localhost:7879/api/tag-schema/${dimension}/${encodeURIComponent(value)}`, {
+      apiFetchRaw(`/tag-schema/${dimension}/${encodeURIComponent(value)}`, {
         method: 'DELETE',
       }).then((r) => r.json()),
     onSuccess: onChanged,

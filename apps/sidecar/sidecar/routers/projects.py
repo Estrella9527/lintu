@@ -1,11 +1,11 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete as sql_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sidecar.db.models import Image, Project, Tag
+from sidecar.db.models import Image, Project, ProjectMember, Tag
 from sidecar.db.session import get_db
 
 router = APIRouter()
@@ -47,16 +47,49 @@ async def _enqueue_cloud_upsert(project_id: str) -> None:
 
 
 @router.get("")
-async def list_projects(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Project).order_by(Project.created_at.desc()))
+async def list_projects(request: Request, db: AsyncSession = Depends(get_db)):
+    """普通用户：只列自己 ProjectMember 关联的项目；root：全集。
+
+    Phase 1 之前 list_projects 是开放查询，会泄漏所有项目名 / 路径给任何
+    登录用户。改成按身份过滤后，普通用户在 ProjectSelector 里看不到不属于
+    自己的项目（也就不会误点进空 workspace）。
+    """
+    user = getattr(request.state, "user", None)
+    is_root = bool(user and getattr(user, "is_root", False))
+
+    if is_root or user is None:
+        # root / 系统级（ops bypass）→ 全集
+        result = await db.execute(select(Project).order_by(Project.created_at.desc()))
+    else:
+        # 普通用户 → 只看自己加入的
+        result = await db.execute(
+            select(Project)
+            .join(ProjectMember, ProjectMember.project_id == Project.id)
+            .where(ProjectMember.user_id == user.id)
+            .order_by(Project.created_at.desc())
+        )
     return [_project_to_dict(p) for p in result.scalars().all()]
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
+async def get_project(project_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """同 list — 普通用户只能 get 自己加入的项目。"""
+    user = getattr(request.state, "user", None)
+    is_root = bool(user and getattr(user, "is_root", False))
+
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
+
+    if not is_root and user is not None:
+        member = await db.scalar(
+            select(ProjectMember)
+            .where(ProjectMember.project_id == project_id)
+            .where(ProjectMember.user_id == user.id)
+        )
+        if not member:
+            # 故意 404 不 403 — 防止探测（不告诉对方"项目存在但你没权限"）
+            raise HTTPException(404, "Project not found")
     return _project_to_dict(project)
 
 

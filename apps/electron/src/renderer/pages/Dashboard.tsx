@@ -1,18 +1,25 @@
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
+import { activeModuleAtom } from '@/atoms/navigation'
+import { EmptyState } from '@/components/shared/EmptyState'
+import { Skeleton } from '@/components/shared/Skeleton'
+import { MatchAnalyticsPanel } from '@/components/dashboard/MatchAnalyticsPanel'
 import {
   Image,
   CheckCircle,
   Tags,
   XCircle,
   Loader2,
+  ListChecks,
+  FolderOpen,
 } from 'lucide-react'
 import type { DashboardStats, TaskRecord } from '@/lib/types'
 
 export default function Dashboard() {
   const projectId = useAtomValue(activeProjectIdAtom) || ''
+  const setActiveModule = useSetAtom(activeModuleAtom)
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', projectId],
@@ -25,9 +32,12 @@ export default function Dashboard() {
     return (
       <div className="p-6">
         <h1 className="text-[15px] font-semibold text-foreground mb-6">仪表盘</h1>
-        <div className="flex items-center justify-center h-64 text-[13px] text-foreground/30">
-          请先在流水线中选择目录以创建项目
-        </div>
+        <EmptyState
+          icon={FolderOpen}
+          title="还没有项目"
+          description="去流水线选择一个图片目录，自动创建第一个项目并开始扫图"
+          action={{ label: '去流水线', onClick: () => setActiveModule('pipeline') }}
+        />
       </div>
     )
   }
@@ -37,9 +47,7 @@ export default function Dashboard() {
       <div className="p-6">
         <h1 className="text-[15px] font-semibold text-foreground mb-6">仪表盘</h1>
         <div className="grid grid-cols-5 gap-4 mb-6">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="rounded-lg border border-foreground/5 p-4 h-24 animate-pulse bg-foreground/[0.02]" />
-          ))}
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton.StatCard key={i} />)}
         </div>
       </div>
     )
@@ -75,7 +83,13 @@ export default function Dashboard() {
         <div className="rounded-lg border border-foreground/5 p-4">
           <h3 className="text-[13px] font-medium text-foreground/60 mb-3">近期任务</h3>
           {stats.recent_tasks.length === 0 ? (
-            <div className="text-[12px] text-foreground/20 text-center py-8">暂无任务</div>
+            <EmptyState
+              compact
+              icon={ListChecks}
+              title="还没有任务"
+              description="跑一次流水线后这里会显示任务记录"
+              action={{ label: '去流水线', variant: 'outline', onClick: () => setActiveModule('pipeline') }}
+            />
           ) : (
             <div className="space-y-2">
               {stats.recent_tasks.map((t: TaskRecord) => (
@@ -98,7 +112,12 @@ export default function Dashboard() {
         <div className="rounded-lg border border-foreground/5 p-4">
           <h3 className="text-[13px] font-medium text-foreground/60 mb-3">标签分布 · Top 20</h3>
           {stats.tag_distribution.length === 0 ? (
-            <div className="text-[12px] text-foreground/20 text-center py-8">暂无标签数据</div>
+            <EmptyState
+              compact
+              icon={Tags}
+              title="还没有标签"
+              description="跑流水线的「标注」阶段后，这里会显示标签分布"
+            />
           ) : (
             <div className="space-y-1.5">
               {stats.tag_distribution.map((d) => {
@@ -124,6 +143,8 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      <MatchAnalyticsPanel />
     </div>
   )
 }

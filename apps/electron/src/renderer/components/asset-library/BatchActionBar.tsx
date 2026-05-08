@@ -14,7 +14,7 @@ import { activeModuleAtom } from '@/atoms/navigation'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { batchSeedQueueAtom } from '@/atoms/workshop'
 import { assetLibraryFilterAtom } from '@/atoms/ui-state'
-import { api } from '@/lib/api'
+import { api, apiFetchRaw } from '@/lib/api'
 import type { ImageRecord } from '@/lib/types'
 
 interface BatchActionBarProps {
@@ -56,7 +56,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
       // knows the ids, but BatchRunDialog wants {id, file_name, ...}
       const records: ImageRecord[] = await Promise.all(
         ids.map((id) =>
-          fetch(`http://localhost:7879/api/images/${id}`).then((r) => r.json())
+          apiFetchRaw(`/images/${id}`).then((r) => r.json())
         )
       )
       setSeedQueue(records)
@@ -70,7 +70,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      fetch('http://localhost:7879/api/images/batch/delete', {
+      apiFetchRaw('/images/batch/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_ids: ids }),
@@ -130,7 +130,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
   const ossSyncMutation = useMutation({
     mutationFn: async ({ force }: { force: boolean }) => {
       if (ids.length === 0) throw new Error('未选择图片')
-      const r = await fetch('http://localhost:7879/api/oss/enqueue-images', {
+      const r = await apiFetchRaw('/oss/enqueue-images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_ids: ids, force }),
@@ -153,7 +153,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
 
   const statusMutation = useMutation({
     mutationFn: (status: string) =>
-      fetch(`http://localhost:7879/api/images/batch/update-status?status=${status}`, {
+      apiFetchRaw(`/images/batch/update-status?status=${status}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_ids: ids }),
@@ -169,9 +169,9 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
     if (ids.length === 1) {
       // Single file: show save dialog so user can pick name + location
       const id = ids[0]
-      const detailRes = await fetch(`http://localhost:7879/api/images/${id}`)
+      const detailRes = await apiFetchRaw(`/images/${id}`)
       const detail = await detailRes.json()
-      const url = `http://localhost:7879/api/images/${id}/download`
+      const url = api.images.downloadUrl(id)
       const saved = await window.electronAPI.downloadFile(url, detail.file_name || `${id}.jpg`)
       if (saved) toast.success(`已保存到 ${saved}`)
       return
@@ -196,10 +196,10 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
         const i = cursor++
         const id = ids[i]
         try {
-          const detailRes = await fetch(`http://localhost:7879/api/images/${id}`)
+          const detailRes = await apiFetchRaw(`/images/${id}`)
           const detail = await detailRes.json()
           const filename = detail.file_name || `${id}.jpg`
-          const url = `http://localhost:7879/api/images/${id}/download`
+          const url = api.images.downloadUrl(id)
           const result = await window.electronAPI.saveFileToPath(url, `${dir}/${filename}`)
           if (result) saved++
           else failed++

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { ImageOff } from 'lucide-react'
+import { api } from '@/lib/api'
 
 interface ThumbnailImageProps {
   imageId: string
@@ -17,8 +18,9 @@ export function ThumbnailImage({ imageId, alt, size = 300, className, onClick, v
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
 
+  // api.images.thumbnailUrl 已经拼上 ?token=...，再追加 &v= 来 bust 浏览器缓存
   const v = version ? `&v=${encodeURIComponent(version)}` : ''
-  const src = `http://localhost:7879/api/images/${imageId}/thumbnail?size=${size}${v}`
+  const src = api.images.thumbnailUrl(imageId, size) + v
 
   return (
     <div

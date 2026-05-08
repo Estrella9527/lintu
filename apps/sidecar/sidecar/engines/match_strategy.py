@@ -14,12 +14,14 @@ Pipeline (called from POST /open-api/v1/images/match):
               + w_qual * quality_norm
               + w_div  * diversity_bonus
               + w_biz  * business_rules
+              + seasonal_boost (small, in-season tag match only)
   8. sort by score desc, take limit, return with score_breakdown
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -107,6 +109,15 @@ class MatchFilters:
     source_type: Optional[str] = None        # 'original' | 'generated' | None
     project_id: Optional[str] = None         # legacy hard scope; prefer MatchScope
     folder_prefix: Optional[str] = None
+    # 候选源精细化（v0.3 P0-extra）：支持把候选池约束到一个具体的子集，
+    # 让运营在匹配实验室里能"用 X 套 prompt 生成的图 + Y 文件夹下"反复试匹配。
+    #   - prompt_ids       generation_metadata.prompt_id ∈ list（仅对 source_type=generated 生效）
+    #   - parent_ids       parent_id ∈ list（同源族过滤；找某张原图的所有 AI 变体）
+    #   - image_ids        强约束白名单：只在这些 image_id 里召回。优先级最高，
+    #                      其它过滤条件仍然适用（白名单 ∩ 其它过滤）。
+    prompt_ids: list[str] = field(default_factory=list)
+    parent_ids: list[str] = field(default_factory=list)
+    image_ids: list[str] = field(default_factory=list)
 
 
 # ── Multi-project scope (auto-decided, not a user knob) ─────────────────────
@@ -399,6 +410,16 @@ async def match_text_to_images(
 
     kw_hits = await kw_recall_task if kw_recall_task else []
 
+    # Whitelist mode: when operator pinned an explicit image_ids subset,
+    # ensure those images are ALWAYS in the candidate pool — even if recall
+    # didn't surface them (small whitelist + weak text overlap is a normal
+    # case in 试匹配). Per-image embedding cosine is still computed when qv
+    # is available, otherwise sim=0 and ranking falls back to tag/keyword
+    # signals (which the whitelist is the operator's de facto signal anyway).
+    if filters.image_ids and qv is not None:
+        whitelist_hits = await _score_whitelist(qv, filters.image_ids)
+        emb_hits = whitelist_hits + emb_hits
+
     # 3. RRF (Reciprocal Rank Fusion) — combines two ranked lists by summing
     #    1/(k + rank). More robust than additive scores because it doesn't
     #    require the two recall sources to be on the same scale.
@@ -443,8 +464,21 @@ async def match_text_to_images(
     # 7. score each
     quality_max = max((row.get("blur_score") or 0.0) for row in enriched) or 1.0
     expected_tags = sum(len(v) for v in kw.tag_hits.values()) or 1
+    # Resolve seasonal boost knobs once. Operator-tuned via /api/config:
+    # `match_seasonal_boost_strength` (float, default 0.05; 0 disables).
+    try:
+        seasonal_strength = float(get_setting("match_seasonal_boost_strength") or 0.05)
+    except (TypeError, ValueError):
+        seasonal_strength = 0.05
+    current_season = _current_season() if seasonal_strength > 0 else None
     for row in enriched:
-        row.update(_score_one(row, kw, weights, quality_max=quality_max, expected_tags=expected_tags))
+        row.update(_score_one(
+            row, kw, weights,
+            quality_max=quality_max,
+            expected_tags=expected_tags,
+            seasonal_boost_strength=seasonal_strength,
+            current_season=current_season,
+        ))
 
     # 7b. optional score jitter for variety. With randomness=0 (default) the
     # output is fully deterministic. With randomness>0 we add a uniform [0, R*max_score)
@@ -540,6 +574,48 @@ def _rrf_merge(
     return candidates
 
 
+# ── Whitelist hydration ────────────────────────────────────────────────────
+
+
+async def _score_whitelist(qv: np.ndarray, image_ids: list[str]) -> list[RecallHit]:
+    """Compute embedding cosine for an explicit image_ids set, regardless
+    of whether recall would have surfaced them. Used by the playground's
+    "选择资产" mode where operator hand-picks candidates.
+
+    Returns a RecallHit list ordered by descending similarity. Images
+    without an embedding are still returned with score=0 so the operator
+    can SEE them (and find out why they don't rank).
+    """
+    if not image_ids or qv is None or qv.size == 0:
+        return []
+    from sidecar.engines.clip_embed import deserialize_vector
+    async with async_session() as db:
+        rows = (await db.execute(
+            select(Image.id, Image.embedding).where(Image.id.in_(image_ids))
+        )).all()
+    qn = float(np.linalg.norm(qv))
+    if qn == 0:
+        return [RecallHit(image_id=iid, score=0.0) for iid, _ in rows]
+    qv_norm = (qv / qn).astype(np.float32)
+    out: list[RecallHit] = []
+    for iid, emb_text in rows:
+        if not emb_text:
+            out.append(RecallHit(image_id=iid, score=0.0))
+            continue
+        try:
+            v = deserialize_vector(emb_text)
+        except Exception:
+            v = None
+        if v is None or v.size != qv_norm.size:
+            out.append(RecallHit(image_id=iid, score=0.0))
+            continue
+        n = float(np.linalg.norm(v))
+        sim = float((v / n).astype(np.float32) @ qv_norm) if n > 0 else 0.0
+        out.append(RecallHit(image_id=iid, score=sim))
+    out.sort(key=lambda h: -h.score)
+    return out
+
+
 # ── Enrichment + filtering ──────────────────────────────────────────────────
 
 
@@ -550,14 +626,30 @@ async def _enrich_and_filter(
 ) -> list[dict]:
     if not image_ids:
         return []
+    # Whitelist intersection (filters.image_ids) — when operator hand-picks a
+    # subset of the asset library to test against, drop any recall candidates
+    # not in that set. Applied BEFORE the DB query so we don't enrich rows
+    # that will be discarded.
+    if filters.image_ids:
+        whitelist = set(filters.image_ids)
+        image_ids = [iid for iid in image_ids if iid in whitelist]
+        if not image_ids:
+            return []
     async with async_session() as db:
         img_rows = await db.execute(
             select(
                 Image.id, Image.file_name, Image.width, Image.height,
                 Image.blur_score, Image.source_type, Image.description,
                 Image.relative_dir, Image.parent_id, Image.cdn_path,
-                Image.project_id,
-            ).where(Image.id.in_(image_ids))
+                Image.project_id, Image.generation_metadata,
+            )
+            .where(Image.id.in_(image_ids))
+            # Pre-publish review gate: only `approved` images can appear in
+            # match results. Pending / rejected / skipped are hidden until
+            # an operator decides via the 「审核」 queue. Existing rows have
+            # default='approved' (alembic 0170), so this is a no-op for the
+            # current library — only future AI-generated images need review.
+            .where(Image.review_status == "approved")
         )
         meta = {r[0]: r for r in img_rows.all()}
 
@@ -620,6 +712,22 @@ async def _enrich_and_filter(
             rd = m[7] or ""
             if not (rd == filters.folder_prefix or rd.startswith(filters.folder_prefix + "/")):
                 continue
+        # filter: parent_ids — same-source family constraint. Useful when
+        # operator wants "show me which AI variant of seed X scores best"
+        # without having to pre-fetch all children.
+        if filters.parent_ids:
+            if (m[8] or "") not in filters.parent_ids:
+                continue
+        # filter: prompt_ids — only AI generations from a specific prompt set.
+        # Reads generation_metadata.prompt_id (m[11]). Originals have
+        # generation_metadata=None and are excluded when this filter is on.
+        if filters.prompt_ids:
+            gen_meta = m[11] or {}
+            if not isinstance(gen_meta, dict):
+                continue
+            pid = gen_meta.get("prompt_id")
+            if pid not in filters.prompt_ids:
+                continue
 
         # filter: positive dimension constraints
         positive_filters = {
@@ -672,6 +780,21 @@ async def _enrich_and_filter(
 # ── Per-image scoring ────────────────────────────────────────────────────────
 
 
+def _current_season(month: Optional[int] = None) -> str:
+    """Northern-hemisphere season label matching the tag schema's `season`
+    dimension values: 春季 / 夏季 / 秋季 / 冬季. The mapping is intentionally
+    blunt — we don't try to model "early autumn" vs "late autumn", since the
+    tag schema doesn't either."""
+    m = month if month is not None else datetime.now().month
+    if 3 <= m <= 5:
+        return "春季"
+    if 6 <= m <= 8:
+        return "夏季"
+    if 9 <= m <= 11:
+        return "秋季"
+    return "冬季"
+
+
 def _score_one(
     row: dict,
     kw: KeywordExtraction,
@@ -679,6 +802,8 @@ def _score_one(
     *,
     quality_max: float,
     expected_tags: int,
+    seasonal_boost_strength: float = 0.0,
+    current_season: Optional[str] = None,
 ) -> dict:
     emb = float(row.get("embedding_sim") or 0.0)
     # Tag hit density: how many of the query's identified tag values are
@@ -715,6 +840,17 @@ def _score_one(
     rrf = float(row.get("rrf_score") or 0.0)
     rrf_boost = min(rrf * 5.0, 0.10)   # rrf_score is tiny (1/60 ≈ 0.017); scale up
 
+    # Seasonal boost: nudge in-season tagged images up by a small amount so a
+    # generic query "玩水" in summer leans toward 夏季 photos. Additive (does
+    # NOT down-weight off-season images) — if the user explicitly asks for
+    # "秋天" in June, the tag-hit path still gives 秋季 the full tag_score.
+    # Disabled when seasonal_boost_strength=0.
+    seasonal_boost = 0.0
+    if seasonal_boost_strength and current_season:
+        season_tags = tags_by_dim.get("season", [])
+        if current_season in season_tags:
+            seasonal_boost = float(seasonal_boost_strength)
+
     final = (
         weights.embedding * emb
         + weights.tag * tag_score
@@ -722,6 +858,7 @@ def _score_one(
         + weights.diversity * div_score
         + weights.business * biz_score
         + rrf_boost
+        + seasonal_boost
     )
 
     return {
@@ -732,6 +869,7 @@ def _score_one(
             "quality": float(quality_score),
             "business": float(biz_score),
             "rrf_boost": float(rrf_boost),
+            "seasonal_boost": float(seasonal_boost),
         },
         "matched_tag_pairs": matched_tag_pairs,
     }

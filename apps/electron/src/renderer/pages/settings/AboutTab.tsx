@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react'
+import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
-import { CheckCircle2, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { CheckCircle2, Loader2, RefreshCw, Sparkles, FileText, Compass, Cloud, Lock, Code } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { ReleaseNotesModal } from '@/components/shared/ReleaseNotesModal'
+import { onboardingForceOpenAtom } from '@/atoms/onboarding'
+import { useBuildFlavor } from '@/hooks/useBuildFlavor'
+import { cn } from '@/lib/utils'
+import { InfoHint } from '@/components/shared/InfoHint'
 
 type CheckState =
   | { kind: 'idle' }
@@ -17,9 +23,19 @@ function fmtMB(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
 }
 
+const FLAVOR_META: Record<'dev' | 'user' | 'ops', { label: string; icon: typeof Cloud; tone: string; desc: string }> = {
+  dev:  { label: '开发模式',  icon: Code,  tone: 'text-foreground/55 bg-foreground/[0.05]', desc: '从源代码本地运行，不分发' },
+  user: { label: '普通用户版', icon: Lock,  tone: 'text-emerald-700 bg-emerald-500/[0.08]', desc: '物理屏蔽云端同步凭据 — 改配置不会影响线上 UGC' },
+  ops:  { label: '运营管理版', icon: Cloud, tone: 'text-amber-700 bg-amber-500/[0.10]',     desc: '可推送配置到云端 — 改匹配策略会立即同步线上 UGC' },
+}
+
 export function AboutTab() {
   const [version, setVersion] = useState<string>('')
   const [state, setState] = useState<CheckState>({ kind: 'idle' })
+  const [notesOpen, setNotesOpen] = useState(false)
+  const setForceOnboarding = useSetAtom(onboardingForceOpenAtom)
+  const flavor = useBuildFlavor()
+  const flavorMeta = FLAVOR_META[flavor]
 
   useEffect(() => {
     const api = (window as any).updaterAPI
@@ -82,18 +98,45 @@ export function AboutTab() {
   return (
     <div className="max-w-md space-y-6">
       <div>
-        <h3 className="text-[15px] font-semibold text-foreground/85 mb-1">灵图</h3>
-        <p className="text-[13px] text-foreground/55">景区图片 AI 生产平台</p>
+        <h3 className="text-[15px] font-semibold text-foreground/85">灵图</h3>
       </div>
 
-      <div className="space-y-1 text-[12px] text-foreground/55">
+      <div className="space-y-1.5 text-[12px] text-foreground/55">
         <p>当前版本：<span className="font-mono text-foreground/85">{version || '加载中…'}</span></p>
         <p>技术栈：Electron + React + Tailwind + FastAPI</p>
+
+        <div className={cn('inline-flex items-center gap-1.5 rounded-md px-2 py-1 mt-2', flavorMeta.tone)}>
+          <flavorMeta.icon size={12} />
+          <span className="text-[11.5px] font-medium">{flavorMeta.label}</span>
+          <InfoHint text={flavorMeta.desc} size={11} />
+        </div>
+        <div className="flex items-center gap-4 mt-1.5">
+          <button
+            onClick={() => setNotesOpen(true)}
+            className="inline-flex items-center gap-1 text-[12px] text-foreground/65 hover:text-foreground/85 transition-colors"
+          >
+            <FileText size={12} />
+            查看更新历史
+          </button>
+          <button
+            onClick={() => setForceOnboarding(true)}
+            className="inline-flex items-center gap-1 text-[12px] text-foreground/65 hover:text-foreground/85 transition-colors"
+          >
+            <Compass size={12} />
+            重新观看引导
+          </button>
+        </div>
       </div>
+
+      <ReleaseNotesModal open={notesOpen} onClose={() => setNotesOpen(false)} variant="browse" />
+
 
       <div className="rounded-lg border border-foreground/10 p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h4 className="text-[13px] font-medium text-foreground/85">软件更新</h4>
+          <div className="flex items-center gap-1.5">
+            <h4 className="text-[13px] font-medium text-foreground/85">软件更新</h4>
+            <InfoHint text="app 启动 10 秒后会在后台静默检查；也可点右侧「检查更新」立即检查。" />
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -111,7 +154,7 @@ export function AboutTab() {
 
         <div className="text-[12px]">
           {state.kind === 'idle' && (
-            <p className="text-foreground/45">app 启动 10 秒后会在后台静默检查；也可点上方按钮立即检查。</p>
+            <p className="text-foreground/45">尚未检查 / 已是最新</p>
           )}
           {state.kind === 'checking' && <p className="text-foreground/55">正在检查…</p>}
           {state.kind === 'available' && (

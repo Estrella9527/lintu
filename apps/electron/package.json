@@ -1,17 +1,21 @@
 {
   "name": "@lintu/electron",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "main": "dist/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.ts",
-    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron",
+    "build:main": "node scripts/build-main.mjs",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron",
     "build:renderer": "vite build --config vite.config.ts",
     "build": "bun run build:main && bun run build:preload && bun run build:renderer",
+    "build:user": "LINTU_BUILD_FLAVOR=user bun run build",
+    "build:ops":  "LINTU_BUILD_FLAVOR=ops  bun run build",
     "start": "bun run build && electron .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:api-types": "bash scripts/gen-api-types.sh",
+    "check:api-types": "bash scripts/gen-api-types.sh --check"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "^1.1.12",

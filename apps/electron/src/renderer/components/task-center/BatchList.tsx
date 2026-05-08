@@ -5,13 +5,14 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Copy, Pause, Play, RotateCcw, Trash2, X } from 'lucide-react'
+import { Copy, Pause, Play, RotateCcw, Trash2, X, Layers } from 'lucide-react'
 
-import { api, type BatchRunRecord } from '@/lib/api'
+import { api, type BatchRunRecord, apiFetchRaw } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { activeModuleAtom } from '@/atoms/navigation'
 import { batchClonePresetAtom } from '@/atoms/workshop'
 import { BatchDetailDrawer } from '@/components/task-center/BatchDetailDrawer'
+import { EmptyState } from '@/components/shared/EmptyState'
 
 const STATUS_LABEL: Record<string, string> = {
   pending: '待启动',
@@ -44,7 +45,7 @@ export function BatchList() {
     try {
       const seeds = await Promise.all(
         b.seed_image_ids.map((id) =>
-          fetch(`http://localhost:7879/api/images/${id}`).then((r) => (r.ok ? r.json() : null))
+          apiFetchRaw(`/images/${id}`).then((r) => (r.ok ? r.json() : null))
         ),
       )
       const validSeeds = seeds.filter((x): x is NonNullable<typeof x> => x != null)
@@ -115,9 +116,12 @@ export function BatchList() {
 
   if (!batches?.length) {
     return (
-      <div className="flex flex-col items-center justify-center h-48 text-[13px] text-foreground/40">
-        暂无批次。在 AI 工坊点击 <span className="mx-1 text-info">「批量生产」</span>启动一个。
-      </div>
+      <EmptyState
+        icon={Layers}
+        title="还没有批次"
+        description="去 AI 工坊点「批量生产」启动一组任务，会出现在这里"
+        action={{ label: '去 AI 工坊', onClick: () => setActiveModule('ai-workshop') }}
+      />
     )
   }
 

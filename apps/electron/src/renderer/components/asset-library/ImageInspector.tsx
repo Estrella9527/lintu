@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 
-import { api } from '@/lib/api'
+import { api, apiFetchRaw } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -38,7 +38,7 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) =>
-      fetch(`http://localhost:7879/api/images/${id}`, { method: 'DELETE' }).then((r) => r.json()),
+      apiFetchRaw(`/images/${id}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: () => {
       toast.success('图片已删除')
       queryClient.invalidateQueries({ queryKey: ['images'] })
@@ -56,7 +56,7 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
   const img = detail || image
 
   const handleDownload = async () => {
-    const url = `http://localhost:7879/api/images/${img.id}/download`
+    const url = api.images.downloadUrl(img.id)
     const saved = await window.electronAPI.downloadFile(url, img.file_name)
     if (saved) toast.success(`已保存到 ${saved}`)
   }

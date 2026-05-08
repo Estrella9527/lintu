@@ -22,3 +22,6 @@ apps/electron/build/codesign.pfx
 apps/electron/build/codesign.cer
 apps/electron/build/*.pfx
 apps/electron/build/*.p12
+
+# Backup system credentials — PG 密码 / 加密 key / OSS 凭证
+scripts/backup/.env

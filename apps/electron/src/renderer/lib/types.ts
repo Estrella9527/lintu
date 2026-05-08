@@ -146,3 +146,37 @@ export interface ImageFilter {
   weather?: string[]
   status?: string
 }
+
+/** /api/match/analytics shape — see apps/sidecar/sidecar/routers/match_analytics.py */
+export interface MatchAnalyticsOverview {
+  window_hours: number
+  calls: {
+    total: number
+    errors: number
+    error_rate: number
+  }
+  latency_ms: {
+    avg: number
+    p50: number
+    p95: number
+  }
+  feedback: {
+    total_events: number
+    chosen_events: number
+    unique_queries: number
+    chosen_query_rate: number
+    avg_chosen_rank: number | null
+  }
+  timeseries: Array<{
+    date: string
+    calls: number
+    errors: number
+    chosen: number
+  }>
+  hard_queries: Array<{
+    text_hash: string
+    impressions: number
+    chosen: number
+    sample_text?: string | null
+  }>
+}

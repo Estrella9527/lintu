@@ -20,7 +20,7 @@ const TABS = [
   { id: 'oss', label: 'OSS同步', icon: Cloud },
 ]
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 const API_DOCS = [
   {

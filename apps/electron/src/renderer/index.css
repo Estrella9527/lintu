@@ -381,3 +381,36 @@
 [data-radix-context-menu-content] {
   animation: none !important;
 }
+
+/* =============================================================================
+   Sonner toast 关闭按钮样式覆盖
+   sonner 默认把 close button 做成左上角浮起来的大圆环（带白色背景 + 边框），
+   跟 lintu 风格不搭。改成右上角小 × 按钮：内嵌在 toast 里，hover 才显形。
+============================================================================= */
+[data-sonner-toaster] [data-close-button] {
+  position: absolute !important;
+  top: 8px !important;
+  right: 8px !important;
+  left: auto !important;
+  transform: none !important;
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  color: rgba(var(--foreground-rgb), 0.45) !important;
+  border-radius: 6px !important;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+[data-sonner-toast]:hover [data-close-button] {
+  opacity: 1;
+}
+[data-sonner-toaster] [data-close-button]:hover {
+  background: rgba(var(--foreground-rgb), 0.08) !important;
+  color: rgba(var(--foreground-rgb), 0.9) !important;
+}
+[data-sonner-toaster] [data-close-button] svg {
+  width: 12px !important;
+  height: 12px !important;
+}

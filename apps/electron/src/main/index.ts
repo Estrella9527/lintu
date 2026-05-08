@@ -1,12 +1,171 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { dirname, join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
 import { spawn, execSync, type ChildProcess } from 'child_process'
 
 const isDev = !app.isPackaged
 const isWin = process.platform === 'win32'
 const SIDECAR_PORT = 7879
+
+/**
+ * Build flavor — baked at compile time via esbuild `--define:__BUILD_FLAVOR__`.
+ *
+ * Possible values:
+ *   - 'dev'  : 开发模式（unpackaged 启动）— env 完全透传
+ *   - 'user' : 普通分发版 — 物理屏蔽 cloud sync env vars，**永远不会**改线上
+ *   - 'ops'  : 运营管理版 — 透传 env vars，能推送到云端 UGC
+ *
+ * 在 src/main 里通过 `BUILD_FLAVOR` 引用。esbuild 把 `__BUILD_FLAVOR__` 替换成
+ * 对应的字符串字面量（比如 `--define:__BUILD_FLAVOR__='"user"'`），打包后这一段
+ * 是死代码消除的常量。
+ *
+ * **优先级（重要 — 修复 2026-05-07）**：
+ *   1. unpackaged（npx electron .）→ 永远 'dev'，无视烤进去的常量
+ *      原因：开发者本地经常会跑 `npm run build` 测试 electron-builder，会把
+ *      'user' / 'ops' 烤进 main.cjs；下次 dev 启动时如果常量优先就会误判
+ *   2. packaged + 有烤入常量 → 用烤入值（'user' / 'ops'）
+ *   3. packaged + 没烤入常量 → 'user'（保守默认）
+ */
+declare const __BUILD_FLAVOR__: string | undefined
+function detectBuildFlavor(): 'dev' | 'user' | 'ops' {
+  if (isDev) return 'dev'
+  if (typeof __BUILD_FLAVOR__ !== 'undefined' && __BUILD_FLAVOR__) {
+    const v = String(__BUILD_FLAVOR__)
+    if (v === 'user' || v === 'ops' || v === 'dev') return v
+  }
+  return 'user'   // packaged-without-define 默认按用户版处理（保守）
+}
+const BUILD_FLAVOR = detectBuildFlavor()
+console.log(`[main] BUILD_FLAVOR=${BUILD_FLAVOR} isDev=${isDev}`)
+
+/** 用户版必须剥离的 env 变量 — 防止有人在 user 版机器上手动设了这两个变量
+ *  就能影响线上。物理隔离 = 不传给 sidecar 子进程。 */
+const CLOUD_SYNC_ENV_KEYS = ['LINTU_CLOUD_SYNC_URL', 'LINTU_INTERNAL_SYNC_TOKEN'] as const
+
+// ── Cloud sync credentials（safeStorage 持久化）────────────────────────
+// 设计：让 dev / ops flavor 用户能在 UI 里配 sync URL + token，不用每次
+// 启动 Electron 前 export shell env。凭据用 OS keychain 加密存盘
+// （macOS Keychain / Windows DPAPI / Linux libsecret），main 进程启动
+// sidecar 时解密合并到 env。
+//
+// User flavor：永远忽略持久化值，物理屏蔽不可绕过。这是产品安全约定。
+//
+// 文件位置：app.getPath('userData')/cloud-sync-creds.bin
+const CREDS_FILE_NAME = 'cloud-sync-creds.bin'
+function credsFilePath(): string {
+  return join(app.getPath('userData'), CREDS_FILE_NAME)
+}
+
+interface CloudSyncCreds {
+  url: string
+  token: string
+}
+
+function readStoredCreds(): CloudSyncCreds | null {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null
+    const path = credsFilePath()
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path)
+    const json = safeStorage.decryptString(raw)
+    const obj = JSON.parse(json)
+    if (typeof obj?.url === 'string' && typeof obj?.token === 'string') {
+      return { url: obj.url, token: obj.token }
+    }
+    return null
+  } catch (e) {
+    console.warn('[creds] read failed:', e)
+    return null
+  }
+}
+
+function writeStoredCreds(creds: CloudSyncCreds | null): boolean {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.warn('[creds] safeStorage not available — refusing to write plaintext')
+      return false
+    }
+    const path = credsFilePath()
+    mkdirSync(dirname(path), { recursive: true })
+    if (creds === null) {
+      // 清除：删文件即可
+      try { require('fs').unlinkSync(path) } catch { /* not exist */ }
+      return true
+    }
+    const enc = safeStorage.encryptString(JSON.stringify(creds))
+    writeFileSync(path, enc, { mode: 0o600 })
+    return true
+  } catch (e) {
+    console.warn('[creds] write failed:', e)
+    return false
+  }
+}
+
+
+// ── Auth token (用户登录 token，与 cloud-sync-creds 同款 safeStorage 加密)
+const AUTH_TOKEN_FILE = 'auth-token.bin'
+function authTokenPath(): string {
+  return join(app.getPath('userData'), AUTH_TOKEN_FILE)
+}
+
+function readAuthToken(): string | null {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null
+    const path = authTokenPath()
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path)
+    const token = safeStorage.decryptString(raw).trim()
+    return token || null
+  } catch (e) {
+    console.warn('[auth-token] read failed:', e)
+    return null
+  }
+}
+
+function writeAuthToken(token: string | null): boolean {
+  try {
+    if (token && !safeStorage.isEncryptionAvailable()) {
+      console.warn('[auth-token] safeStorage not available — refusing to write plaintext')
+      return false
+    }
+    const path = authTokenPath()
+    if (!token) {
+      try { require('fs').unlinkSync(path) } catch { /* not exist */ }
+      return true
+    }
+    mkdirSync(dirname(path), { recursive: true })
+    const enc = safeStorage.encryptString(token)
+    writeFileSync(path, enc, { mode: 0o600 })
+    return true
+  } catch (e) {
+    console.warn('[auth-token] write failed:', e)
+    return false
+  }
+}
+
+function buildSidecarEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: '1' }
+
+  // 让 sidecar 知道自己被哪种 flavor 启动 — 决定 user_auth 中间件是否
+  // 自动派 root（ops 自动派；user 必须真登录；dev 视 LINTU_AUTH_BYPASS）
+  env.LINTU_BUILD_FLAVOR = BUILD_FLAVOR
+
+  if (BUILD_FLAVOR === 'user') {
+    // 用户版：剥离同步凭据。即使 shell / safeStorage 里有，也不传给 sidecar。
+    for (const key of CLOUD_SYNC_ENV_KEYS) delete env[key]
+    return env
+  }
+
+  // dev / ops：尝试合并 safeStorage 里的凭据。环境里已设的（shell export）
+  // 优先级**更高**，避免存盘旧值覆盖临时调试设置。
+  const stored = readStoredCreds()
+  if (stored) {
+    if (!env.LINTU_CLOUD_SYNC_URL)        env.LINTU_CLOUD_SYNC_URL = stored.url
+    if (!env.LINTU_INTERNAL_SYNC_TOKEN)   env.LINTU_INTERNAL_SYNC_TOKEN = stored.token
+  }
+  return env
+}
 
 let mainWindow: BrowserWindow | null = null
 
@@ -91,7 +250,7 @@ function startSidecar() {
       ['run', 'uvicorn', 'sidecar.main:app', '--port', String(SIDECAR_PORT), '--host', '127.0.0.1'],
       {
         cwd: sidecarDir,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: buildSidecarEnv(),
         shell: false,
       },
     )
@@ -105,7 +264,7 @@ function startSidecar() {
       ['--port', String(SIDECAR_PORT), '--host', '127.0.0.1'],
       {
         cwd: sidecarDir,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: buildSidecarEnv(),
         // Hide stray console window on Windows
         windowsHide: true,
       },
@@ -342,6 +501,81 @@ ipcMain.handle('updater:quit-and-install', () => {
 })
 
 ipcMain.handle('app:get-version', () => app.getVersion())
+ipcMain.handle('app:get-build-flavor', () => BUILD_FLAVOR)
+
+// ── Auth token IPC ─────────────────────────────────────────────────────
+// 登录 token 走 safeStorage 加密落盘，跟 cloud-sync-creds 同样保护级别。
+// renderer 在登录后写一次，每次 fetch 拿出来挂 Authorization 头；登出清空。
+ipcMain.handle('auth-token:get', () => {
+  return readAuthToken()
+})
+ipcMain.handle('auth-token:set', (_e, token: string) => {
+  if (typeof token !== 'string' || !token.trim()) {
+    return { ok: false, reason: 'invalid_token' }
+  }
+  return { ok: writeAuthToken(token) }
+})
+ipcMain.handle('auth-token:clear', () => {
+  return { ok: writeAuthToken(null) }
+})
+
+// ── Cloud sync credentials IPC ─────────────────────────────────────────
+// 让 dev / ops 用户从 UI 配凭据，不用 shell export。User flavor 永远拒绝。
+ipcMain.handle('cloud-sync-creds:get', () => {
+  if (BUILD_FLAVOR === 'user') {
+    return { available: false, reason: 'user_flavor_locked', has_creds: false }
+  }
+  const stored = readStoredCreds()
+  return {
+    available: safeStorage.isEncryptionAvailable(),
+    has_creds: !!stored,
+    url: stored?.url ?? null,
+    // 不回传明文 token；只告诉 UI 是否设置了
+    token_set: !!stored?.token,
+  }
+})
+
+ipcMain.handle('cloud-sync-creds:set', async (_e, payload: { url: string; token: string }) => {
+  if (BUILD_FLAVOR === 'user') {
+    return { ok: false, reason: 'user_flavor_locked' }
+  }
+  if (!payload?.url?.trim() || !payload?.token?.trim()) {
+    return { ok: false, reason: 'invalid_payload' }
+  }
+  const ok = writeStoredCreds({ url: payload.url.trim(), token: payload.token.trim() })
+  if (!ok) return { ok: false, reason: 'write_failed' }
+  // 写完不主动重启 sidecar — 让 UI 提示用户重启，避免操作中突然断流
+  return { ok: true }
+})
+
+ipcMain.handle('cloud-sync-creds:clear', () => {
+  if (BUILD_FLAVOR === 'user') return { ok: false, reason: 'user_flavor_locked' }
+  return { ok: writeStoredCreds(null) }
+})
+
+// 重启 sidecar — UI 在改完凭据后调一下，让新 env 立刻生效。
+// 重启完后强制 reload renderer：杀 sidecar 时 Electron 网络层会因为有
+// 在飞的 fetch 而触发 "Network service crashed"，残留的连接对象会让
+// 后续请求飞不出去。reload 重置渲染端网络状态最干净。
+ipcMain.handle('sidecar:restart', async () => {
+  try {
+    if (pyProcess) {
+      pyProcess.kill()
+      pyProcess = null
+    }
+    startSidecar()
+    const ok = await waitForSidecar()
+    if (ok && mainWindow && !mainWindow.isDestroyed()) {
+      // 给 renderer 一点时间收 toast / 关 dialog 再 reload
+      setTimeout(() => {
+        try { mainWindow!.webContents.reloadIgnoringCache() } catch {}
+      }, 600)
+    }
+    return { ok }
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) }
+  }
+})
 
 // ── App lifecycle ──
 

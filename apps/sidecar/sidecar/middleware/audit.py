@@ -91,3 +91,78 @@ def _safe_decode(data: bytes) -> dict | None:
             if "secret" in kl or "password" in kl or "token" in kl or "api_key" in kl:
                 decoded[k] = "***"
     return decoded
+
+
+# ── 操作日志中间件（用户系统 Phase 1） ──────────────────────────────────────
+#
+# 替代权限"事前阻止"的"事后追溯"。Phase 1 不做角色拆分，但每个写操作必须留
+# 痕，便于「谁动了我的标签 / 提示词 / 配置」回溯。
+#
+# 写入条件（同时满足）：
+#   - 路径在 /api/* 下（不含 /api/auth/sms/send 这种高频低价值）
+#   - method ∈ {POST, PUT, PATCH, DELETE}
+#   - request.state.user 存在（未登录的不记，避免 ops bypass 全站噪声）
+#       — 例外：root 用户操作要记，因为 ops 干预客户数据需要审计
+
+API_PREFIX = "/api/"
+
+# 跳过这些 path 不写操作日志（噪声 / 隐私敏感）
+OP_LOG_SKIP_PATHS = {
+    "/api/auth/sms/send",
+    "/api/auth/sms/verify",
+    "/api/auth/refresh",
+    "/api/auth/me",
+    "/api/auth/logout",
+}
+
+
+class OperationLogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        method = request.method
+
+        is_writable = method in ("POST", "PUT", "PATCH", "DELETE")
+        in_api = path.startswith(API_PREFIX)
+        if not (is_writable and in_api) or path in OP_LOG_SKIP_PATHS:
+            return await call_next(request)
+
+        # body hash（不存原始）— 用于审计排重
+        body_hash = None
+        try:
+            raw = await request.body()
+            if raw:
+                import hashlib
+                body_hash = hashlib.sha256(raw).hexdigest()[:32]
+        except Exception:
+            pass
+
+        response = await call_next(request)
+
+        # user 可能是真实 User 对象，也可能是 SYSTEM_ROOT（ops bypass）
+        user = getattr(request.state, "user", None)
+        if user is None:
+            return response   # 未登录 / 鉴权未挂 — 跳过记录
+
+        try:
+            user_id = getattr(user, "id", None)
+            project_id = request.headers.get("x-project-id") or None
+            ip = request.client.host if request.client else None
+            ua = (request.headers.get("user-agent") or "")[:200]
+            async with async_session() as db:
+                from sidecar.db.models import OperationLog
+                db.add(OperationLog(
+                    user_id=user_id,
+                    project_id=project_id,
+                    method=method,
+                    path=path,
+                    status_code=response.status_code,
+                    summary=f"{method} {path}",
+                    request_body_hash=body_hash,
+                    ip=ip,
+                    user_agent=ua,
+                ))
+                await db.commit()
+        except Exception as e:
+            logger.debug("op log write failed: %s", e)
+
+        return response

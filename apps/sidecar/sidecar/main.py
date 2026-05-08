@@ -24,8 +24,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from sidecar.config import LINTU_ALLOW_CORS, LINTU_MODE
 from sidecar.db.migrate import init_db
-from sidecar.middleware.audit import AuditMiddleware
+from sidecar.middleware.audit import AuditMiddleware, OperationLogMiddleware
 from sidecar.middleware.auth import AuthMiddleware
+from sidecar.middleware.user_auth import UserAuthMiddleware
+from sidecar.middleware.tenant import TenantMiddleware
+from sidecar.middleware.org_context import OrgContextMiddleware
 from sidecar.middleware.errors import install_error_handlers
 from sidecar.middleware.quota import QuotaMiddleware
 from sidecar.middleware.rate_limit import RateLimitMiddleware
@@ -34,7 +37,7 @@ from sidecar.scheduler.batch_engine import batch_scheduler
 from sidecar.scheduler.oss_worker import oss_worker
 from sidecar.scheduler.cloud_sync_worker import cloud_sync_worker
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,6 +47,13 @@ scheduler = TaskScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    # 安装 tenant ORM hooks — 必须在 init_db 之后，确保 sessionmaker 已经
+    # 准备好；只装一次（installer 内部幂等）。
+    from sidecar.db.session import async_session
+    from sidecar.db.tenant import install_tenant_hooks
+    install_tenant_hooks(async_session)
+
     # Register engine handlers (imported lazily to avoid circular deps)
     from sidecar.engines.quality_check import run_quality_check
     from sidecar.engines.dedup import run_dedup
@@ -121,7 +131,14 @@ app.add_middleware(
 # before we touch the DB for daily counters.
 app.add_middleware(QuotaMiddleware)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(AuthMiddleware)
+app.add_middleware(AuthMiddleware)         # /open-api/v1/* 的 ApiKey 路径
+# Starlette middleware 执行顺序是「外 → 内」、调用栈是后注册的先执行 dispatch。
+# 我们要的执行顺序是：UserAuth → OrgContext → Tenant → endpoint，
+# 所以注册时倒过来：Tenant 先，OrgContext 中，UserAuth 最后（最外层）。
+app.add_middleware(TenantMiddleware)       # 注入 ContextVar（依赖 request.state.user）
+app.add_middleware(OrgContextMiddleware)   # 注入 active_org_id / org_role / project_role
+app.add_middleware(UserAuthMiddleware)     # /api/* 的 user token 验证（先于 Tenant 跑）
+app.add_middleware(OperationLogMiddleware) # /api/* 写操作留痕（依赖 request.state.user）
 app.add_middleware(AuditMiddleware)
 
 
@@ -155,6 +172,16 @@ if LINTU_MODE == "electron":
     app.include_router(oss.router, prefix="/api/oss", tags=["oss"])
     app.include_router(match_analytics.router, prefix="/api/match", tags=["match-analytics"])
     app.include_router(match_synonyms.router, prefix="/api/match-synonyms", tags=["match-synonyms"])
+    app.include_router(image_review.router, prefix="/api/image-review", tags=["image-review"])
+    # 用户系统 Phase 1：登录端点不需要鉴权（UserAuthMiddleware 主动放行 /api/auth/*）
+    app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
+    # 项目邀请 — 路径形如 /api/projects/{pid}/invitations，挂在 /api/projects 下
+    app.include_router(invitations_router.router, prefix="/api/projects", tags=["invitations"])
+    # 操作日志读端点（仅超级管理员可调）
+    app.include_router(audit_ops_router.router, prefix="/api/audit", tags=["audit-ops"])
+    # v0.2 组织化
+    app.include_router(orgs_router.router, prefix="/api/orgs", tags=["orgs"])
+    app.include_router(platform_router.router, prefix="/api/platform", tags=["platform"])
 
 # /internal/sync/* — local sidecar pushes here, never exposed to UGC.
 # Only mounted in server mode (cloud deploy) — local has no need to

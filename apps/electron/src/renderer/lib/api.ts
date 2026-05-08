@@ -6,7 +6,10 @@ import type {
   TaskProgressEvent,
 } from './types'
 
-const API_BASE = 'http://localhost:7879/api'
+// 强制 IPv4 — sidecar 只监听 127.0.0.1。Chromium / Electron 在解析 localhost
+// 时可能会优先 IPv6 ::1 → connection refused → "Failed to fetch"。直接写
+// 127.0.0.1 绕过 DNS 歧义，所有 fetch / EventSource / <img> 全走 IPv4。
+const API_BASE = 'http://127.0.0.1:7879/api'
 
 
 // ── Image list query shape (shared by list + listIds) ──────────────────────
@@ -69,16 +72,127 @@ function buildImageQuery(params: ImageListParams): URLSearchParams {
 }
 
 
+/** Error subclass that preserves HTTP status + parsed body so callers can
+ *  do structured error handling (e.g. 409 conflict UX) without re-parsing
+ *  the message string. */
+export class ApiError extends Error {
+  status: number
+  body: unknown
+  constructor(status: number, body: unknown, message?: string) {
+    super(message || `API Error ${status}`)
+    this.status = status
+    this.body = body
+  }
+}
+
+// ── 登录 token 内存缓存 + main 进程 safeStorage 同步 ─────────────────────
+// 每次启动 App 时由 AuthGate 调 hydrateAuthToken() 从 safeStorage 拉一次。
+// 登录成功后 setAuthToken() 同时写内存 + 落盘。登出 / 401 时 clearAuthToken()。
+let _authToken: string | null = null
+type AuthLoggedOutListener = () => void
+const _logoutListeners = new Set<AuthLoggedOutListener>()
+
+export async function hydrateAuthToken(): Promise<void> {
+  const ipc = (typeof window !== 'undefined' ? (window as any).updaterAPI?.authToken : null)
+  if (!ipc?.get) return
+  try { _authToken = await ipc.get() } catch { _authToken = null }
+}
+
+export function getAuthToken(): string | null {
+  return _authToken
+}
+
+export async function setAuthToken(token: string): Promise<void> {
+  _authToken = token
+  const ipc = (window as any).updaterAPI?.authToken
+  if (ipc?.set) {
+    try { await ipc.set(token) } catch { /* ignore — token 还在内存里至少能用 */ }
+  }
+}
+
+export async function clearAuthToken(): Promise<void> {
+  _authToken = null
+  const ipc = (window as any).updaterAPI?.authToken
+  if (ipc?.clear) {
+    try { await ipc.clear() } catch { /* ignore */ }
+  }
+  // 通知所有订阅者（atoms / AuthGate 重渲染）
+  _logoutListeners.forEach((cb) => { try { cb() } catch {} })
+}
+
+/** 当 401 触发自动登出时，订阅者会被调用。 */
+export function onAuthLoggedOut(cb: AuthLoggedOutListener): () => void {
+  _logoutListeners.add(cb)
+  return () => { _logoutListeners.delete(cb) }
+}
+
+/**
+ * Drop-in 替代原生 `fetch()` — 唯一改动是自动注入 Bearer token + 401 自动登出。
+ * 保持返回 `Response`，所以现有 `.then(r => r.json())` 调用风格不需要改。
+ *
+ * 用法（与 fetch 完全一致）：
+ *   apiFetchRaw('/projects').then(r => r.json())
+ *   apiFetchRaw('/projects/xxx', { method: 'DELETE' })
+ *
+ * path 不带 `/api` 前缀（API_BASE 已含）。
+ */
+export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+  }
+  // 只对带 body 的请求设 Content-Type（GET 不必，避免缩略图被加 Content-Type 干扰）
+  if (init?.body && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json'
+  }
+  if (_authToken && !headers.Authorization && !headers.authorization) {
+    headers.Authorization = `Bearer ${_authToken}`
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    await clearAuthToken()
+  }
+  return res
+}
+
+/**
+ * 把当前 token 拼到一个完整 URL 的 query 上 — 给 <img> / <a download> /
+ * EventSource 这类原生标签用（无法塞自定义请求头）。已带 ?... 的 URL 用 &，
+ * 否则用 ?。token 缺失时原样返回（避免 dev BYPASS 模式下污染 URL）。
+ */
+export function withTokenParam(url: string): string {
+  if (!_authToken) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(_authToken)}`
+}
+
+/**
+ * 解析 JSON + 自动抛 ApiError 的强类型版本。新代码优先用这个。
+ */
+export async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  }
+  if (_authToken && !headers.Authorization && !headers.authorization) {
+    headers.Authorization = `Bearer ${_authToken}`
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    // token 失效：清空 + 通知 AuthGate 跳登录页（登录端点除外，避免循环）
+    await clearAuthToken()
+  }
+  if (!res.ok) {
+    const text = await res.text()
+    let body: unknown = text
+    try { body = JSON.parse(text) } catch { /* keep raw text */ }
+    throw new ApiError(res.status, body, `API Error ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<T>
+}
+
 class APIClient {
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
-      ...init,
-    })
-    if (!res.ok) {
-      throw new Error(`API Error ${res.status}: ${await res.text()}`)
-    }
-    return res.json()
+  private request<T>(path: string, init?: RequestInit): Promise<T> {
+    return apiFetch<T>(path, init)
   }
 
   // ── Tasks ──
@@ -118,7 +232,7 @@ class APIClient {
       id: string,
       onMessage: (event: TaskProgressEvent) => void,
     ): () => void {
-      const es = new EventSource(`${API_BASE}/tasks/${id}/stream`)
+      const es = new EventSource(withTokenParam(`${API_BASE}/tasks/${id}/stream`))
       es.onmessage = (e) => onMessage(JSON.parse(e.data))
       es.onerror = () => {
         // Auto-reconnect is built into EventSource
@@ -217,7 +331,11 @@ class APIClient {
       }),
 
     thumbnailUrl: (id: string, size: 128 | 300 | 800 = 300) =>
-      `http://localhost:7879/api/images/${id}/thumbnail?size=${size}`,
+      withTokenParam(`http://localhost:7879/api/images/${id}/thumbnail?size=${size}`),
+    fileUrl: (id: string) =>
+      withTokenParam(`http://localhost:7879/api/images/${id}/file`),
+    downloadUrl: (id: string) =>
+      withTokenParam(`http://localhost:7879/api/images/${id}/download`),
   }
 
   // ── Stats ──
@@ -227,6 +345,152 @@ class APIClient {
       this.request<DashboardStats>(
         `/stats/dashboard?project_id=${projectId}`,
       ),
+  }
+
+  // ── Auth (用户系统 Phase 1) ──
+  auth = {
+    sendSms: (phone: string) =>
+      this.request<{ ok: boolean; ttl_sec: number }>('/auth/sms/send', {
+        method: 'POST',
+        body: JSON.stringify({ phone }),
+      }),
+
+    verifySms: (phone: string, code: string) =>
+      this.request<{ token: string; user: import('@/atoms/auth').CurrentUser }>(
+        '/auth/sms/verify',
+        { method: 'POST', body: JSON.stringify({ phone, code }) },
+      ),
+
+    me: () => this.request<import('@/atoms/auth').CurrentUser>('/auth/me'),
+
+    updateMe: (body: { display_name?: string; avatar_url?: string }) =>
+      this.request<import('@/atoms/auth').CurrentUser>('/auth/me', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+
+    logout: () =>
+      this.request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
+    refresh: () =>
+      this.request<{ ok: boolean; expires_at: string }>('/auth/refresh', {
+        method: 'POST',
+      }),
+
+    sessions: () => this.request<Array<{
+      id: string
+      device_label: string | null
+      ip: string | null
+      user_agent: string | null
+      created_at: string | null
+      expires_at: string | null
+      is_current: boolean
+    }>>('/auth/sessions'),
+
+    revokeSession: (sessionId: string) =>
+      this.request<{ ok: boolean }>(`/auth/sessions/${sessionId}`, {
+        method: 'DELETE',
+      }),
+  }
+
+  // ── Orgs (v0.2 组织化) ──
+  orgs = {
+    list: () => this.request<Array<import('@/atoms/auth').CurrentOrgSummary>>('/orgs'),
+    get: (orgId: string) => this.request<import('@/atoms/auth').CurrentOrgSummary>(`/orgs/${orgId}`),
+    create: (body: {
+      name: string; slug: string; contact_email?: string;
+      initial_owner_phone: string; plan?: string;
+    }) => this.request<import('@/atoms/auth').CurrentOrgSummary>('/orgs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    update: (orgId: string, body: { name?: string; contact_email?: string; logo_url?: string }) =>
+      this.request<import('@/atoms/auth').CurrentOrgSummary>(`/orgs/${orgId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    delete: (orgId: string) =>
+      this.request<{ ok: boolean }>(`/orgs/${orgId}`, { method: 'DELETE' }),
+
+    listMembers: (orgId: string) =>
+      this.request<Array<{
+        id: string; user_id: string; phone: string | null;
+        display_name: string | null; avatar_url: string | null;
+        role: string; invited_by: string | null; created_at: string | null;
+      }>>(`/orgs/${orgId}/members`),
+    addMember: (orgId: string, body: { phone: string; role?: string }) =>
+      this.request<{ ok: boolean; user_id: string; phone: string; role: string }>(
+        `/orgs/${orgId}/members`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    updateMember: (orgId: string, userId: string, role: string) =>
+      this.request<{ ok: boolean }>(`/orgs/${orgId}/members/${userId}`, {
+        method: 'PATCH', body: JSON.stringify({ role }),
+      }),
+    removeMember: (orgId: string, userId: string) =>
+      this.request<{ ok: boolean }>(`/orgs/${orgId}/members/${userId}`, {
+        method: 'DELETE',
+      }),
+  }
+
+  // ── Platform (仅 platform owner) ──
+  platform = {
+    overview: () => this.request<{
+      org_count: number; user_count: number; image_count: number;
+      project_count: number; storage_used_gb: number;
+    }>('/platform/overview'),
+    listOrgs: () => this.request<Array<{
+      id: string; name: string; slug: string; plan: string; status: string;
+      storage_quota_gb: number; storage_used_gb: number;
+      created_at: string | null; deleted_at: string | null;
+      member_count: number; project_count: number;
+    }>>('/platform/orgs'),
+    listUsers: () => this.request<Array<{
+      id: string; phone: string | null; display_name: string | null;
+      is_platform_owner: boolean; is_root: boolean; status: string;
+      last_login_at: string | null; created_at: string | null;
+    }>>('/platform/users'),
+  }
+
+  // ── Audit log（仅超级管理员可调） ──
+  audit = {
+    listOperations: (params?: {
+      user_id?: string
+      project_id?: string
+      method?: string
+      path_prefix?: string
+      since?: string
+      limit?: number
+      offset?: number
+    }) => {
+      const qs = new URLSearchParams()
+      if (params?.user_id) qs.set('user_id', params.user_id)
+      if (params?.project_id) qs.set('project_id', params.project_id)
+      if (params?.method) qs.set('method', params.method)
+      if (params?.path_prefix) qs.set('path_prefix', params.path_prefix)
+      if (params?.since) qs.set('since', params.since)
+      if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+      if (params?.offset !== undefined) qs.set('offset', String(params.offset))
+      const tail = qs.toString() ? `?${qs}` : ''
+      return this.request<{
+        items: Array<{
+          id: number
+          user_id: string | null
+          user: { phone: string | null; display_name: string | null } | null
+          project_id: string | null
+          method: string
+          path: string
+          status_code: number | null
+          summary: string | null
+          ip: string | null
+          user_agent: string | null
+          created_at: string | null
+        }>
+        limit: number
+        offset: number
+        next_offset: number | null
+      }>(`/audit/operations${tail}`)
+    },
   }
 
   // ── Matrix ──
@@ -240,14 +504,72 @@ class APIClient {
 
   // ── Config ──
 
+  // ── Match analytics (匹配反馈看板) ──
+  matchAnalytics = {
+    /** Roll-up of calls / latency / feedback over the last `window_hours`.
+     * Backend lives in routers/match_analytics.py. */
+    overview: (windowHours = 168) =>
+      this.request<import('./types').MatchAnalyticsOverview>(
+        `/match/analytics?window_hours=${windowHours}`,
+      ),
+  }
+
   config = {
     get: () => this.request<Record<string, string>>('/config'),
 
-    update: (data: Record<string, string>) =>
-      this.request('/config', {
+    // Backend accepts any JSON-serializable value; callers commonly pass
+    // strings / numbers / booleans / arrays. Using `unknown` here keeps
+    // type safety at the call site without forcing every caller to
+    // stringify integer / boolean fields.
+    //
+    // 乐观锁：如果 caller 传 ifVersion，服务端版本不一致会返回 409，
+    // 由调用方决定如何处理（弹冲突对话框 / 强制覆盖 / 重新拉取）。
+    update: (data: Record<string, unknown>, ifVersion?: number) =>
+      this.request<{ ok: boolean; __version: number }>('/config', {
         method: 'PUT',
-        body: JSON.stringify({ data }),
+        body: JSON.stringify({ data, if_version: ifVersion ?? null }),
       }),
+
+    /** 当前 sidecar 进程是否会把 config 改动推到云端 — 决定「匹配策略」
+     * 等页面顶部该显示「只本地生效」还是「保存即同步线上 UGC」。 */
+    syncStatus: () =>
+      this.request<{
+        enabled: boolean
+        target_url: string | null
+        has_token: boolean
+        pending_jobs: number
+      }>('/config/sync-status'),
+
+    /** 近期 config 改动审计记录。可按 key 过滤；最新在前。 */
+    auditLog: (params?: { key?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.key)   qs.set('key', params.key)
+      if (params?.limit) qs.set('limit', String(params.limit))
+      return this.request<Array<{
+        id: number
+        key: string
+        old_value: unknown
+        new_value: unknown
+        source: 'desktop' | 'cloud_sync' | 'cli'
+        actor_meta: { host?: string; pid?: number } | null
+        created_at: string | null
+      }>>(`/config/audit-log${qs.toString() ? `?${qs}` : ''}`)
+    },
+
+    /** Test OSS credentials WITHOUT saving — used by the OSS Connect tab's
+     * 「测试连接」button before commit. */
+    testOss: (body: {
+      oss_provider: string
+      oss_endpoint: string
+      oss_bucket: string
+      oss_access_key?: string
+      oss_access_secret?: string
+      oss_cdn_base?: string
+    }) =>
+      this.request<{ ok: boolean; mode?: string; code?: string; message?: string }>(
+        '/config/oss/test',
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
   }
 
   // ── Batches (Phase 2) ──
@@ -303,7 +625,7 @@ class APIClient {
       this.request(`/batches/${id}`, { method: 'DELETE' }),
 
     subscribeProgress(id: string, onMessage: (e: BatchProgressEvent) => void): () => void {
-      const es = new EventSource(`${API_BASE}/batches/${id}/stream`)
+      const es = new EventSource(withTokenParam(`${API_BASE}/batches/${id}/stream`))
       es.onmessage = (e) => {
         try { onMessage(JSON.parse(e.data)) } catch { /* ignore keep-alives */ }
       }

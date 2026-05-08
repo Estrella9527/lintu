@@ -8,6 +8,7 @@ import { api } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { Button } from '@/components/ui/button'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { Slider } from '@/components/ui/slider'
 import { Input } from '@/components/ui/input'
 import { ConfigCard } from '@/components/pipeline/ConfigCard'
@@ -75,9 +76,15 @@ export function TaggingTab() {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-[12px] text-foreground/50 flex items-center gap-2">
-              并发数: <span className={cn('tabular-nums font-medium',
-                concurrency >= 48 ? 'text-warning' : concurrency >= 24 ? 'text-info' : 'text-foreground/85'
-              )}>{concurrency}</span>
+              <span className="inline-flex items-center gap-1">
+                并发数: <span className={cn('tabular-nums font-medium',
+                  concurrency >= 48 ? 'text-warning' : concurrency >= 24 ? 'text-info' : 'text-foreground/85'
+                )}>{concurrency}</span>
+                <InfoHint text={
+                  '中转 (one-API/new-api) 24-48 并发都安全；\n' +
+                  'OpenAI / Gemini 官方 API 限流较严，推荐 ≤ 8。'
+                } />
+              </span>
               {concurrency >= 48 && (
                 <span className="text-[10px] text-warning ml-auto">⚠ 注意监控 provider 配额</span>
               )}
@@ -89,10 +96,6 @@ export function TaggingTab() {
               max={64}
               step={1}
             />
-            <p className="text-[10.5px] text-foreground/40">
-              单条接入的中转 (one-API/new-api) 24-48 并发都安全；
-              OpenAI/Gemini 官方 API 限流较严，推荐 ≤ 8
-            </p>
           </div>
           <div className="space-y-2">
             <label className="text-[12px] text-foreground/50">费用上限 (USD)</label>

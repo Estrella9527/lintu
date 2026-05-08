@@ -5,9 +5,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ChevronLeft, ChevronRight, Folder, Info, Maximize2, Minus, Plus, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { api } from '@/lib/api'
 import type { ImageRecord } from '@/lib/types'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 interface SimilarMatch {
   image_id: string
@@ -504,12 +505,12 @@ function NavButton({ side, onClick }: { side: 'left' | 'right'; onClick: (e: Rea
 /** 800px cached thumbnail — used as a blur-up placeholder only. */
 function thumbUrl(img: ImageRecord): string {
   const v = img.updated_at ? `&v=${encodeURIComponent(img.updated_at)}` : ''
-  return `http://localhost:7879/api/images/${img.id}/thumbnail?size=800${v}`
+  return api.images.thumbnailUrl(img.id, 800) + v
 }
 
 /** Full-resolution original bytes — zero re-encoding. This is what the user
  * must actually see, not a downsampled/compressed preview. */
 function fullUrl(img: ImageRecord): string {
-  const v = img.updated_at ? `?v=${encodeURIComponent(img.updated_at)}` : ''
-  return `http://localhost:7879/api/images/${img.id}/file${v}`
+  const v = img.updated_at ? `&v=${encodeURIComponent(img.updated_at)}` : ''
+  return api.images.fileUrl(img.id) + v
 }

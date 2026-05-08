@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api'
+import { InfoHint } from '@/components/shared/InfoHint'
 
 const THEMES: { value: ThemeMode; label: string; icon: React.ElementType }[] = [
   { value: 'light', label: '浅色', icon: Sun },
@@ -90,24 +91,26 @@ export function GeneralTab() {
       </section>
 
       <section>
-        <h3 className="text-[13px] font-medium text-foreground/80 mb-1">生成上传策略</h3>
-        <p className="text-[11px] text-foreground/45 mb-3 leading-relaxed">
-          AI 工坊调用 API 时默认<b className="text-foreground/65">原字节透传</b>，绝不二次编码。<br />
-          这里设定一个保护阈值：当种子图字节数超过限制时，按下方策略处理（防止 relay 413/422 拒收）。
-        </p>
+        <div className="flex items-center gap-1.5 mb-3">
+          <h3 className="text-[13px] font-medium text-foreground/80">生成上传策略</h3>
+          <InfoHint text={
+            'AI 工坊调用 API 时默认原字节透传，绝不二次编码。\n' +
+            '这里设定一个保护阈值：当种子图字节数超过限制时，按下方策略处理（防止 relay 413/422 拒收）。'
+          } />
+        </div>
         <div className="grid grid-cols-[140px_1fr] gap-3 items-center text-[12.5px]">
-          <label className="text-foreground/65">单图上限 (MB)</label>
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min="0"
-              step="1"
-              value={maxMb}
-              onChange={(e) => setMaxMb(e.target.value)}
-              className="w-28 h-8"
-            />
-            <span className="text-[11px] text-foreground/45">0 = 不限制</span>
-          </div>
+          <label className="text-foreground/65 inline-flex items-center gap-1">
+            单图上限 (MB)
+            <InfoHint text="0 = 不限制" />
+          </label>
+          <Input
+            type="number"
+            min="0"
+            step="1"
+            value={maxMb}
+            onChange={(e) => setMaxMb(e.target.value)}
+            className="w-28 h-8"
+          />
 
           <label className="text-foreground/65">超阈值时</label>
           <div className="flex gap-2">
@@ -118,15 +121,16 @@ export function GeneralTab() {
               <button
                 key={opt.v}
                 onClick={() => setPolicy(opt.v)}
+                title={opt.desc}
                 className={cn(
-                  'flex flex-col items-start gap-0.5 px-3 py-2 rounded-md border text-left transition-colors min-w-[180px]',
+                  'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-[12px] transition-colors',
                   policy === opt.v
                     ? 'border-accent/40 bg-accent/10 text-accent'
                     : 'border-foreground/8 text-foreground/55 hover:bg-foreground/[0.03]',
                 )}
               >
-                <span className="text-[12px] font-medium">{opt.label}</span>
-                <span className="text-[10px] text-foreground/45">{opt.desc}</span>
+                {opt.label}
+                <InfoHint text={opt.desc} size={11} />
               </button>
             ))}
           </div>

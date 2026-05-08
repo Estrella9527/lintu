@@ -1,0 +1,44 @@
+name: Sidecar tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/sidecar/**'
+      - '.github/workflows/sidecar-tests.yml'
+  pull_request:
+    paths:
+      - 'apps/sidecar/**'
+      - '.github/workflows/sidecar-tests.yml'
+
+# Cancel queued runs when a new commit lands on the same PR — saves CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: apps/sidecar
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Sync deps (incl. dev group)
+        run: uv sync --group dev
+
+      - name: Run pytest
+        env:
+          # Force fresh tmp dir; conftest overrides this anyway but keeps any
+          # accidental ~/lintu-data writes off the runner's home.
+          LINTU_DATA_DIR: ${{ runner.temp }}/lintu-test-data
+        run: uv run pytest -q

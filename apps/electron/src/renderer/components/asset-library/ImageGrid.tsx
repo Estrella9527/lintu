@@ -3,8 +3,9 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { JustifiedGrid } from './JustifiedGrid'
-import { Check, Loader2, Minus, Plus } from 'lucide-react'
+import { Check, Loader2, Minus, Plus, ImageOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { EmptyState } from '@/components/shared/EmptyState'
 import type { ImageRecord } from '@/lib/types'
 
 const PAGE_SIZE = 120
@@ -126,10 +127,11 @@ export function ImageGrid({
 
   if (allImages.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-foreground/30 text-[13px]">
-        <p>暂无图片</p>
-        <p className="text-[12px] mt-1">在流水线中选择目录并执行扫描以导入图片</p>
-      </div>
+      <EmptyState
+        icon={ImageOff}
+        title="还没有图片"
+        description="在流水线中选择一个图片目录并跑「扫描」，导入后这里就有内容了"
+      />
     )
   }
 

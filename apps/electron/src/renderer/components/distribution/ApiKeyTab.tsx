@@ -1,3 +1,4 @@
+import { apiFetchRaw } from '@/lib/api'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSetAtom } from 'jotai'
@@ -12,8 +13,9 @@ import {
 import { Copy, History, Key, Plus, RotateCw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { distributionNavRequestAtom } from '@/atoms/navigation'
+import { EmptyState } from '@/components/shared/EmptyState'
 
-const KEYS_API = 'http://localhost:7879/api/api-keys'
+const KEYS_API = '/api-keys'
 
 interface ApiKey {
   id: string
@@ -43,12 +45,12 @@ export function ApiKeyTab() {
 
   const { data: keys, isLoading } = useQuery<ApiKey[]>({
     queryKey: ['api-keys'],
-    queryFn: () => fetch(KEYS_API).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(KEYS_API).then((r) => r.json()),
   })
 
   const rotate = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`${KEYS_API}/${id}/rotate`, { method: 'POST' })
+      const res = await apiFetchRaw(`${KEYS_API}/${id}/rotate`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
       return res.json() as Promise<CreatedKey>
     },
@@ -57,7 +59,7 @@ export function ApiKeyTab() {
   })
 
   const deactivate = useMutation({
-    mutationFn: (id: string) => fetch(`${KEYS_API}/${id}`, { method: 'DELETE' }).then((r) => r.json()),
+    mutationFn: (id: string) => apiFetchRaw(`${KEYS_API}/${id}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: () => { toast.success('已停用'); queryClient.invalidateQueries({ queryKey: ['api-keys'] }) },
   })
 
@@ -77,9 +79,11 @@ export function ApiKeyTab() {
           {[1, 2].map((i) => <div key={i} className="h-20 rounded-lg bg-foreground/[0.02] animate-pulse" />)}
         </div>
       ) : !keys?.length ? (
-        <div className="text-center py-12 text-[13px] text-foreground/40 rounded-lg border border-dashed border-foreground/10">
-          还没有 API Key。点击右上角创建一个。
-        </div>
+        <EmptyState
+          icon={Key}
+          title="还没有 API Key"
+          description="点击右上角「新建」创建一个；UGC 端凭 Key 调匹配 API"
+        />
       ) : (
         <div className="space-y-2">
           {keys.map((k) => (
@@ -193,7 +197,7 @@ interface UsageData {
 function KeyUsageStrip({ keyPk }: { keyPk: string }) {
   const { data } = useQuery<UsageData>({
     queryKey: ['api-key-usage', keyPk],
-    queryFn: () => fetch(`${KEYS_API}/${keyPk}/usage?days=7`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`${KEYS_API}/${keyPk}/usage?days=7`).then((r) => r.json()),
     refetchInterval: 30_000,
   })
 
@@ -292,7 +296,7 @@ function CreateKeyDialog({ open, onClose, onCreated }: {
           per_day: perDay ? Number(perDay) : null,
         },
       }
-      const res = await fetch(KEYS_API, {
+      const res = await apiFetchRaw(KEYS_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

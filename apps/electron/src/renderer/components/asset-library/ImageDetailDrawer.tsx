@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, apiFetchRaw } from '@/lib/api'
 import { DetailDrawer } from '@/components/shared/DetailDrawer'
 import { ThumbnailImage } from './ThumbnailImage'
 import { Badge } from '@/components/ui/badge'
@@ -26,7 +26,7 @@ export function ImageDetailDrawer({ image, open, onClose }: ImageDetailDrawerPro
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      fetch(`http://localhost:7879/api/images/${image!.id}`, { method: 'DELETE' }).then((r) => r.json()),
+      apiFetchRaw(`/images/${image!.id}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: () => {
       toast.success('图片已删除')
       queryClient.invalidateQueries({ queryKey: ['images'] })
@@ -39,7 +39,7 @@ export function ImageDetailDrawer({ image, open, onClose }: ImageDetailDrawerPro
   const img = detail || image
 
   const handleDownload = async () => {
-    const url = `http://localhost:7879/api/images/${img.id}/download`
+    const url = api.images.downloadUrl(img.id)
     const saved = await window.electronAPI.downloadFile(url, img.file_name)
     if (saved) toast.success(`已保存到 ${saved}`)
   }

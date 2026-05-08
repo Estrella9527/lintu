@@ -135,6 +135,8 @@ CLOUD_RELEVANT_CONFIG_KEYS = (
     "match_default_unique_per_source",
     "match_default_no_people",
     "match_recent_cooldown_size",
+    "match_seasonal_boost_strength",
+    "match_default_filters",
     "oss_provider",
     "oss_endpoint",
     "oss_bucket",
@@ -299,7 +301,15 @@ class CloudSyncWorker:
     async def _build_images_payload(self, ids: list[str]) -> dict:
         from sidecar.engines.clip_embed import deserialize_vector
         async with async_session() as db:
-            imgs = (await db.execute(select(Image).where(Image.id.in_(ids)))).scalars().all()
+            # Pre-publish review gate: only push `approved` rows. Pending /
+            # rejected images are operator decisions still in flight; pushing
+            # them now would either expose unreviewed AI output or require a
+            # second sync after rejection. The cloud side never sees them.
+            imgs = (await db.execute(
+                select(Image)
+                .where(Image.id.in_(ids))
+                .where(Image.review_status == "approved")
+            )).scalars().all()
             tag_rows = (await db.execute(
                 select(Tag.image_id, Tag.dimension, Tag.value, Tag.source, Tag.confidence)
                 .where(Tag.image_id.in_(ids))

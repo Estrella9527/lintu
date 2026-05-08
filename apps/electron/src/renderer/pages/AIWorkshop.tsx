@@ -1,3 +1,5 @@
+import { apiFetchRaw } from '@/lib/api'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
@@ -28,7 +30,7 @@ interface StrategyRecord {
   enabled: boolean
 }
 
-const API = 'http://localhost:7879/api/strategies'
+const API = '/strategies'
 
 export default function AIWorkshop() {
   const queryClient = useQueryClient()
@@ -56,7 +58,7 @@ export default function AIWorkshop() {
 
   const { data: strategies, isLoading } = useQuery<StrategyRecord[]>({
     queryKey: ['strategies'],
-    queryFn: () => fetch(API).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(API).then((r) => r.json()),
   })
 
   // Auto-select first strategy
@@ -228,7 +230,7 @@ function StrategyDialog({ open, onClose, strategy, onSaved }: {
     mutationFn: () => {
       const body = { name, icon_keyword: iconKeyword, prompt, task_type: taskType, parameters: paramsJson, sort_order: 99 }
       const url = isEdit ? `${API}/${strategy!.id}` : API
-      return fetch(url, {
+      return apiFetchRaw(url, {
         method: isEdit ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -238,7 +240,7 @@ function StrategyDialog({ open, onClose, strategy, onSaved }: {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: () => fetch(`${API}/${strategy!.id}`, { method: 'DELETE' }).then((r) => r.json()),
+    mutationFn: () => apiFetchRaw(`${API}/${strategy!.id}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: () => { toast.success('已删除'); onSaved() },
   })
 
@@ -274,16 +276,16 @@ function StrategyDialog({ open, onClose, strategy, onSaved }: {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[12px] text-foreground/50">参数配置 (JSON)</label>
+            <label className="text-[12px] text-foreground/50 inline-flex items-center gap-1">
+              参数配置 (JSON)
+              <InfoHint text={'每个参数: { name, label, type: "select"|"input"|"slider", options?, default? }'} />
+            </label>
             <Textarea
               value={paramsJson}
               onChange={(e) => setParamsJson(e.target.value)}
               placeholder='[{"name":"style","label":"风格","type":"select","options":["日系","胶片"],"default":"日系"}]'
               className="min-h-[80px] text-[12px] font-mono"
             />
-            <p className="text-[10px] text-foreground/30">
-              每个参数: {`{ name, label, type: "select"|"input"|"slider", options?, default? }`}
-            </p>
           </div>
 
           {/* Icon preview */}

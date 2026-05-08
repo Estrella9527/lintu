@@ -3,6 +3,7 @@ import { useAtom } from 'jotai'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { activeProjectIdAtom } from '@/atoms/project'
+import { apiFetchRaw } from '@/lib/api'
 import {
   Select,
   SelectContent,
@@ -60,20 +61,23 @@ export function ProjectSelector() {
 
   const { data: projects } = useQuery<Project[]>({
     queryKey: ['projects'],
-    queryFn: () => fetch('http://localhost:7879/api/projects').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/projects').then((r) => r.json()),
   })
 
-  // Auto-select first project if none active
+  // Auto-select first project if active is missing OR points to a deleted project.
+  // 后者发生在：项目被管理员删除 / 数据库迁移把脏数据清掉 / 用户切到没权限的工作区。
+  // 不做这个兜底的话，stale localStorage 会让 ProjectSelector 一直显示「选择项目」
+  // 但其它页面把 stale id 拼进 URL → 后端返回空 → UI 看似"什么都没有"。
   useEffect(() => {
-    if (!activeId && projects && projects.length > 0) {
-      setActiveId(projects[0].id)
-    }
+    if (!projects || projects.length === 0) return
+    const stillExists = activeId && projects.some((p) => p.id === activeId)
+    if (!stillExists) setActiveId(projects[0].id)
   }, [activeId, projects, setActiveId])
 
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!newName || !newDir) throw new Error('请填写项目名称和目录')
-      const res = await fetch('http://localhost:7879/api/projects', {
+      const res = await apiFetchRaw('/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName, originals_path: newDir, workspace_path: newDir }),
@@ -95,24 +99,27 @@ export function ProjectSelector() {
 
   return (
     <>
-      <div className="flex items-center gap-1 px-2 mb-2">
+      <div className="flex items-center gap-1 px-2 mb-2 min-w-0">
         <Select value={activeId || ''} onValueChange={setActiveId}>
-          <SelectTrigger className="h-7 text-[12px] flex-1 border-foreground/5">
+          <SelectTrigger
+            className="h-7 text-[12px] flex-1 min-w-0 border-foreground/5"
+            title={activeProject?.name}
+          >
             <SelectValue placeholder="选择项目">
               {activeProject && (
-                <span className="inline-flex items-center gap-1.5 truncate">
+                <span className="flex items-center gap-1.5 min-w-0 max-w-full">
                   <ColorDot color={activeProject.color} />
-                  <span className="truncate">{activeProject.name}</span>
+                  <span className="truncate min-w-0">{activeProject.name}</span>
                 </span>
               )}
             </SelectValue>
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="max-w-[280px]">
             {projects?.map((p) => (
               <SelectItem key={p.id} value={p.id} className="text-[12px]">
-                <span className="inline-flex items-center gap-1.5">
+                <span className="flex items-center gap-1.5 max-w-full">
                   <ColorDot color={p.color} />
-                  <span>{p.name}</span>
+                  <span className="truncate">{p.name}</span>
                 </span>
               </SelectItem>
             ))}
@@ -260,7 +267,7 @@ function ProjectRow({
 
   const saveName = useMutation({
     mutationFn: async (name: string) => {
-      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+      const res = await apiFetchRaw(`/projects/${project.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -278,7 +285,7 @@ function ProjectRow({
 
   const saveColor = useMutation({
     mutationFn: async (color: string | null) => {
-      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+      const res = await apiFetchRaw(`/projects/${project.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ color: color ?? '' }),
@@ -294,7 +301,7 @@ function ProjectRow({
     mutationFn: async () => {
       // Fetch image count for the confirm dialog so the user knows the
       // blast radius. Cheap query.
-      const sres = await fetch(`http://localhost:7879/api/projects/${project.id}/stats`)
+      const sres = await apiFetchRaw(`/projects/${project.id}/stats`)
       const stats = sres.ok ? await sres.json() : { image_count: 0 }
       const count = stats.image_count ?? 0
       const ok = window.confirm(
@@ -304,7 +311,7 @@ function ProjectRow({
         `此操作不可撤销。`
       )
       if (!ok) throw new Error('已取消')
-      const res = await fetch(`http://localhost:7879/api/projects/${project.id}`, {
+      const res = await apiFetchRaw(`/projects/${project.id}`, {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error(await res.text())

@@ -2,18 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
+import { apiFetchRaw } from '@/lib/api'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { ChevronDown, ChevronRight, Copy as CopyIcon, Loader2, Sparkles, Star, Target } from 'lucide-react'
 import { matchPlaygroundSeedAtom } from '@/atoms/match'
 import { matchSourceFilterAtom, type MatchSourceFilter } from '@/atoms/ui-state'
 import { activeProjectIdAtom } from '@/atoms/project'
+import { CandidateFiltersPanel, EMPTY_FILTERS, type CandidateFilters } from '@/components/match-lab/CandidateFilters'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 interface MatchedImage {
   image_id: string
@@ -82,7 +85,6 @@ interface EvalQuery {
   ideal_image_ids: string[]
 }
 
-type SourceFilter = MatchSourceFilter
 
 export function MatchPlaygroundTab() {
   const queryClient = useQueryClient()
@@ -92,6 +94,16 @@ export function MatchPlaygroundTab() {
   const [limit, setLimit] = useState(8)
   const [diversity, setDiversity] = useState<'strict' | 'balanced' | 'none'>('balanced')
   const [sourceFilter, setSourceFilter] = useAtom(matchSourceFilterAtom)
+  // Sync source_type 旧 atom → 新 candidate filters，保持向后兼容（其它面板可能仍读旧 atom）
+  const [candidateFilters, setCandidateFilters] = useState<CandidateFilters>(() => ({
+    ...EMPTY_FILTERS,
+    source_type: (sourceFilter as 'all' | 'original' | 'generated') ?? 'all',
+  }))
+  const updateCandidateFilters = (next: CandidateFilters) => {
+    setCandidateFilters(next)
+    // 同步回旧 atom，让其它地方（如 stats 卡片）读到一致的 source_type
+    setSourceFilter(next.source_type as MatchSourceFilter)
+  }
   const [forceSingleProject, setForceSingleProject] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [useCustomWeights, setUseCustomWeights] = useState(false)
@@ -102,7 +114,7 @@ export function MatchPlaygroundTab() {
   // instead of raw UUIDs.
   const { data: projects } = useQuery<{ id: string; name: string; color: string | null }[]>({
     queryKey: ['projects'],
-    queryFn: () => fetch(`${API_BASE}/api/projects`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/projects`).then((r) => r.json()),
     staleTime: 60_000,
   })
   const projectName = (id: string | null | undefined) =>
@@ -114,7 +126,7 @@ export function MatchPlaygroundTab() {
   // verbatim, we let the user mark results as ideal answers in-place.
   const { data: evalData } = useQuery<{ queries: EvalQuery[] }>({
     queryKey: ['match-eval-queries'],
-    queryFn: () => fetch(`${API_BASE}/api/match/eval/queries`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/match/eval/queries`).then((r) => r.json()),
     staleTime: 30_000,
   })
   const matchedEvalQuery = useMemo<EvalQuery | null>(() => {
@@ -130,7 +142,7 @@ export function MatchPlaygroundTab() {
   const idealMutation = useMutation({
     mutationFn: async ({ imageId, action }: { imageId: string; action: 'add' | 'remove' }) => {
       if (!matchedEvalQuery) throw new Error('未匹配到评估集 query')
-      const res = await fetch(`${API_BASE}/api/match/eval/ideal`, {
+      const res = await apiFetchRaw(`/match/eval/ideal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query_id: matchedEvalQuery.id, image_id: imageId, action }),
@@ -156,7 +168,19 @@ export function MatchPlaygroundTab() {
     mutationFn: async (): Promise<MatchResponse> => {
       const body: any = { text, limit, strategy, diversity }
       if (useCustomWeights) body.weights = w
-      if (sourceFilter !== 'all') body.filters = { source_type: sourceFilter }
+
+      // 新候选源精细化：source_type / prompt_ids / folder_prefix / tags / image_ids
+      // 全部展开成后端 filters 里的字段。后端在 _enrich_and_filter 里逐一应用。
+      const f: Record<string, unknown> = {}
+      if (candidateFilters.source_type !== 'all') f.source_type = candidateFilters.source_type
+      if (candidateFilters.prompt_ids.length > 0) f.prompt_ids = candidateFilters.prompt_ids
+      if (candidateFilters.folder_prefix)         f.folder_prefix = candidateFilters.folder_prefix
+      if (candidateFilters.image_ids.length > 0)  f.image_ids = candidateFilters.image_ids
+      for (const [dim, vals] of Object.entries(candidateFilters.tags)) {
+        if (vals && vals.length > 0) f[dim] = vals
+      }
+      if (Object.keys(f).length > 0) body.filters = f
+
       // Always inject the operator's currently-selected project as the
       // primary scope. This is what makes "搜漂流文本" return 漂流 images
       // instead of the cross-project soup the playground used to return.
@@ -315,36 +339,12 @@ export function MatchPlaygroundTab() {
           </div>
         </div>
 
-        {/* Source filter — match only against AI generations / only originals / both */}
-        <div className="flex items-center gap-2">
-          <label className="text-[11.5px] text-foreground/55">候选来源</label>
-          <div className="flex gap-1">
-            {([
-              { id: 'all', label: '全部' },
-              { id: 'generated', label: '仅 AI 生成图' },
-              { id: 'original', label: '仅原图' },
-            ] as { id: SourceFilter; label: string }[]).map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => setSourceFilter(opt.id)}
-                className={cn(
-                  'px-2 h-7 rounded border text-[11.5px]',
-                  sourceFilter === opt.id
-                    ? 'border-accent bg-accent/10 text-accent'
-                    : 'border-foreground/10 text-foreground/65 hover:bg-foreground/[0.03]',
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {sourceFilter !== 'all' && (
-            <span className="text-[10.5px] text-foreground/40 ml-1">
-              （传 <code className="px-1 bg-foreground/[0.04] rounded">filters.source_type={sourceFilter}</code> 给后端）
-            </span>
-          )}
-        </div>
+        {/* 候选源精细化 — 多维过滤把候选池约束到资产库的子集 */}
+        <CandidateFiltersPanel
+          value={candidateFilters}
+          onChange={updateCandidateFilters}
+          projectId={projectId ?? null}
+        />
 
         {/* Project scope — primary auto-injected from current project; debug
             override available */}
@@ -560,9 +560,16 @@ function ScopeDecisionPanel({
 
   return (
     <div className="rounded-lg border border-foreground/8 p-3 bg-foreground/[0.015]">
-      <div className="text-[12px] text-foreground/65 mb-2">
-        匹配范围决策（自动）· 主项目：
-        <strong className="text-foreground/85 ml-1">{projectName(decision.primary_project_id)}</strong>
+      <div className="text-[12px] text-foreground/65 mb-2 inline-flex items-center gap-1.5">
+        <span>
+          匹配范围决策（自动）· 主项目：
+          <strong className="text-foreground/85 ml-1">{projectName(decision.primary_project_id)}</strong>
+        </span>
+        <InfoHint text={
+          '信号 = 该项目 top-5 余弦均值。算法：\n' +
+          '减去 noise floor (0.30) → 主项目 ×1.3 → 跨项目双阈值过滤 (绝对 ≥ 0.10 且相对 ≥ 主项目 40%)\n' +
+          '→ softmax(T=0.3) → 主项目保底 75%。'
+        } />
       </div>
       <div className="space-y-1">
         {allPids.map((pid) => {
@@ -613,10 +620,6 @@ function ScopeDecisionPanel({
           )
         })}
       </div>
-      <p className="text-[10px] text-foreground/40 mt-2">
-        信号 = 该项目 top-5 余弦均值。算法：减去 noise floor (0.30) → 主项目 ×1.3 → 跨项目双阈值过滤
-        (绝对 ≥ 0.10 且相对 ≥ 主项目 40%) → softmax(T=0.3) → 主项目保底 75%。
-      </p>
     </div>
   )
 }
@@ -665,10 +668,10 @@ function ResultCard({
   projectName: (id: string | null | undefined) => string
   projectColor: (id: string | null | undefined) => string | null
 }) {
-  const url = match.url.startsWith('http') ? match.url : `http://localhost:7879${match.url}`
+  const url = match.url.startsWith('http') ? match.url : `http://127.0.0.1:7879${match.url}`
   const thumb = match.thumbnail_url.startsWith('http')
     ? match.thumbnail_url
-    : `http://localhost:7879${match.thumbnail_url}`
+    : `http://127.0.0.1:7879${match.thumbnail_url}`
   // Score is shown over a dark `bg-black/60` plate, so use white-on-dark
   // variants — the theme `text-foreground/*` tokens are dark-on-light and
   // disappear here. Severity is encoded as hue, not by reusing semantic

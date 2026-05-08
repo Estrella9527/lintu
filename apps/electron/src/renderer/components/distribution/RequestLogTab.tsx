@@ -1,3 +1,4 @@
+import { apiFetchRaw } from '@/lib/api'
 import { useEffect, useMemo } from 'react'
 import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
@@ -6,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { requestLogSelectedKeyAtom, requestLogStatusFilterAtom } from '@/atoms/ui-state'
 
-const KEYS_API = 'http://localhost:7879/api/api-keys'
+const KEYS_API = '/api-keys'
 
 interface ApiKey { id: string; key_id: string; name: string }
 
@@ -29,7 +30,7 @@ export function RequestLogTab({ initialKeyId }: { initialKeyId?: string } = {}) 
 
   const { data: keys } = useQuery<ApiKey[]>({
     queryKey: ['api-keys'],
-    queryFn: () => fetch(KEYS_API).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(KEYS_API).then((r) => r.json()),
   })
 
   // Apply deep-link from ApiKeyTab — find the key by its public key_id
@@ -55,7 +56,7 @@ export function RequestLogTab({ initialKeyId }: { initialKeyId?: string } = {}) 
       if (!selectedKey) return []
       const qs = new URLSearchParams({ limit: '200' })
       if (statusFilter) qs.set('status_code', statusFilter)
-      const res = await fetch(`${KEYS_API}/${selectedKey}/logs?${qs}`)
+      const res = await apiFetchRaw(`${KEYS_API}/${selectedKey}/logs?${qs}`)
       if (!res.ok) return []
       return res.json()
     },

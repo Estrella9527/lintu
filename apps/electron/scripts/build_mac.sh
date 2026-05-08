@@ -91,8 +91,10 @@ step "Install npm deps via workspaces"
 # ── 4. Frontend / main / preload bundles ────────────────────────────────────
 BIN="$REPO_ROOT/node_modules/.bin"
 
-step "Bundle main process"
-(cd "$ELECTRON_DIR" && "$BIN/esbuild" src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron)
+step "Bundle main process (flavor=${LINTU_BUILD_FLAVOR:-user})"
+# build-main.mjs 读 LINTU_BUILD_FLAVOR；user / ops / dev 三选一，
+# 默认 user — 防止误打成 ops 版（能改线上）。
+(cd "$ELECTRON_DIR" && node scripts/build-main.mjs)
 
 step "Bundle preload"
 (cd "$ELECTRON_DIR" && "$BIN/esbuild" src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron)

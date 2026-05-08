@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { api } from '@/lib/api'
+import { api , apiFetchRaw } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { AlertCircle, CheckCircle2, Cloud, Clock, Eye, EyeOff, Loader2, RefreshCw, Upload } from 'lucide-react'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 interface OssStatus {
   configured: boolean
@@ -82,13 +83,13 @@ export function OssSyncTab() {
 
   const { data: status, refetch: refetchStatus } = useQuery<OssStatus>({
     queryKey: ['oss-status'],
-    queryFn: () => fetch(`${API_BASE}/api/oss/status`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/oss/status`).then((r) => r.json()),
     refetchInterval: 3_000,
   })
 
   const { data: recentData } = useQuery<{ items: RecentJob[] }>({
     queryKey: ['oss-recent-jobs'],
-    queryFn: () => fetch(`${API_BASE}/api/oss/recent-jobs?limit=15`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/oss/recent-jobs?limit=15`).then((r) => r.json()),
     refetchInterval: 3_000,
     enabled: !!status?.configured,
   })
@@ -135,7 +136,7 @@ export function OssSyncTab() {
 
   const test = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${API_BASE}/api/oss/test`, { method: 'POST' })
+      const res = await apiFetchRaw(`/oss/test`, { method: 'POST' })
       return res.json()
     },
     onSuccess: (r: any) => setTestResult(r),
@@ -144,7 +145,7 @@ export function OssSyncTab() {
 
   const backfill = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${API_BASE}/api/oss/backfill`, {
+      const res = await apiFetchRaw(`/oss/backfill`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -161,7 +162,7 @@ export function OssSyncTab() {
 
   const retryFailed = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${API_BASE}/api/oss/retry-failed`, { method: 'POST' })
+      const res = await apiFetchRaw(`/oss/retry-failed`, { method: 'POST' })
       return res.json()
     },
     onSuccess: (r: any) => {
@@ -313,11 +314,13 @@ export function OssSyncTab() {
 
       {/* Config card */}
       <section className="rounded-lg border border-foreground/8 p-4 space-y-3">
-        <h2 className="text-[13px] font-semibold text-foreground/80">阿里云 OSS 配置</h2>
-        <p className="text-[11px] text-foreground/45">
-          配置后，新增 / 生成的图片会异步推送到 OSS；Open API 返回的 URL 优先指向 CDN。
-          密钥保存后服务端只显示掩码，留空不修改。
-        </p>
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-[13px] font-semibold text-foreground/80">阿里云 OSS 配置</h2>
+          <InfoHint text={
+            '配置后，新增 / 生成的图片会异步推送到 OSS；Open API 返回的 URL 优先指向 CDN。\n' +
+            '密钥保存后服务端只显示掩码，留空不修改。'
+          } />
+        </div>
 
         <FormRow label="服务商">
           <select

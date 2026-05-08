@@ -6,6 +6,7 @@ export type ModuleId =
   | 'pipeline'
   | 'ai-workshop'
   | 'task-center'
+  | 'review-queue'
   | 'asset-library'
   | 'coverage-matrix'
   | 'match-lab'
@@ -18,10 +19,14 @@ export const activeModuleAtom = atom<ModuleId>('dashboard')
  * activeModuleAtom='settings' to deep-link into a specific Settings tab. */
 export type SettingsTabId =
   | 'general'
+  | 'org-general'
+  | 'org-members'
+  | 'platform'
   | 'ai-provider'
   | 'prompt-library'
   | 'tag-system'
-  | 'match-strategy'
+  | 'members'
+  | 'audit-log'
   | 'oss-config'
   | 'about'
 export const settingsTabAtom = atom<SettingsTabId>('general')
@@ -76,7 +81,7 @@ export const distributionNavRequestAtom = atom<DistributionNavRequest | null>(nu
 /** Match Lab cross-page deep-link request. Used by the analytics card's
  * "复跑" button (jumps to playground tab) and by potential future deep
  * links from settings/asset-library. */
-export type MatchLabTab = 'playground' | 'analytics' | 'synonyms'
+export type MatchLabTab = 'playground' | 'default-strategy' | 'analytics' | 'synonyms'
 export interface MatchLabNavRequest {
   tab?: MatchLabTab
 }

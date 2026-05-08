@@ -10,6 +10,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       className="toaster group"
       toastOptions={{
         className: '!rounded-xl group',
+        duration: 4000,
       }}
       style={
         {

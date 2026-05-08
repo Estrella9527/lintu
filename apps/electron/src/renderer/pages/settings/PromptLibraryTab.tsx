@@ -10,10 +10,12 @@ import {
 } from '@/components/ui/dialog'
 import { FileText, FileUp, GitBranch, Pencil, Plus, Search, Star, Trash2, Upload, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
+import { apiFetchRaw, withTokenParam } from '@/lib/api'
 
-const API = 'http://localhost:7879/api/prompts'
-const DOCS_API = 'http://localhost:7879/api/prompt-docs'
+const API = '/prompts'
+const DOCS_API = '/prompt-docs'
 
 const CATEGORIES = [
   { value: 'tagging', label: '打标' },
@@ -88,7 +90,7 @@ export function PromptLibraryTab() {
       if (filterTag) qs.set('tag', filterTag)
       if (search) qs.set('q', search)
       const url = qs.toString() ? `${API}?${qs}` : API
-      return fetch(url).then((r) => r.json())
+      return apiFetchRaw(url).then((r) => r.json())
     },
   })
 
@@ -100,7 +102,7 @@ export function PromptLibraryTab() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) =>
-      fetch(`${API}/${id}`, { method: 'DELETE' }).then((r) => r.json()),
+      apiFetchRaw(`${API}/${id}`, { method: 'DELETE' }).then((r) => r.json()),
     onSuccess: () => {
       toast.success('已删除')
       queryClient.invalidateQueries({ queryKey: ['prompts'] })
@@ -189,9 +191,11 @@ export function PromptLibraryTab() {
           ))}
         </div>
       ) : !prompts?.length ? (
-        <div className="text-center py-12 text-[13px] text-foreground/30">
-          暂无 Prompt 模板，点击右上角新建或导入
-        </div>
+        <EmptyState
+          icon={FileText}
+          title="还没有 Prompt 模板"
+          description="新建或从 Markdown / TXT 导入一份；模板可在 AI 工坊里复用"
+        />
       ) : (
         <div className="space-y-2">
           {prompts.map((p) => {
@@ -360,14 +364,13 @@ function PromptDialog({ open, onClose, prompt, onSaved }: {
         tags: tags.length ? tags : null,
       }
       if (isEdit && saveAsNewVersion) {
-        return fetch(`${API}/${prompt!.id}/duplicate-as-version`, {
+        return apiFetchRaw(`${API}/${prompt!.id}/duplicate-as-version`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         }).then((r) => r.json())
       }
       const url = isEdit ? `${API}/${prompt!.id}` : API
-      return fetch(url, {
+      return apiFetchRaw(url, {
         method: isEdit ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -639,7 +642,7 @@ function ImportDocDialog({ open, onClose, onImported }: {
 
   const startStream = (id: string) => {
     if (sseRef.current) sseRef.current.close()
-    const es = new EventSource(`${DOCS_API}/${id}/stream`)
+    const es = new EventSource(withTokenParam(`http://localhost:7879/api/prompt-docs/${id}/stream`))
     sseRef.current = es
     es.onmessage = (m) => {
       try { handleEvent(JSON.parse(m.data)) } catch { /* keep-alives */ }
@@ -658,7 +661,7 @@ function ImportDocDialog({ open, onClose, onImported }: {
       if (!file) throw new Error('没有选择文件')
       const fd = new FormData()
       fd.append('file', file)
-      const res = await fetch(`${DOCS_API}/upload`, { method: 'POST', body: fd })
+      const res = await apiFetchRaw(`${DOCS_API}/upload`, { method: 'POST', body: fd })
       if (!res.ok) throw new Error(await res.text())
       return res.json() as Promise<{ id: string }>
     },
@@ -667,7 +670,7 @@ function ImportDocDialog({ open, onClose, onImported }: {
       setParseStatus('parsing')
       // Subscribe BEFORE triggering parse so we don't miss the started event
       startStream(data.id)
-      const parseRes = await fetch(`${DOCS_API}/${data.id}/parse`, {
+      const parseRes = await apiFetchRaw(`${DOCS_API}/${data.id}/parse`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -692,7 +695,7 @@ function ImportDocDialog({ open, onClose, onImported }: {
     setPhaseDetail('')
     setParseStatus('parsing')
     startStream(docId)
-    const res = await fetch(`${DOCS_API}/${docId}/parse`, {
+    const res = await apiFetchRaw(`${DOCS_API}/${docId}/parse`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     })
     if (!res.ok) {
@@ -706,7 +709,7 @@ function ImportDocDialog({ open, onClose, onImported }: {
     mutationFn: async () => {
       if (!docId) throw new Error('no doc_id')
       const indexes = Array.from(selected).sort((a, b) => a - b)
-      const res = await fetch(`${DOCS_API}/${docId}/confirm`, {
+      const res = await apiFetchRaw(`${DOCS_API}/${docId}/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ selected_indexes: indexes }),
@@ -754,10 +757,6 @@ function ImportDocDialog({ open, onClose, onImported }: {
         {!docId && (
           <div className="space-y-3 py-2">
             <FileDropZone file={file} onFileChange={setFile} />
-            <p className="text-[10px] text-foreground/40">
-              支持格式：md / txt / docx / xlsx / pdf。
-              AI 会自动识别多条 prompt 并结构化；扫描型 PDF 走视觉 OCR 兜底（最多 20 页）。
-            </p>
           </div>
         )}
 

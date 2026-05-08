@@ -1,11 +1,13 @@
 import { useAtomValue } from 'jotai'
 import { activeModuleAtom, type ModuleId } from '@/atoms/navigation'
 import { LeftSidebar } from './LeftSidebar'
+import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 
 import Dashboard from '@/pages/Dashboard'
 import Pipeline from '@/pages/Pipeline'
 import AIWorkshop from '@/pages/AIWorkshop'
 import TaskCenter from '@/pages/TaskCenter'
+import ReviewQueue from '@/pages/ReviewQueue'
 import AssetLibrary from '@/pages/AssetLibrary'
 import CoverageMatrix from '@/pages/CoverageMatrix'
 import MatchLab from '@/pages/MatchLab'
@@ -17,6 +19,7 @@ const PAGE_MAP: Record<ModuleId, React.ComponentType> = {
   pipeline: Pipeline,
   'ai-workshop': AIWorkshop,
   'task-center': TaskCenter,
+  'review-queue': ReviewQueue,
   'asset-library': AssetLibrary,
   'coverage-matrix': CoverageMatrix,
   'match-lab': MatchLab,
@@ -41,7 +44,12 @@ export function AppShell() {
       <div className="flex flex-1 min-h-0">
         <LeftSidebar />
         <main className="flex-1 min-w-0 overflow-hidden">
-          <PageComponent />
+          {/* `key` resets the boundary's internal state when the user
+              switches modules, so a crash in one module doesn't poison
+              the next page they navigate to. */}
+          <ErrorBoundary key={activeModule} fallbackMessage={`「${activeModule}」页面渲染出错`}>
+            <PageComponent />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

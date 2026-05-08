@@ -16,8 +16,7 @@ import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Download, Upload } from 'lucide-react'
-
-const API_BASE = 'http://localhost:7879/api'
+import { apiFetchRaw } from '@/lib/api'
 
 type Props = {
   /** Path under /api, e.g. '/tag-schema/export'. Leading slash optional. */
@@ -53,16 +52,16 @@ export function ExportImportButtons({
   const handleExport = async () => {
     setBusy(true)
     try {
-      let url = `${API_BASE}${exportPath.startsWith('/') ? exportPath : '/' + exportPath}`
+      let path = exportPath.startsWith('/') ? exportPath : '/' + exportPath
       if (exportSecretsToggle) {
         const includeSecrets = window.confirm(
           `导出 ${domainLabel} 是否包含明文 api_key？\n\n` +
           `点「确定」: 导出真实凭据（仅用于完全信任的目标机器，文件勿贴公网）。\n` +
           `点「取消」: 凭据被 mask 成 sk-X****，目标机需手动补 key。`,
         )
-        if (includeSecrets) url += url.includes('?') ? '&include_secrets=true' : '?include_secrets=true'
+        if (includeSecrets) path += path.includes('?') ? '&include_secrets=true' : '?include_secrets=true'
       }
-      const r = await fetch(url)
+      const r = await apiFetchRaw(path)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const blob = await r.blob()
       const a = document.createElement('a')
@@ -96,10 +95,9 @@ export function ExportImportButtons({
         throw new Error('文件不是合法 JSON')
       }
       const body = importBodyAdapter ? importBodyAdapter(parsed) : parsed
-      const url = `${API_BASE}${importPath.startsWith('/') ? importPath : '/' + importPath}`
-      const r = await fetch(url, {
+      const path = importPath.startsWith('/') ? importPath : '/' + importPath
+      const r = await apiFetchRaw(path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
       const data = await r.json().catch(() => null)

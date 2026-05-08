@@ -8,6 +8,7 @@ import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { ConfigCard } from '@/components/pipeline/ConfigCard'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import { cn } from '@/lib/utils'
 import type { TaskRecord } from '@/lib/types'
@@ -131,16 +132,12 @@ export function DedupTab() {
                 max={20}
                 step={1}
               />
-              <p className="text-[10px] text-foreground/40">
-                越小越严；≤4 接近一模一样，≥10 同构图不同角度也会合并
-              </p>
+              <div className="text-[10px] text-foreground/40 inline-flex items-center gap-1">
+                越小越严
+                <InfoHint text="≤4 接近一模一样，≥10 同构图不同角度也会合并" />
+              </div>
             </div>
           )}
-
-          <div className="rounded-md bg-foreground/[0.02] px-3 py-2 text-[11px] text-foreground/55">
-            三哈希 ensemble (pHash + dHash + aHash)，任意 2/3 命中视为重复；Union-Find
-            分组保证传递性。保留规则按 分辨率 + 清晰度 + 文件大小 综合评分。
-          </div>
         </div>
 
         {/* Semantic section */}
@@ -152,15 +149,16 @@ export function DedupTab() {
               onChange={(e) => setUseSemantic(e.target.checked)}
               className="mt-0.5"
             />
-            <div className="flex-1">
-              <div className="text-[13px] font-medium text-foreground/85">
+            <div className="flex-1 inline-flex items-center gap-1.5">
+              <span className="text-[13px] font-medium text-foreground/85">
                 启用语义相似度（CLIP）— 识别同场景不同主体
-              </div>
-              <p className="text-[11px] text-foreground/55 mt-0.5 leading-snug">
-                用 CLIP 图像嵌入做余弦相似度比对。能抓到哈希抓不到的场景，如
-                "同一吉祥物 + 同一机位，不同人物"、"同一过山车轨道不同时间段"。
-                首次运行会为所有图片生成 embedding（Apple Silicon ~5-10 分钟 / 7000 张），之后复用。
-              </p>
+              </span>
+              <InfoHint text={
+                '用 CLIP 图像嵌入做余弦相似度比对。能抓到哈希抓不到的场景：\n' +
+                '· 同一吉祥物 + 同一机位，不同人物\n' +
+                '· 同一过山车轨道不同时间段\n' +
+                '首次运行会为所有图片生成 embedding（Apple Silicon ~5-10 分钟 / 7000 张），之后复用。'
+              } />
             </div>
           </label>
 
@@ -187,9 +185,6 @@ export function DedupTab() {
                   </button>
                 ))}
               </div>
-              <p className="text-[10px] text-foreground/40">
-                哈希命中 <strong>或</strong> 语义命中都会合并；不会重复触发。
-              </p>
             </div>
           )}
         </div>

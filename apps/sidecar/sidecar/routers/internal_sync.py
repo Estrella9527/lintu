@@ -363,6 +363,17 @@ async def sync_config(body: ConfigSyncBody):
             existing = json.loads(CONFIG_FILE.read_text())
         except Exception:
             existing = {}
+
+    # Audit diff before merge — 让云端能看出"是哪台桌面端推过来 + 改了哪些 key"。
+    # 失败不阻塞写入。
+    try:
+        from sidecar.routers.config_api import _write_audit, _diff_config
+        diff = _diff_config(existing, body.settings)
+        if diff:
+            await _write_audit(diff, source="cloud_sync")
+    except Exception:
+        pass
+
     existing.update(body.settings)
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2))

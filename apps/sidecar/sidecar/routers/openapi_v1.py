@@ -72,6 +72,10 @@ def _image_payload(img: Image) -> dict:
         "thumbnail_url": thumbnail_url,
         "original_url": original_url,
         "cdn_synced": bool(cdn_path),
+        "usage_count": int(getattr(img, "usage_count", 0) or 0),
+        "last_used_at": (
+            img.last_used_at.isoformat() if getattr(img, "last_used_at", None) else None
+        ),
     }
 
 
@@ -355,6 +359,10 @@ class MatchFiltersBody(BaseModel):
     source_type: Optional[str] = None
     project_id: Optional[str] = None
     folder_prefix: Optional[str] = None
+    # 候选源精细化（v0.3 P0-extra）
+    prompt_ids: Optional[List[str]] = None   # 仅 source_type=generated 时生效；命中 generation_metadata.prompt_id ∈ list
+    parent_ids: Optional[List[str]] = None   # 同源族过滤（找某张原图的所有 AI 变体）
+    image_ids: Optional[List[str]] = None    # 强约束白名单：只在这些 image_id 里召回 + 评分
 
 
 class MatchScopeBody(BaseModel):
@@ -467,18 +475,63 @@ async def match_images(body: MatchBody):
         existing_people = set(exclude_tags.get("people") or [])
         existing_people.update(["少量游客", "人群", "儿童", "工作人员"])
         exclude_tags["people"] = list(existing_people)
+
+    # Operator-tuned default candidate filters — set in 匹配实验室 → 匹配策略.
+    # Stored as a single JSON dict for easy round-trip + cloud sync. Caller
+    # can still override per-call: any field caller explicitly passed wins.
+    # None / unset → fall back to default; [] / "" → caller explicitly cleared.
+    cfg_filters_raw = get_setting("match_default_filters")
+    cfg_filters: dict = {}
+    if isinstance(cfg_filters_raw, dict):
+        cfg_filters = cfg_filters_raw
+    elif isinstance(cfg_filters_raw, str) and cfg_filters_raw.strip():
+        import json as _json
+        try:
+            parsed = _json.loads(cfg_filters_raw)
+            if isinstance(parsed, dict):
+                cfg_filters = parsed
+        except (_json.JSONDecodeError, TypeError):
+            cfg_filters = {}
+
+    cfg_tag_dims = cfg_filters.get("tags") if isinstance(cfg_filters.get("tags"), dict) else {}
+
+    def _list_or_default(caller_val, key: str) -> list:
+        if caller_val is not None:
+            return list(caller_val)
+        d = cfg_filters.get(key)
+        return list(d) if isinstance(d, list) else []
+
+    def _tag_or_default(caller_val, dim: str) -> list:
+        if caller_val is not None:
+            return list(caller_val)
+        d = cfg_tag_dims.get(dim) if cfg_tag_dims else None
+        return list(d) if isinstance(d, list) else []
+
+    eff_source_type = f.source_type if f.source_type is not None else (
+        cfg_filters.get("source_type") if isinstance(cfg_filters.get("source_type"), str) else None
+    )
+    if eff_source_type == "all" or eff_source_type == "":
+        eff_source_type = None
+
+    eff_folder_prefix = f.folder_prefix if f.folder_prefix is not None else (
+        cfg_filters.get("folder_prefix") if isinstance(cfg_filters.get("folder_prefix"), str) and cfg_filters.get("folder_prefix") else None
+    )
+
     filters = MatchFilters(
-        scene=f.scene or [],
-        facility=f.facility or [],
-        season=f.season or [],
-        weather=f.weather or [],
-        angle=f.angle or [],
-        people=f.people or [],
-        usage=f.usage or [],
+        scene=_tag_or_default(f.scene, "scene"),
+        facility=_tag_or_default(f.facility, "facility"),
+        season=_tag_or_default(f.season, "season"),
+        weather=_tag_or_default(f.weather, "weather"),
+        angle=_tag_or_default(f.angle, "angle"),
+        people=_tag_or_default(f.people, "people"),
+        usage=_tag_or_default(f.usage, "usage"),
         exclude_tags=exclude_tags,
-        source_type=f.source_type,
-        project_id=f.project_id,         # legacy hard scope
-        folder_prefix=f.folder_prefix,
+        source_type=eff_source_type,
+        project_id=f.project_id,         # legacy hard scope; not pulled from defaults
+        folder_prefix=eff_folder_prefix,
+        prompt_ids=_list_or_default(f.prompt_ids, "prompt_ids"),
+        parent_ids=list(f.parent_ids or []),
+        image_ids=_list_or_default(f.image_ids, "image_ids"),
     )
     s = body.scope or MatchScopeBody()
     scope = MatchScope(
@@ -598,6 +651,24 @@ async def track_usage(image_id: str, body: TrackUsageBody, db: AsyncSession = De
         score=body.score,
         was_chosen=bool(body.was_chosen),
     ))
+
+    # Increment image usage telemetry — only on actual chosen events; mere
+    # displays don't bump the counter (otherwise every UGC page render would
+    # inflate hot-image counts and bury the long tail). Best-effort: a missing
+    # image_id is silently ignored, the feedback row still gets written.
+    if body.was_chosen:
+        from datetime import datetime
+        from sqlalchemy import update as sql_update
+        from sidecar.db.models import Image
+        await db.execute(
+            sql_update(Image)
+            .where(Image.id == image_id)
+            .values(
+                usage_count=Image.usage_count + 1,
+                last_used_at=datetime.utcnow(),
+            )
+        )
+
     await db.commit()
     return {"ok": True}
 

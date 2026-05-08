@@ -461,6 +461,10 @@ def _image_to_dict(img: Image) -> dict:
         "rotated_file_path": img.rotated_file_path,
         "parent_id": img.parent_id,
         "generation_metadata": img.generation_metadata,
+        "usage_count": int(getattr(img, "usage_count", 0) or 0),
+        "last_used_at": (
+            img.last_used_at.isoformat() if getattr(img, "last_used_at", None) else None
+        ),
         "created_at": img.created_at.isoformat() if img.created_at else None,
         "updated_at": img.updated_at.isoformat() if img.updated_at else None,
     }

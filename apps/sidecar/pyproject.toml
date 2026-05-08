@@ -26,7 +26,13 @@ dependencies = [
     # runtime via LINTU_DB_URL without a separate build.
     "asyncpg>=0.30",                 # async runtime
     "psycopg[binary]>=3.2",          # sync, used by Alembic migrations
+    # User system Phase 1
+    "alibabacloud-dysmsapi20170525>=3.0",  # 阿里云 SMS（手机号验证码登录）
 ]
+
+[project.scripts]
+# 后台管理 CLI — uv run lintu-admin bootstrap-root --phone 138...
+lintu-admin = "sidecar.cli.admin:main"
 
 [project.optional-dependencies]
 # Local CLIP fallback for image embedding when no API provider is configured.
@@ -43,4 +49,16 @@ local-clip = [
 [dependency-groups]
 dev = [
     "pyinstaller>=6.20.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Force a clean SQLite DB per test session via the `lintu_test_db` fixture
+# in conftest.py. Don't pollute ~/lintu-data while running.
+filterwarnings = [
+    # SQLAlchemy 2.x emits deprecation noise for legacy patterns we don't use
+    "ignore::DeprecationWarning:sqlalchemy.*",
 ]

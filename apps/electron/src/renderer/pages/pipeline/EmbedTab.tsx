@@ -3,7 +3,7 @@ import { activeModuleAtom } from '@/atoms/navigation'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { api } from '@/lib/api'
+import { api , apiFetchRaw } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { useTaskProgress } from '@/hooks/useTaskProgress'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import { AlertTriangle, CheckCircle2, Cpu, Database, Play, RefreshCw, Sparkles } from 'lucide-react'
 import type { TaskRecord } from '@/lib/types'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 interface EmbedCoverage {
   total: number
@@ -33,7 +33,7 @@ export function EmbedTab() {
 
   const { data: coverage } = useQuery<EmbedCoverage>({
     queryKey: ['embed-coverage', projectId],
-    queryFn: () => fetch(`${API_BASE}/api/stats/embed-coverage?project_id=${projectId || ''}`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/stats/embed-coverage?project_id=${projectId || ''}`).then((r) => r.json()),
     refetchInterval: 5_000,
     enabled: !!projectId,
   })

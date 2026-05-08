@@ -1,15 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAtom, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
+import { apiFetchRaw } from '@/lib/api'
 
 import { cn } from '@/lib/utils'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { Activity, AlertCircle, BarChart3, CheckCircle2, Clock, Copy, ExternalLink, RefreshCw, Target, TrendingDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { activeModuleAtom, matchLabNavRequestAtom } from '@/atoms/navigation'
 import { matchPlaygroundSeedAtom } from '@/atoms/match'
 import { matchAnalyticsWindowHoursAtom, matchLabActiveTabAtom } from '@/atoms/ui-state'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 interface Analytics {
   window_hours: number
@@ -49,7 +51,7 @@ export function MatchAnalyticsTab() {
 
   const { data, refetch, isLoading } = useQuery<Analytics>({
     queryKey: ['match-analytics', windowHours],
-    queryFn: () => fetch(`${API_BASE}/api/match/analytics?window_hours=${windowHours}`).then((r) => r.json()),
+    queryFn: () => apiFetchRaw(`/match/analytics?window_hours=${windowHours}`).then((r) => r.json()),
     refetchInterval: 30_000,
   })
 
@@ -173,9 +175,11 @@ export function MatchAnalyticsTab() {
             <div className="flex items-center gap-2 mb-3">
               <TrendingDown size={13} className="text-warning" />
               <h3 className="text-[12.5px] font-medium text-foreground/80">未命中 top-20</h3>
-              <span className="text-[10.5px] text-foreground/40">
-                被搜过 ≥2 次但用户从未选中任何返回图 — 提示需要补图
-              </span>
+              <InfoHint text={
+                '被搜过 ≥2 次但用户从未选中任何返回图 — 提示需要补图。\n' +
+                '原文从窗口内的 api_request_logs.request_body 反查得到（仅匿名 hash 落库；原文不会跨窗口保留）。\n' +
+                '点「复跑」直接跳转到试匹配并预填。'
+              } />
             </div>
             {data.hard_queries.length === 0 ? (
               <div className="text-center py-6 text-[12px] text-foreground/40 flex items-center justify-center gap-2">
@@ -228,9 +232,6 @@ export function MatchAnalyticsTab() {
                     </div>
                   </div>
                 ))}
-                <p className="text-[10.5px] text-foreground/40 mt-2 leading-relaxed">
-                  💡 原文从窗口内的 api_request_logs.request_body 反查得到（仅匿名 hash 落库；原文不会跨窗口保留）。点「复跑」直接跳转到试匹配并预填。
-                </p>
               </div>
             )}
           </div>

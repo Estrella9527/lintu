@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, apiFetchRaw } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ExportImportButtons } from '@/components/settings/ExportImportButtons'
+import { InfoHint } from '@/components/shared/InfoHint'
 
 // ── Provider definitions ──
 
@@ -191,14 +192,10 @@ function SectionShell({
 }) {
   return (
     <section>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold text-foreground/70">{title}</h2>
-          {subtitle && (
-            <p className="text-[11px] text-foreground/45 mt-0.5 leading-relaxed">{subtitle}</p>
-          )}
-        </div>
-        {action && <div className="shrink-0">{action}</div>}
+      <div className="flex items-center gap-1.5 mb-3">
+        <h2 className="text-[13px] font-semibold text-foreground/70">{title}</h2>
+        {subtitle && <InfoHint text={subtitle} />}
+        {action && <div className="ml-auto shrink-0">{action}</div>}
       </div>
       {children}
     </section>
@@ -245,7 +242,7 @@ function ProviderCard({ provider, config, onSaved }: {
       const testUrl = provider.id === 'comfyui'
         ? (values.comfyui_url || config.comfyui_url || undefined)
         : undefined
-      const res = await fetch('http://localhost:7879/api/providers/test', {
+      const res = await apiFetchRaw('/providers/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -266,9 +263,10 @@ function ProviderCard({ provider, config, onSaved }: {
 
   return (
     <div className="rounded-lg border border-foreground/5 p-4">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-medium text-foreground/80">{provider.name}</h3>
+          {provider.description && <InfoHint text={provider.description} />}
           {isConfigured && (
             <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
               <CheckCircle size={10} className="mr-1 text-success" /> 已配置
@@ -283,8 +281,6 @@ function ProviderCard({ provider, config, onSaved }: {
           ))}
         </div>
       </div>
-
-      <p className="text-[11px] text-foreground/40 mb-3">{provider.description}</p>
 
       <div className="space-y-2">
         {provider.fields.map((field) => (
@@ -375,7 +371,7 @@ function RelayCard({ relay, index, allRelays, onSaved }: {
     setTesting(true)
     setTestResult(null)
     try {
-      const res = await fetch('http://localhost:7879/api/providers/test', {
+      const res = await apiFetchRaw('/providers/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -602,7 +598,7 @@ function RoleAssignmentSection({ config, onSaved }: {
 
   const { data: providers } = useQuery<AvailableProvider[]>({
     queryKey: ['available-providers'],
-    queryFn: () => fetch('http://localhost:7879/api/providers/available').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/providers/available').then((r) => r.json()),
     refetchInterval: 5000,
   })
 
@@ -640,17 +636,16 @@ function RoleAssignmentSection({ config, onSaved }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-[13px] font-semibold text-foreground/70">模型分配</h2>
-          <p className="text-[11px] text-foreground/45 mt-0.5">
-            按角色拆分：<strong>视觉 / 打标</strong>（高频低成本）、<strong>提示词解析</strong>（罕见高质量）、<strong>图像生成</strong>。
-          </p>
-        </div>
+      <div className="flex items-center gap-1.5 mb-3">
+        <h2 className="text-[13px] font-semibold text-foreground/70">模型分配</h2>
+        <InfoHint text="按角色拆分：视觉 / 打标（高频低成本）、提示词解析（罕见高质量）、图像生成。" />
       </div>
       <div className="rounded-lg border border-foreground/8 bg-foreground/[0.015] p-4 space-y-3">
         <div className="space-y-1">
-          <label className="text-[12px] text-foreground/60">视觉 / 打标 (general)</label>
+          <label className="text-[12px] text-foreground/60 inline-flex items-center gap-1">
+            视觉 / 打标 (general)
+            <InfoHint text="用于 AI 打标、图片方向矫正。推荐 Doubao Seed 2.0 Lite / Pro（中文 + 性价比）。" />
+          </label>
           <select
             value={general}
             onChange={(e) => setGeneral(e.target.value)}
@@ -658,12 +653,12 @@ function RoleAssignmentSection({ config, onSaved }: {
           >
             {renderOptions(providers)}
           </select>
-          <p className="text-[10px] text-foreground/40">
-            用于：AI 打标、图片方向矫正。推荐：Doubao Seed 2.0 Lite / Pro（中文 + 性价比）。
-          </p>
         </div>
         <div className="space-y-1">
-          <label className="text-[12px] text-foreground/60">提示词文档解析 (parser)</label>
+          <label className="text-[12px] text-foreground/60 inline-flex items-center gap-1">
+            提示词文档解析 (parser)
+            <InfoHint text="用于 md / docx / xlsx / PDF 提示词文档结构化抽取。推荐 GPT-5 / Claude Opus 4.6（长上下文 + 强 JSON）。" />
+          </label>
           <select
             value={parser}
             onChange={(e) => setParser(e.target.value)}
@@ -671,12 +666,12 @@ function RoleAssignmentSection({ config, onSaved }: {
           >
             {renderOptions(providers, '— 跟随通用模型 —')}
           </select>
-          <p className="text-[10px] text-foreground/40">
-            用于：md / docx / xlsx / PDF 提示词文档结构化抽取。推荐：GPT-5 / Claude Opus 4.6（长上下文 + 强 JSON）。
-          </p>
         </div>
         <div className="space-y-1">
-          <label className="text-[12px] text-foreground/60">图像生成 (image)</label>
+          <label className="text-[12px] text-foreground/60 inline-flex items-center gap-1">
+            图像生成 (image)
+            <InfoHint text="用于 AI 工坊单图 / 批量生产。推荐 GPT-Image-2（细节最好）；备选 Seedream 4.0（中文 prompt）。" />
+          </label>
           <select
             value={image}
             onChange={(e) => setImage(e.target.value)}
@@ -684,13 +679,13 @@ function RoleAssignmentSection({ config, onSaved }: {
           >
             {renderOptions(providers)}
           </select>
-          <p className="text-[10px] text-foreground/40">
-            用于：AI 工坊单图 / 批量生产。推荐：GPT-Image-2（细节最好）；备选 Seedream 4.0（中文 prompt）。
-          </p>
         </div>
 
         <div className="space-y-1">
-          <label className="text-[12px] text-foreground/60">输出分辨率</label>
+          <label className="text-[12px] text-foreground/60 inline-flex items-center gap-1">
+            输出分辨率
+            <InfoHint text="更高分辨率细节更好但速度更慢、成本更高。Seedream 自动映射 K 简写，gpt-image 使用 WxH。" />
+          </label>
           <select
             value={outputSize}
             onChange={(e) => setOutputSize(e.target.value)}
@@ -704,9 +699,6 @@ function RoleAssignmentSection({ config, onSaved }: {
             <option value="2048x3072">3K 竖幅 · 2048 × 3072</option>
             <option value="4096x4096">4K · 4096 × 4096（仅 Seedream，较慢）</option>
           </select>
-          <p className="text-[10px] text-foreground/40">
-            决定生成图片的像素尺寸；更高分辨率细节更好但速度更慢、成本更高。Seedream 自动映射 K 简写，gpt-image 使用 WxH。
-          </p>
         </div>
         <details className="text-[11px] text-foreground/40">
           <summary className="cursor-pointer hover:text-foreground/60">高级：模型名称覆盖</summary>
@@ -945,7 +937,7 @@ function ArkProviderCard({ relays, onSaved }: ArkProviderCardProps) {
         }
         body = { provider_id: 'openai_compatible', relay_index: idx }
       }
-      const res = await fetch('http://localhost:7879/api/providers/test', {
+      const res = await apiFetchRaw('/providers/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -973,6 +965,10 @@ function ArkProviderCard({ relays, onSaved }: ArkProviderCardProps) {
       <div className="rounded-lg border border-foreground/8 p-4 space-y-3">
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-medium text-foreground/85">Volcengine Ark</h3>
+          <InfoHint text={
+            '一个 API Key 同时配置三类模型：通用对话/视觉、多模态嵌入（去重）、Seedream 图像生成。\n' +
+            '保存后会自动写入 3 条 relay：ark-chat / ark-embedding / ark-image。'
+          } />
           {isConfigured && (
             <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
               <CheckCircle size={10} className="mr-1 text-success" /> 已配置
@@ -980,12 +976,6 @@ function ArkProviderCard({ relays, onSaved }: ArkProviderCardProps) {
           )}
           <span className="ml-auto text-[10px] text-foreground/40 font-mono">{ARK_BASE_URL}</span>
         </div>
-        <p className="text-[11px] text-foreground/45">
-          一个 API Key 同时配置三类模型：通用对话/视觉、多模态嵌入（去重）、Seedream 图像生成。
-          保存后会自动写入 3 条 relay (<code className="px-1 bg-foreground/[0.04] rounded">ark-chat</code>、
-          <code className="px-1 bg-foreground/[0.04] rounded">ark-embedding</code>、
-          <code className="px-1 bg-foreground/[0.04] rounded">ark-image</code>)。
-        </p>
 
         {/* API Key */}
         <div className="flex gap-2 items-start">
@@ -1140,12 +1130,12 @@ function TaggerAuditCard({ config, onSaved }: {
 
   const { data: providers } = useQuery<AvailableProvider[]>({
     queryKey: ['available-providers'],
-    queryFn: () => fetch('http://localhost:7879/api/providers/available').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/providers/available').then((r) => r.json()),
   })
 
   const { data: stats } = useQuery<AuditStats>({
     queryKey: ['tagger-audit-stats'],
-    queryFn: () => fetch('http://localhost:7879/api/audit/tagger/stats').then((r) => r.json()),
+    queryFn: () => apiFetchRaw('/audit/tagger/stats').then((r) => r.json()),
     refetchInterval: 10000,
   })
 
@@ -1175,15 +1165,10 @@ function TaggerAuditCard({ config, onSaved }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-[13px] font-semibold text-foreground/70 flex items-center gap-1.5">
-            <ShieldCheck size={13} className="text-foreground/55" /> 打标质量审计
-          </h2>
-          <p className="text-[11px] text-foreground/45 mt-0.5">
-            随机抽样用更强的 provider 复核打标结果，自动计算 Jaccard 一致性。
-          </p>
-        </div>
+      <div className="flex items-center gap-1.5 mb-3">
+        <ShieldCheck size={13} className="text-foreground/55" />
+        <h2 className="text-[13px] font-semibold text-foreground/70">打标质量审计</h2>
+        <InfoHint text="随机抽样用更强的 provider 复核打标结果，自动计算 Jaccard 一致性。" />
       </div>
 
       <div className="rounded-lg border border-foreground/8 bg-foreground/[0.015] p-4 space-y-3">

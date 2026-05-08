@@ -1,13 +1,89 @@
 import { useEffect, useRef, useState } from 'react'
+import { useAtom } from 'jotai'
 import { toast } from 'sonner'
 import { AppShell } from '@/components/app-shell/AppShell'
+import LoginPage from '@/pages/Login'
+import { ReleaseNotesModal } from '@/components/shared/ReleaseNotesModal'
+import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow'
+import { useReleaseNotesPrompt } from '@/hooks/useReleaseNotesPrompt'
+import { activeOrgIdAtom, authStateAtom, currentUserAtom, myOrgsAtom, type CurrentUser } from '@/atoms/auth'
+import { ApiError, api, hydrateAuthToken, onAuthLoggedOut } from '@/lib/api'
 import '@/atoms/theme'
 
-const API_BASE = 'http://localhost:7879'
+const API_BASE = 'http://127.0.0.1:7879'
 
 export default function App() {
   const [ready, setReady] = useState(false)
+  const [appVersion, setAppVersion] = useState<string | undefined>(undefined)
   const checkedRef = useRef(false)
+  const releaseNotes = useReleaseNotesPrompt(appVersion)
+  const [authState, setAuthState] = useAtom(authStateAtom)
+  const [, setCurrentUser] = useAtom(currentUserAtom)
+  const [, setMyOrgs] = useAtom(myOrgsAtom)
+  const [activeOrgId, setActiveOrgId] = useAtom(activeOrgIdAtom)
+  const authCheckedRef = useRef(false)
+
+  // 监听全局 401 → 重置到登录页
+  useEffect(() => {
+    return onAuthLoggedOut(() => {
+      setCurrentUser(null)
+      setAuthState('guest')
+    })
+  }, [setAuthState, setCurrentUser])
+
+  // sidecar ready 后立刻校验 token / 拉 me
+  useEffect(() => {
+    if (!ready || authCheckedRef.current) return
+    authCheckedRef.current = true
+    let active = true
+    ;(async () => {
+      // 从 main 进程 safeStorage 读出 token 装进 api 客户端
+      await hydrateAuthToken()
+      try {
+        const user = await api.auth.me()
+        if (!active) return
+        setCurrentUser(user)
+        // 拉 我的组织列表，校准 active org
+        try {
+          const orgs = await api.orgs.list()
+          if (!active) return
+          setMyOrgs(orgs)
+          // active 还有效就保留；否则跳到第一个 — 失效场景：组织被删 / 用户被踢
+          const stillValid = activeOrgId && orgs.some((o) => o.id === activeOrgId)
+          if (!stillValid) setActiveOrgId(orgs[0]?.id ?? null)
+        } catch {
+          setMyOrgs([])
+        }
+        setAuthState('active')
+      } catch (e) {
+        if (!active) return
+        // 401 / 网络错误 → 视为未登录
+        if (e instanceof ApiError && e.status === 401) {
+          setAuthState('guest')
+        } else {
+          // sidecar 没起 / 端点 404（旧版）→ 暂时按未登录，让用户走登录流
+          setAuthState('guest')
+        }
+      }
+    })()
+    return () => { active = false }
+  }, [ready, setAuthState, setCurrentUser])
+
+  const handleLoginSuccess = (user: CurrentUser) => {
+    setCurrentUser(user)
+    setAuthState('active')
+  }
+
+  // 后台滚动延期 — 每 6 小时调一次 /auth/refresh，让 30 天 session 永远不会到期
+  // （只要用户每周开过应用一次）。后端也会记一次 last_login 但不换 token。
+  // 失败静默：refresh 401 时 onAuthLoggedOut 已自动跳登录页。
+  useEffect(() => {
+    if (authState !== 'active') return
+    const tick = () => { api.auth.refresh().catch(() => {}) }
+    tick()  // 启动立刻续一次
+    const id = setInterval(tick, 6 * 60 * 60 * 1000)  // 6h
+    return () => clearInterval(id)
+  }, [authState])
 
   useEffect(() => {
     if (checkedRef.current) return
@@ -24,6 +100,12 @@ export default function App() {
       }
     })()
     return () => { active = false }
+  }, [])
+
+  // Pull current version from updaterAPI; release-notes prompt waits on it.
+  useEffect(() => {
+    const api = (window as any).updaterAPI
+    api?.getVersion?.().then((v: string) => setAppVersion(v))
   }, [])
 
   // Dev hot-reload feedback: when Electron main detects a sidecar source
@@ -79,7 +161,7 @@ export default function App() {
     return () => unsubs.forEach((u) => u())
   }, [])
 
-  if (!ready) {
+  if (!ready || authState === 'loading') {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background">
         <div className="text-center space-y-3">
@@ -90,5 +172,20 @@ export default function App() {
     )
   }
 
-  return <AppShell />
+  if (authState === 'guest') {
+    return <LoginPage onSuccess={handleLoginSuccess} />
+  }
+
+  return (
+    <>
+      <AppShell />
+      <OnboardingFlow />
+      <ReleaseNotesModal
+        open={releaseNotes.open}
+        onClose={releaseNotes.dismiss}
+        releases={releaseNotes.releases}
+        variant="first-launch"
+      />
+    </>
+  )
 }

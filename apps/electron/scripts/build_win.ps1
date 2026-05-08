@@ -102,8 +102,10 @@ try {
 Push-Location $ElectronDir
 try {
     $bin = "$RepoRoot\node_modules\.bin"
-    Step "Bundle main process"
-    & "$bin\esbuild.cmd" src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron
+    Step "Bundle main process (flavor=$($env:LINTU_BUILD_FLAVOR ? $env:LINTU_BUILD_FLAVOR : 'user'))"
+    # build-main.mjs 读 LINTU_BUILD_FLAVOR；user / ops / dev 三选一，
+    # 默认 user — 防止误打成 ops 版（能改线上）。
+    & node scripts/build-main.mjs
     if ($LASTEXITCODE -ne 0) { throw "main bundle failed" }
 
     Step "Bundle preload"
