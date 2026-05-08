@@ -57,6 +57,17 @@ COLLECT_PACKAGES = [
     "numpy",
     "scipy",          # quality_check.py uses scipy.signal.convolve2d
     "multipart",      # python-multipart
+    # Aliyun SMS SDK (手机号登录验证码) — sms_aliyun.py imports these lazily;
+    # missing them in the bundle causes a silent ImportError fallback where
+    # the code is logged to stdout but no SMS goes out.
+    "alibabacloud_dysmsapi20170525",
+    "alibabacloud_tea_openapi",
+    "alibabacloud_tea_util",
+    "alibabacloud_credentials",
+    "alibabacloud_credentials_api",
+    "alibabacloud_gateway_spi",
+    "Tea",            # alibabacloud-tea (PyPI) installs as top-level Tea/
+    "darabonba",      # darabonba-core, transitive runtime dep of tea-openapi
 ]
 
 for pkg in COLLECT_PACKAGES:

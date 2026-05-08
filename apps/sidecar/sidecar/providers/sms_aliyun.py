@@ -85,12 +85,21 @@ def generate_code(length: int = 6) -> str:
 async def send_code(phone: str, code: str) -> tuple[bool, str | None]:
     """发送验证码。返回 (ok, error_message)。
 
-    未配置凭据时降级：log 验证码到 stdout 返回 (True, None)，便于开发 / 阿里云
-    审核期联调。生产部署必须配齐凭据，否则**任何人**都能在服务日志里看到所有
-    人的验证码。
+    凭据未配 / SDK 未装时按 flavor 分流：
+      - dev / ops：log 验证码到 stdout 返回 (True, None)，开发联调用
+      - user：返回 (False, error)，让前端弹真实错误而不是误以为发出去了
+
+    生产部署必须配齐凭据，否则**任何人**都能在服务日志里看到所有人的验证码。
     """
+    is_user_flavor = os.environ.get("LINTU_BUILD_FLAVOR") == "user"
+
     creds = _get_credentials()
     if not all(creds[k] for k in ("access_key", "access_secret", "sign_name", "template_code")):
+        if is_user_flavor:
+            logger.error(
+                "[sms] 凭据未配齐 — 用户版拒绝降级到 stdout（避免误以为短信已发出）"
+            )
+            return False, "短信服务未配置，请在 设置→短信服务 里填阿里云凭据"
         logger.warning(
             "[sms] provider unconfigured — DEV FALLBACK: phone=%s code=%s "
             "(在 设置→短信服务 里配凭据后改走真实短信)", phone, code,
@@ -102,7 +111,9 @@ async def send_code(phone: str, code: str) -> tuple[bool, str | None]:
         from alibabacloud_dysmsapi20170525 import models as dysmsapi_models
         from alibabacloud_tea_openapi import models as open_api_models
     except ImportError as e:
-        logger.error("[sms] alibabacloud SDK 未装：%s — 退回到 stdout", e)
+        logger.error("[sms] alibabacloud SDK 未装：%s", e)
+        if is_user_flavor:
+            return False, "短信 SDK 未打包到客户端，请升级到最新版本"
         logger.warning("[sms] DEV FALLBACK: phone=%s code=%s", phone, code)
         return True, None
 

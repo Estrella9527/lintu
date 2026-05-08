@@ -25,6 +25,20 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.3',
+    date: '2026-05-09',
+    highlights: 'PyInstaller 收齐 SMS SDK + 用户版拒绝静默降级 — 短信真正能发出去了',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          'PyInstaller bundle 没把 alibabacloud_* 收进去：v0.2.2 即便客户在 UI 配齐了 SMS 凭据，sidecar 启动 import 仍然失败 → 走「SDK 未装」降级 → 验证码只 print 到 log。修：sidecar.spec COLLECT_PACKAGES 增加 alibabacloud_dysmsapi20170525 / Tea / darabonba 等 8 个包',
+          '用户版 silent fallback 误导：凭据未配 / SDK 未装时仍返回 (True, None)，前端弹「已发送」toast 但用户永远收不到。修：BUILD_FLAVOR=user 时显式 502 + 明确错误（"短信服务未配置" / "短信 SDK 未打包到客户端"）；dev / ops 保留 stdout 降级',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.2',
     date: '2026-05-09',
     highlights: '短信凭据搬进应用 UI — 客户机可视化配置，不再依赖 env 变量',
