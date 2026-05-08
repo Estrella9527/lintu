@@ -30,11 +30,32 @@ def _require_platform_owner(request: Request) -> None:
 
 @router.get("/status")
 async def sms_status(request: Request):
-    """前端 SmsConnectTab 用 — 看当前是否已配置 + 参数概览。"""
+    """前端 SmsConnectTab 用 — 看当前是否已配置 + 参数概览 + 来源。
+
+    `source` 告诉前端凭据来自哪：
+      - 'env'       env 优先级生效（user 版打包烤入 / dev shell export / ops env）
+      - 'config'    用户在 UI 配的，存 config.json
+      - 'mixed'     两边都有，env 覆盖 config（一般是 dev 调试场景）
+      - None         未配置
+    """
     _require_platform_owner(request)
+
+    import os
     creds = sms_aliyun._get_credentials()
+    has_env = bool(os.environ.get("LINTU_SMS_ACCESS_KEY"))
+    has_config = bool(sms_aliyun._read_config_value("sms_access_key"))
+    if has_env and has_config:
+        source: str | None = "mixed"
+    elif has_env:
+        source = "env"
+    elif has_config:
+        source = "config"
+    else:
+        source = None
+
     return {
         "configured": sms_aliyun.is_configured(),
+        "source": source,
         "sign_name": creds.get("sign_name"),
         "template_code": creds.get("template_code"),
         # endpoint 是非敏感信息，可以直接返回；access_key / secret 不返

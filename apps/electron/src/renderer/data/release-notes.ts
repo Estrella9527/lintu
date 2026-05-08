@@ -25,6 +25,34 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.4',
+    date: '2026-05-09',
+    highlights: '客户机零配置发短信 — SMS 凭据由发布方烤入打包，装好即可登录',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          '客户机短信凭据需手动配的体验问题：阿里云 SMS 凭据本质是龙蟾科技作为运营方的资产，不应该让每个客户机器单独配。现在 user 版打包通过 GitHub Secrets 在 CI 阶段自动烤入凭据，客户开箱即用',
+          'main 进程启动 sidecar 时把烤入凭据通过 env 转发，凭据查找优先级：shell env > config.json > main.cjs 烤入值（保留 dev / ops / 客户自定义覆盖空间）',
+        ],
+      },
+      {
+        kind: 'added',
+        items: [
+          '设置 → 短信服务：新增「凭据来源」状态指示。烤入凭据生效时显示「已由发布方预配置（开箱即用，无需填写）」，UI 默认折叠不显示填表入口；只有需要覆盖时才展开',
+          'GET /api/sms/status 返回 source 字段：env / config / mixed / null，让前端能区分凭据来源',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          'CI build-installers workflow 改用 build-main.mjs 集中管理 esbuild --define 注入逻辑（之前 main.cjs 是直接 npx esbuild 跑的，没有注入入口）',
+          'dev / ops 版打包不烤入 SMS 凭据：build-main.mjs 在 flavor !== "user" 时忽略 BAKED_SMS_* env，避免开发者本地构建时把 secret 嵌进二进制',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.3',
     date: '2026-05-09',
     highlights: 'PyInstaller 收齐 SMS SDK + 用户版拒绝静默降级 — 短信真正能发出去了',

@@ -456,6 +456,8 @@ class APIClient {
   sms = {
     status: () => this.request<{
       configured: boolean
+      /** 'env' = 打包烤入 / shell export；'config' = UI 配的；'mixed' = 两边都有；null = 未配 */
+      source: 'env' | 'config' | 'mixed' | null
       sign_name: string | null
       template_code: string | null
       endpoint_resolved: string

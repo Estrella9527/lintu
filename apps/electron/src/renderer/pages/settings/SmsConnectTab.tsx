@@ -136,9 +136,9 @@ export function SmsConnectTab() {
           <MessageSquare size={14} className="text-foreground/55" />
           <h2 className="text-[13px] font-semibold text-foreground/80">阿里云短信服务</h2>
           <InfoHint text={
-            '阿里云控制台申请签名 + 模板，配上 AccessKey 这里。\n' +
-            '没配置时 sidecar 会把验证码 print 到日志（dev 模式兜底，生产严禁）。\n' +
-            '凭据存在本地 config.json，不入 git，不上传 OSS。'
+            '客户版打包已烤入龙蟾科技的 SMS 凭据，开箱即用。\n' +
+            '只有需要覆盖（例如换签名 / 换 RAM 子账号）时才在下方填写。\n' +
+            '填写的凭据存本地 config.json，优先级低于环境变量。'
           } />
           {status?.configured ? (
             <span className="text-[10px] text-success inline-flex items-center gap-1 ml-auto">
@@ -146,10 +146,25 @@ export function SmsConnectTab() {
             </span>
           ) : (
             <span className="text-[10px] text-amber-600 inline-flex items-center gap-1 ml-auto">
-              <XCircle size={11} /> 未配置（走 dev fallback）
+              <XCircle size={11} /> 未配置
             </span>
           )}
         </div>
+
+        {/* 凭据来源指示 */}
+        {status?.source === 'env' && (
+          <div className="mb-2 text-[11px] text-foreground/65 inline-flex items-start gap-1.5 rounded-md bg-accent/[0.06] px-2 py-1.5">
+            <CheckCircle2 size={12} className="text-accent shrink-0 mt-0.5" />
+            <span>已由发布方预配置（开箱即用，无需填写）。如需覆盖请在下方填表保存。</span>
+          </div>
+        )}
+        {status?.source === 'mixed' && (
+          <div className="mb-2 text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1.5 rounded-md bg-amber-500/[0.08] px-2 py-1.5">
+            <InfoHint text="环境变量优先级 > config.json，所以你下方填的可能没生效。要让填表生效，需先 unset 环境变量。" size={11} />
+            <span>检测到环境变量同时有效，可能覆盖了你的配置。</span>
+          </div>
+        )}
+
         {status?.configured && (
           <div className="text-[11px] text-foreground/55 space-y-0.5 tabular-nums">
             <div>签名：<span className="font-mono text-foreground/85">{status.sign_name}</span></div>

@@ -98,8 +98,19 @@ jobs:
       - name: Bundle main / preload / renderer
         working-directory: apps/electron
         shell: bash
+        env:
+          # user 版烤入 SMS 凭据（让客户机零配置就能发短信）。dev / ops 不烤。
+          # build-main.mjs 在 flavor !== 'user' 时会忽略这些 env，所以 ops/dev
+          # 跑 CI 也不会泄漏凭据到打包里。
+          LINTU_BUILD_FLAVOR: user
+          BAKED_SMS_ACCESS_KEY:    ${{ secrets.LINTU_SMS_ACCESS_KEY }}
+          BAKED_SMS_ACCESS_SECRET: ${{ secrets.LINTU_SMS_ACCESS_SECRET }}
+          BAKED_SMS_SIGN_NAME:     ${{ secrets.LINTU_SMS_SIGN_NAME }}
+          BAKED_SMS_TEMPLATE_CODE: ${{ secrets.LINTU_SMS_TEMPLATE_CODE }}
         run: |
-          npx esbuild src/main/index.ts    --bundle --platform=node --format=cjs --outfile=dist/main.cjs    --external:electron
+          # 用 build-main.mjs 而不是直接 npx esbuild — 让 --define 注入逻辑
+          # 集中在一个脚本里（包括 BUILD_FLAVOR + BAKED_SMS_*）。
+          node scripts/build-main.mjs
           npx esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron
           npx vite build --config vite.config.ts
 

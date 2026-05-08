@@ -39,6 +39,34 @@ function detectBuildFlavor(): 'dev' | 'user' | 'ops' {
 const BUILD_FLAVOR = detectBuildFlavor()
 console.log(`[main] BUILD_FLAVOR=${BUILD_FLAVOR} isDev=${isDev}`)
 
+// ── Baked SMS credentials (CI 注入到 user 版打包) ──────────────────────
+// 设计：dev / ops 不烧凭据（开发者从终端 export，运维机有 systemd env）；
+// user 版 CI 通过 GitHub Secrets 把阿里云 SMS AK/SK 烧进 main.cjs，启动
+// sidecar 时通过 env 转发，让客户机零配置就能发短信登录。
+//
+// 反编译风险：main.cjs 在 .asar 里，能解包看到字面量。缓解：
+//   · RAM 子账号只有 AliyunDysmsFullAccess（被滥用最多发垃圾短信）
+//   · 阿里云用量阈值告警（单日 > 500 触发邮件）
+//   · 一旦泄漏：吊销 RAM AK + 重发版即可（所有客户端自动升级）
+declare const __BAKED_SMS_ACCESS_KEY__:    string | undefined
+declare const __BAKED_SMS_ACCESS_SECRET__: string | undefined
+declare const __BAKED_SMS_SIGN_NAME__:     string | undefined
+declare const __BAKED_SMS_TEMPLATE_CODE__: string | undefined
+
+function readBakedSms() {
+  const safe = (v: unknown) => (typeof v === 'string' ? v : '')
+  return {
+    access_key:    safe(typeof __BAKED_SMS_ACCESS_KEY__    !== 'undefined' ? __BAKED_SMS_ACCESS_KEY__    : ''),
+    access_secret: safe(typeof __BAKED_SMS_ACCESS_SECRET__ !== 'undefined' ? __BAKED_SMS_ACCESS_SECRET__ : ''),
+    sign_name:     safe(typeof __BAKED_SMS_SIGN_NAME__     !== 'undefined' ? __BAKED_SMS_SIGN_NAME__     : ''),
+    template_code: safe(typeof __BAKED_SMS_TEMPLATE_CODE__ !== 'undefined' ? __BAKED_SMS_TEMPLATE_CODE__ : ''),
+  }
+}
+const BAKED_SMS = readBakedSms()
+const BAKED_SMS_PRESENT = !!(BAKED_SMS.access_key && BAKED_SMS.access_secret &&
+                              BAKED_SMS.sign_name && BAKED_SMS.template_code)
+console.log(`[main] baked SMS credentials: ${BAKED_SMS_PRESENT ? 'present' : 'absent'}`)
+
 /** 用户版必须剥离的 env 变量 — 防止有人在 user 版机器上手动设了这两个变量
  *  就能影响线上。物理隔离 = 不传给 sidecar 子进程。 */
 const CLOUD_SYNC_ENV_KEYS = ['LINTU_CLOUD_SYNC_URL', 'LINTU_INTERNAL_SYNC_TOKEN'] as const
@@ -150,6 +178,17 @@ function buildSidecarEnv(): NodeJS.ProcessEnv {
   // 让 sidecar 知道自己被哪种 flavor 启动 — 决定 user_auth 中间件是否
   // 自动派 root（ops 自动派；user 必须真登录；dev 视 LINTU_AUTH_BYPASS）
   env.LINTU_BUILD_FLAVOR = BUILD_FLAVOR
+
+  // ── Baked SMS 凭据 forward（仅 user 版 CI 烤入） ────────────────────
+  // 优先级：shell env > sidecar config.json > main.cjs 烤入值
+  // 也就是：开发者临时 export 测试凭据 / 客户在 UI 配的凭据 / 都比 baked 优先；
+  // baked 是兜底，让客户什么都不做就能发短信登录。
+  if (BAKED_SMS_PRESENT) {
+    if (!env.LINTU_SMS_ACCESS_KEY)    env.LINTU_SMS_ACCESS_KEY    = BAKED_SMS.access_key
+    if (!env.LINTU_SMS_ACCESS_SECRET) env.LINTU_SMS_ACCESS_SECRET = BAKED_SMS.access_secret
+    if (!env.LINTU_SMS_SIGN_NAME)     env.LINTU_SMS_SIGN_NAME     = BAKED_SMS.sign_name
+    if (!env.LINTU_SMS_TEMPLATE_CODE) env.LINTU_SMS_TEMPLATE_CODE = BAKED_SMS.template_code
+  }
 
   if (BUILD_FLAVOR === 'user') {
     // 用户版：剥离同步凭据。即使 shell / safeStorage 里有，也不传给 sidecar。
