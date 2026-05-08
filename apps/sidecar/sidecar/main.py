@@ -37,7 +37,7 @@ from sidecar.scheduler.batch_engine import batch_scheduler
 from sidecar.scheduler.oss_worker import oss_worker
 from sidecar.scheduler.cloud_sync_worker import cloud_sync_worker
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router, sms as sms_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -182,6 +182,7 @@ if LINTU_MODE == "electron":
     # v0.2 组织化
     app.include_router(orgs_router.router, prefix="/api/orgs", tags=["orgs"])
     app.include_router(platform_router.router, prefix="/api/platform", tags=["platform"])
+    app.include_router(sms_router.router, prefix="/api/sms", tags=["sms"])
 
 # /internal/sync/* — local sidecar pushes here, never exposed to UGC.
 # Only mounted in server mode (cloud deploy) — local has no need to

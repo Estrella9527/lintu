@@ -25,6 +25,29 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.2',
+    date: '2026-05-09',
+    highlights: '短信凭据搬进应用 UI — 客户机可视化配置，不再依赖 env 变量',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          '客户机短信发不出的关键缺口：之前 SMS 凭据靠 LINTU_SMS_* 环境变量，但生产 .app 双击启动不会读 ~/.zshrc / ~/.zshenv，凭据永远是空 — 客户体验上「短信发不出去」',
+          '修复：sidecar 改为优先 env、兜底从本地 config.json 读 sms_* 6 个 key。dev 模式继续走 env 不破',
+        ],
+      },
+      {
+        kind: 'added',
+        items: [
+          '设置 → 短信服务（仅平台超管可见）：可视化配置阿里云 SMS 凭据（AccessKey ID/Secret + 签名 + 模板编号 + 可选 Endpoint/Region）',
+          '状态卡：当前凭据「已配置 / 未配置」+ 关键参数预览（AccessKey 显前 6 位掩码）',
+          '发测试短信入口：填手机号一键发，立刻验证凭据是否有效（测试码固定 999999，不入 sms_codes 表）',
+          '/api/sms/status + /api/sms/test 两个端点（platform owner 鉴权）',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.1',
     date: '2026-05-08',
     highlights: '升级路径补丁：v0.1 客户机升级后首位登录的人自动接管所有数据',

@@ -452,6 +452,22 @@ class APIClient {
     }>>('/platform/users'),
   }
 
+  // ── SMS 短信服务（仅平台超管可调） ──
+  sms = {
+    status: () => this.request<{
+      configured: boolean
+      sign_name: string | null
+      template_code: string | null
+      endpoint_resolved: string
+      access_key_masked: string | null
+    }>('/sms/status'),
+    test: (phone: string) =>
+      this.request<{ ok: boolean; message?: string; error?: string }>('/sms/test', {
+        method: 'POST',
+        body: JSON.stringify({ phone }),
+      }),
+  }
+
   // ── Audit log（仅超级管理员可调） ──
   audit = {
     listOperations: (params?: {
