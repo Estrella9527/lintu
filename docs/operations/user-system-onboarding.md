@@ -27,7 +27,11 @@
 
 ## 二、首次部署 / 接手 checklist
 
-按顺序：
+> **从 v0.1.x 升级到 v0.2.0 的客户机**：不需要跑 bootstrap-root。alembic 自动迁移
+> 后启动 app，**第一个用手机号登录的人会自动成为这台机器的 owner**（接管所有项目 +
+> 数据 + 平台超管权限）。详见 §10 「升级路径」。
+
+按顺序（**全新机器** 部署）：
 
 ### 2.1 申请并配置阿里云短信
 按 [`sms-aliyun-onboarding.md`](./sms-aliyun-onboarding.md) 走完，最终把 5 个 env 配进 sidecar 启动环境：
@@ -162,6 +166,85 @@ uv run python -m sidecar.cli.admin reset-root --phone 13900000000 --yes
 - `/open-api/v1/*`（ApiKey 鉴权）— 不受用户系统影响。下游服务（如官网、H5、客户业务）继续用 ApiKey 调
 - `/internal/sync/*`（独立 sync_token）— sidecar → 云端 sidecar 的内部 push，没有 user 概念
 - `cloud_sync_worker` — 后台同步逻辑不走用户身份；它是机器对机器的同步
+
+---
+
+## 十、升级路径：v0.1.x → v0.2.0
+
+### 自动迁移做了什么
+
+1. alembic `20260509_0220` 跑迁移：建 `organizations` / `organization_members` 表 + `projects.org_id`
+2. 创建一个 **「默认组织」**（id 写死 `00000000-...-default-org-00`，slug = `default`，套餐 free，配额 100GB）
+3. 把所有现有 `project` / `api_key` 归到默认组织
+4. 把所有 v0.1.x 已存在的 `User` 加为默认组织成员（`is_root=True` 的 user → `owner` + `is_platform_owner=True`）
+
+### 客户机的真实场景
+
+绝大多数 v0.1.x 客户机**没有运行过 `lintu-admin bootstrap-root`** —
+那时候完全无登录，没必要建 user。所以迁移后的状态是：
+
+```
+默认组织：1 个
+project：N 个（全部归属默认组织）
+图片：M 万张（所有项目下的）
+user：0 个
+organization_member：0 个
+project_member：0 个
+```
+
+**没人 own 这堆数据**。如果客户启动 app → 注册一个新手机号 → 看到 `projects=[]`
+→ 资产库一片空白 → 觉得「我的图都没了」。
+
+### 自动认领（v0.2 引入的兜底）
+
+`/api/auth/sms/verify` 端点新增「孤儿数据认领」逻辑：
+
+**触发条件**（全部满足）：
+- 默认组织存在且 `status=active`
+- 默认组织 `OrganizationMember` 数 == 0
+- 默认组织下至少 1 个 project
+
+**触发动作**：
+1. 把当前登录用户设为 `is_platform_owner=True` + `is_root=True`（向后兼容）
+2. 加为默认组织的 `owner`
+3. 加为所有默认组织 project 的 `project_admin`
+
+**响应里的提示**：sms_verify 返回多两个字段
+```json
+{
+  "claimed_orphan_data": { "org_id": "...", "org_name": "默认组织", "projects": 2 },
+  "is_new_user": true
+}
+```
+
+前端登录页拿到 `claimed_orphan_data` 不为 null 时，弹一个 toast：
+> 欢迎，已自动接管本机 N 个项目
+> 你是这台机器升级后的首位登录者，自动成为组织所有者
+
+**安全保障**：
+- 第二个登录的用户走到这里时，条件 2 已不满足（前面那位是 owner）→ 不触发
+- 客户公司里如果有多个员工同时升级、同时登录，唯有第一个完成 sms_verify 的人能接管 — 其它人后登录就是普通新成员
+- 这是合理的：第一个登录的应该是这台机器的主人（管理员）
+
+### 部署建议
+
+| 客户机情况 | 操作 |
+|---|---|
+| **全新部署** | 跑一次 `lintu-admin bootstrap-root --phone xxx` 显式指定首位 owner |
+| **从 v0.1.x 升级** | **什么都不用做** — 自动迁移 + 让客户首位登录的人自动接管即可 |
+| **升级 + 客户已经手动 bootstrap-root 过** | alembic 已把 root 用户升 platform_owner，正常用 |
+| **混合部署（多家客户共用一个 sidecar）** | 别用自动认领 — 平台运营手动跑 bootstrap-root + 用 `/api/orgs` 创建多个组织分别指定 owner |
+
+### 升级 checklist
+
+```
+1. ✅ 备份 ~/lintu-data/lintu.db
+2. ✅ 运行新版 sidecar（启动时 alembic 自动跑）
+3. ✅ 检查日志看到 [tenant] hooks installed + 新迁移 0220 成功
+4. ✅ 启动 Electron → 登录页 → 客户输手机号
+5. ✅ 检查 sidecar 日志出现 "[auth] xxx claimed orphan data: org=... projects=N"
+6. ✅ 客户进 app 立刻看到所有项目 + 数据
+```
 
 ---
 

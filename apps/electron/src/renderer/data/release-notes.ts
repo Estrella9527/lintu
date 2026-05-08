@@ -25,6 +25,29 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.1',
+    date: '2026-05-08',
+    highlights: '升级路径补丁：v0.1 客户机升级后首位登录的人自动接管所有数据',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          'v0.1 → v0.2 升级关键缺口：alembic 把现有 project 归到「默认组织」但没人 own，新用户登录后看到 projects=[]，资产库一片空白 — 看上去图全没了',
+          '修复：sms_verify 端点新增「孤儿数据认领」逻辑。当默认组织没人但有 project 时，第一位完成验证的用户自动成为组织 owner + 平台超管 + 所有项目 project_admin',
+          '前端登录页识别认领事件，弹「已自动接管本机 N 个项目」明确提示，避免用户疑惑',
+          '安全约束：只触发一次。第二个用户登录时默认组织已有 owner，不可被抢',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          'sms_verify 响应新增 claimed_orphan_data 和 is_new_user 字段，便于前端做新人引导差异化',
+          '运维文档 user-system-onboarding.md 新增 §10 「升级路径」章节，含 4 种部署场景的操作矩阵',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.0',
     date: '2026-05-08',
     highlights: '组织化上线 — 一个公司多个员工 / 多个项目 / 角色权限矩阵一站打通',

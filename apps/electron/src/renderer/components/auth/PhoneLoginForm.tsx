@@ -74,7 +74,17 @@ export function PhoneLoginForm({ onSuccess }: Props) {
     try {
       const result = await api.auth.verifySms(phone, codeToVerify)
       await setAuthToken(result.token)
-      toast.success(`欢迎，${result.user.display_name || result.user.phone}`)
+      // v0.1 → v0.2 升级路径：第一个登录的人接管了本机所有项目数据。
+      // 给一个明确提示，避免用户疑惑「我什么都没做怎么有这么多数据」。
+      const claimed = (result as any).claimed_orphan_data
+      if (claimed && claimed.projects > 0) {
+        toast.success(
+          `欢迎，已自动接管本机 ${claimed.projects} 个项目`,
+          { description: '你是这台机器升级后的首位登录者，自动成为组织所有者' },
+        )
+      } else {
+        toast.success(`欢迎，${result.user.display_name || result.user.phone}`)
+      }
       onSuccess(result.user)
     } catch (e: unknown) {
       const detail = (e as ApiError).body

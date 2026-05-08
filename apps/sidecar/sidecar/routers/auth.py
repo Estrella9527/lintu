@@ -187,14 +187,27 @@ async def sms_verify(body: SmsVerifyBody, request: Request, db: AsyncSession = D
     sms_row.used = True
 
     # 找/建用户
+    is_new_user = False
     user = await db.scalar(select(User).where(User.phone == phone))
     if user is None:
         user = User(phone=phone, status="active")
         db.add(user)
         await db.flush()
+        is_new_user = True
         logger.info("[auth] new user via sms: id=%s phone=%s", user.id, phone)
     elif user.status == "disabled":
         raise HTTPException(403, {"code": "user_disabled", "message": "账号已被禁用"})
+
+    # ── v0.1 → v0.2 升级 / 全新部署的孤儿数据认领 ────────────────────
+    # 场景：v0.1.x 用户升级到 v0.2.0，alembic 把现有 project 归到 default-org
+    # 但当时 DB 里没有 user，default-org 也没有成员。第一个登录的人理应是这台
+    # 机器的主人 — 自动认领所有数据，避免"看不到自己的图"的资产损失体验。
+    claimed = await _claim_orphan_data_if_first_user(db, user)
+    if claimed:
+        logger.info(
+            "[auth] %s claimed orphan data: org=%s projects=%d (first user on fresh upgrade)",
+            user.phone, claimed["org_id"], claimed["projects"],
+        )
 
     # 自动接受同手机号下所有 pending invitations — 一登入立刻挂项目
     from sidecar.routers.invitations import auto_accept_pending_invitations
@@ -209,6 +222,80 @@ async def sms_verify(body: SmsVerifyBody, request: Request, db: AsyncSession = D
         "token": raw_token,
         "user": await _user_payload(db, user),
         "auto_accepted_invitations": accepted,
+        "claimed_orphan_data": claimed,
+        "is_new_user": is_new_user,
+    }
+
+
+# ── 孤儿数据认领（v0.1 → v0.2 升级路径） ─────────────────────────────
+
+
+# alembic 0220 写死的 default-org id，跟 schema migration 保持一致
+_DEFAULT_ORG_ID = "00000000-0000-0000-0000-default-org-00"
+
+
+async def _claim_orphan_data_if_first_user(db: AsyncSession, user: User) -> Optional[dict]:
+    """如果 default-org 当前没有任何成员、但有 project 数据 → 让这个 user 接管全部。
+
+    判定条件（**全部满足才触发**）：
+      1. default-org 存在且 active
+      2. default-org 没有任何 OrganizationMember
+      3. default-org 下至少有 1 个 project
+
+    动作：
+      1. user.is_platform_owner = True（兼容 is_root = True）
+      2. 加 user 为 default-org 的 owner
+      3. 加 user 为所有 default-org project 的 project_admin
+
+    返回：触发了就返回 dict，没触发返回 None。
+
+    安全考虑：
+      - 第二个登录的用户走到这里时，条件 2 已经不满足（前面那位是 owner）→ 不触发
+      - 普通用户故意删空 OrganizationMember 表也不会触发，因为 alembic 0220
+        已经把数据归属做完，正常生产 DB 不会出现"有 project 没成员"的状态
+        除非是干净从 v0.1 升级来的
+    """
+    from sqlalchemy import func
+    from sidecar.db.models import (
+        Organization, OrganizationMember, Project, ProjectMember,
+    )
+
+    org = await db.get(Organization, _DEFAULT_ORG_ID)
+    if not org or org.status != "active":
+        return None
+
+    member_count = await db.scalar(
+        select(func.count(OrganizationMember.id))
+        .where(OrganizationMember.org_id == _DEFAULT_ORG_ID)
+    ) or 0
+    if member_count > 0:
+        return None  # 已经有人 own 这个 org 了，不能抢
+
+    project_count = await db.scalar(
+        select(func.count(Project.id))
+        .where(Project.org_id == _DEFAULT_ORG_ID)
+    ) or 0
+    if project_count == 0:
+        return None  # 空 org，没必要认领
+
+    # ── 触发认领 ─────────────────────────────────────────
+    user.is_platform_owner = True
+    user.is_root = True  # v0.1 兼容字段
+    db.add(OrganizationMember(
+        org_id=_DEFAULT_ORG_ID, user_id=user.id, role="owner", invited_by=user.id,
+    ))
+    projects = (await db.execute(
+        select(Project).where(Project.org_id == _DEFAULT_ORG_ID)
+    )).scalars().all()
+    for p in projects:
+        db.add(ProjectMember(
+            project_id=p.id, user_id=user.id, role="project_admin", invited_by=user.id,
+        ))
+    await db.flush()
+    return {
+        "org_id": _DEFAULT_ORG_ID,
+        "org_name": org.name,
+        "projects": project_count,
     }
 
 
