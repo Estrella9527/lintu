@@ -25,6 +25,27 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.5',
+    date: '2026-05-08',
+    highlights: '修 Windows 客户机收不到验证码 — 烤入凭据没真正进 PyInstaller bundle',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          'Windows v0.2.4 验证码发不出：collect_all() 在 Windows 漏收 alibabacloud_dysmsapi20170525 等子模块，sidecar.exe 运行时 ImportError 静默降级。修：sms_aliyun.py 改顶层 import（PyInstaller 静态分析强制覆盖）+ sidecar.spec 显式 collect_submodules 兜底 + sidecar 启动期 preflight 把 SDK / 凭据状态打到日志',
+          '错误信息更友好：之前 user 版 SDK 加载失败提示「短信 SDK 未打包到客户端」，但客户拿不到原始 ImportError 反馈无门。现在错误 message 附带 ImportError 类型 + 详情，截图就能定位',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          '移除 设置 → 短信服务 Tab：阿里云 SMS 凭据是发布方资产（龙蟾科技作为运营方），不该作为客户端配置项暴露。Phase 2 如真有客户自带凭据需求，会以「自带短信通道」独立功能形态做',
+          'sms_aliyun.py 不再读 config.json：v0.2.2 引入的 config.json 兜底路径已无意义（user 版烤入凭据已可覆盖全部场景，dev / ops 走 env），删掉减少凭据来源不确定性',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.4',
     date: '2026-05-09',
     highlights: '客户机零配置发短信 — SMS 凭据由发布方烤入打包，装好即可登录',

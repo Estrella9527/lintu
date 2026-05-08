@@ -22,7 +22,6 @@ export type SettingsTabId =
   | 'org-general'
   | 'org-members'
   | 'platform'
-  | 'sms-connect'
   | 'ai-provider'
   | 'prompt-library'
   | 'tag-system'

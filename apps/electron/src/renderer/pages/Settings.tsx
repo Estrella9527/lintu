@@ -1,5 +1,5 @@
 import { useAtom, useAtomValue } from 'jotai'
-import { Building2, Cloud, Cog, Cpu, FileText, Info, MessageSquare, ScrollText, ShieldCheck, Tags, Users, type LucideIcon } from 'lucide-react'
+import { Building2, Cloud, Cog, Cpu, FileText, Info, ScrollText, ShieldCheck, Tags, Users, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { settingsTabAtom, type SettingsTabId } from '@/atoms/navigation'
 import { activeOrgAtom } from '@/atoms/auth'
@@ -12,7 +12,6 @@ import { MembersTab } from './settings/MembersTab'
 import { OrgGeneralTab } from './settings/OrgGeneralTab'
 import { OrgMembersTab } from './settings/OrgMembersTab'
 import { PlatformTab } from './settings/PlatformTab'
-import { SmsConnectTab } from './settings/SmsConnectTab'
 import { AuditLogTab } from './settings/AuditLogTab'
 import { OSSConnectTab } from './settings/OSSConnectTab'
 import { AboutTab } from './settings/AboutTab'
@@ -39,7 +38,6 @@ const SECTIONS: NavSection[] = [
       { id: 'org-general',  label: '组织设置',  icon: Building2, orgAdminOnly: true },
       { id: 'org-members',  label: '组织成员',  icon: Users, orgAdminOnly: true },
       { id: 'platform',     label: '平台管理',  icon: ShieldCheck, platformOnly: true },
-      { id: 'sms-connect',  label: '短信服务',  icon: MessageSquare, platformOnly: true },
     ],
   },
   {
@@ -78,7 +76,6 @@ function TabContent({ id }: { id: SettingsTabId }) {
     case 'org-general': return <OrgGeneralTab />
     case 'org-members': return <OrgMembersTab />
     case 'platform': return <PlatformTab />
-    case 'sms-connect': return <SmsConnectTab />
     case 'ai-provider': return <AIProviderTab />
     case 'prompt-library': return <PromptLibraryTab />
     case 'tag-system': return <TagSchemaTab />

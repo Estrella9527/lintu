@@ -79,6 +79,27 @@ for pkg in COLLECT_PACKAGES:
     except Exception as e:
         print(f"[spec] collect_all({pkg!r}) skipped: {e}")
 
+# Belt-and-suspenders for the alibabacloud SDK family — collect_all() has been
+# observed (Windows v0.2.4) to skip dysmsapi / tea_openapi / gateway_spi /
+# credentials_api submodules entirely, which makes `from alibabacloud_dysmsapi
+# 20170525.client import Client` fail at runtime even though the package is
+# present in the bundle. Force every submodule into hiddenimports so the
+# static analyzer can't miss any of them.
+for pkg in (
+    "alibabacloud_dysmsapi20170525",
+    "alibabacloud_tea_openapi",
+    "alibabacloud_tea_util",
+    "alibabacloud_credentials",
+    "alibabacloud_credentials_api",
+    "alibabacloud_gateway_spi",
+    "Tea",
+    "darabonba",
+):
+    try:
+        hiddenimports.extend(collect_submodules(pkg))
+    except Exception as e:
+        print(f"[spec] collect_submodules({pkg!r}) skipped: {e}")
+
 # Extra hidden imports for uvicorn's lazy protocol/loop loading.
 # These won't appear via collect_submodules because they're imported
 # behind try/except guards.

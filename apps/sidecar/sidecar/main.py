@@ -54,6 +54,11 @@ async def lifespan(app: FastAPI):
     from sidecar.db.tenant import install_tenant_hooks
     install_tenant_hooks(async_session)
 
+    # SMS preflight — Windows PyInstaller 历来会漏 alibabacloud SDK 子模块；
+    # 启动期 import + 凭据状态打到日志，user 版打包没装上能立刻发现。
+    from sidecar.providers import sms_aliyun
+    sms_aliyun.preflight()
+
     # Register engine handlers (imported lazily to avoid circular deps)
     from sidecar.engines.quality_check import run_quality_check
     from sidecar.engines.dedup import run_dedup
