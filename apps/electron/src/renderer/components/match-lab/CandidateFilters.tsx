@@ -18,8 +18,6 @@ interface PromptWithCount {
   output_count: number
 }
 
-const API_BASE = 'http://127.0.0.1:7879'
-
 /**
  * 「候选源」筛选 — 把候选池约束到资产库的子集。改造后的紧凑版（2026-05-07）：
  *   - 全部用下拉多选，不再铺开 chip 列表
@@ -77,13 +75,13 @@ export function CandidateFiltersPanel({ value, onChange, projectId, description 
   // 的标记，让运营一眼分清哪些 prompt 已经投产、哪些是新建未跑过的。
   const { data: prompts } = useQuery<PromptWithCount[]>({
     queryKey: ['prompts', 'with-output-counts', projectId],
-    queryFn: () => fetch(
-      `${API_BASE}/api/prompts/with-output-counts${projectId ? `?project_id=${projectId}` : ''}`,
+    queryFn: () => apiFetchRaw(
+      `/prompts/with-output-counts${projectId ? `?project_id=${projectId}` : ''}`,
     ).then((r) => r.json()),
     staleTime: 60_000,
   })
   const promptOptions: MultiSelectOption[] = useMemo(() => {
-    if (!prompts) return []
+    if (!Array.isArray(prompts)) return []
     return prompts
       .filter((p) => p.is_active)
       .map((p) => ({
@@ -102,7 +100,7 @@ export function CandidateFiltersPanel({ value, onChange, projectId, description 
     staleTime: 60_000,
   })
   const folderOptions: MultiSelectOption[] = useMemo(() => {
-    if (!folders) return []
+    if (!Array.isArray(folders)) return []
     return folders.map((f) => ({
       value: f.folder,
       label: f.folder || '(根目录)',

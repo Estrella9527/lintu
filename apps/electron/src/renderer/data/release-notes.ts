@@ -25,6 +25,26 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.6',
+    date: '2026-05-09',
+    highlights: '匹配实验室崩溃修复 + 收紧 user 版鉴权 BYPASS',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          '匹配实验室「匹配策略」Tab 进去就崩（"d.filter is not a function"）：CandidateFilters 用 raw fetch 调 /api/prompts/with-output-counts 没带 Bearer token，401 返回 {detail:...} 不是数组，下游 .filter 报 TypeError。修：改 apiFetchRaw 自动注入 token + Array.isArray 兜底',
+          '/api/sms/status 端点必 500：v0.2.5 重写 sms_aliyun.py 时删了 _read_config_value 函数，但 sms.py router 还在调它。前端 SmsConnectTab 已删，这俩端点（status + test）属死代码 — 整个 router 删除',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          '安全收紧：user 版打包物理屏蔽 LINTU_AUTH_BYPASS env — 即使客户机自己 export LINTU_AUTH_BYPASS=1 也拒绝跳过登录拿 root，跟 cloud sync env 同级别保护。dev 仍可用 BYPASS 调试，ops 自动派 root 不变',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.5',
     date: '2026-05-08',
     highlights: '修 Windows 客户机收不到验证码 — 烤入凭据没真正进 PyInstaller bundle',

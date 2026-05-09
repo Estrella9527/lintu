@@ -129,9 +129,14 @@ class UserAuthMiddleware(BaseHTTPMiddleware):
         if not _is_protected_path(path):
             return await call_next(request)
 
-        # ops / dev+BYPASS：自动派 root，跳过 token 校验
+        # ops 自动派 root；dev 看 LINTU_AUTH_BYPASS env；user 物理屏蔽 BYPASS
+        # （即使客户机自己 set LINTU_AUTH_BYPASS=1 也拒绝跳过登录 — 跟
+        # cloud sync env 同级别保护，user 版打包永远不能被 env 提权）
         flavor = _flavor()
-        if flavor == "ops" or _bypass_enabled():
+        if flavor == "ops":
+            request.state.user = SYSTEM_ROOT
+            return await call_next(request)
+        if flavor == "dev" and _bypass_enabled():
             request.state.user = SYSTEM_ROOT
             return await call_next(request)
 
