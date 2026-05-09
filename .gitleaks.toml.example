@@ -1,0 +1,67 @@
+# gitleaks 配置模板 — 复制为 .gitleaks.toml，填入仓库特有的敏感串后本地使用
+#
+# 为什么是 .example 而不是直接 commit：真值 regex 字面量本身就是真值，
+# 写进 git 等于二次泄露。每位开发者从 docs/internal/（或团队私有知识库）
+# 拿到真值后，本地维护自己的 .gitleaks.toml（已被 .gitignore）。
+#
+# 安装：
+#   brew install gitleaks
+#   cp .gitleaks.toml.example .gitleaks.toml
+#   # 编辑 .gitleaks.toml，把 <PROD_IP> / <PROD_DOMAIN> 等占位换成真值
+#
+# 使用（pre-commit hook 已自动调用，也可手动）：
+#   gitleaks protect --staged --no-banner       # 检查 staged
+#   gitleaks detect --source . --no-banner       # 全 history 扫
+#
+# 仓库内置的 .git/hooks/pre-commit 会优先调 gitleaks，找不到时降级用
+# 本地 grep 兜底（pre-commit hook 内部已硬编码黑名单，不依赖此文件）。
+
+title = "lintu sensitive patterns"
+
+[extend]
+useDefault = true   # 继承官方默认（AWS / GCP / Slack / GitHub Token 等）
+
+# ── 仓库特有黑名单（占位，复制后请替换为真值） ──────────────────────
+[[rules]]
+id = "lintu-prod-ecs-ip"
+description = "真实 ECS 公网 IP"
+regex = '''<PROD_IP_REGEX>'''   # 例: 192\.0\.2\.1（占位演示，真值见 docs/internal/）
+tags = ["lintu", "infra"]
+
+[[rules]]
+id = "lintu-prod-domain"
+description = "真实生产域名（含所有子域）"
+regex = '''(api|ugc|staging-api)\.<PROD_DOMAIN_REGEX>'''
+tags = ["lintu", "infra"]
+
+[[rules]]
+id = "lintu-customer-bucket"
+description = "客户 OSS bucket 名"
+regex = '''<CUSTOMER_BUCKET_REGEX>'''
+tags = ["lintu", "customer"]
+
+[[rules]]
+id = "lintu-customer-uuids"
+description = "已知客户项目 UUID（A / B …）"
+regex = '''<CUSTOMER_PROJECT_UUID_REGEX>'''
+tags = ["lintu", "customer"]
+
+[[rules]]
+id = "lintu-customer-names"
+description = "客户景区中文名（A / B …）"
+regex = '''<CUSTOMER_SCENIC_NAME_REGEX>'''
+tags = ["lintu", "customer"]
+
+# ── 阿里云 RAM AccessKey（必须只在 GitHub Secrets，源码禁止）─────
+[[rules]]
+id = "aliyun-ak-id"
+description = "Aliyun RAM AccessKey ID"
+regex = '''LTAI[0-9A-Za-z]{16,30}'''
+tags = ["lintu", "credentials"]
+
+[allowlist]
+description = "允许列表"
+paths = [
+  '''docs/internal/.*''',     # 本地真值映射（已 .gitignore）
+  '''CHANGELOG\.md''',         # 历史 changelog 可能引用旧值
+]

@@ -28,3 +28,6 @@ scripts/backup/.env
 
 # Internal docs with real infra values (IP / domain / customer names) — never push
 docs/internal/
+
+# Local-only gitleaks config (contains real values as regex blacklist)
+.gitleaks.toml
