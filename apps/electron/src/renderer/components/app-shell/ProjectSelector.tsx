@@ -156,7 +156,7 @@ export function ProjectSelector() {
               <Input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="例如：示例景区B景区"
+                placeholder="例如：示例景区B"
                 className="h-8 text-[13px]"
               />
             </div>
