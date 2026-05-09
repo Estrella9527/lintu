@@ -25,3 +25,6 @@ apps/electron/build/*.p12
 
 # Backup system credentials — PG 密码 / 加密 key / OSS 凭证
 scripts/backup/.env
+
+# Internal docs with real infra values (IP / domain / customer names) — never push
+docs/internal/
