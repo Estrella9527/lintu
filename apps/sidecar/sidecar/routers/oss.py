@@ -3,7 +3,10 @@
 POST /api/oss/test            — verify configured credentials by listing the bucket
 GET  /api/oss/status          — queue stats (pending / running / done / failed)
 POST /api/oss/backfill        — enqueue every image whose cdn_path is NULL
+POST /api/oss/enqueue-images  — enqueue specific image_ids (selection-driven)
 POST /api/oss/retry-failed    — reset failed jobs to pending
+POST /api/oss/reset-local     — reset cdn_path=NULL + DELETE oss_sync_jobs (软重置,不动 OSS)
+POST /api/oss/clear-remote    — 软重置 + 删 OSS 上 `i/` 前缀所有对象(危险,需 confirm token)
 """
 from __future__ import annotations
 
@@ -242,3 +245,90 @@ async def retry_failed(db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
     return {"reset": n}
+
+
+# ── 清空 / 重置 ─────────────────────────────────────────────────────────
+
+
+class ResetBody(BaseModel):
+    # 防误删:必须传形如 "RESET-2026-05-22" 的确认串(当天日期),
+    # 否则拒绝。前端会自己拼好,但 curl 误调时挡一下。
+    confirm: str
+
+
+def _today_confirm() -> str:
+    from datetime import datetime
+    return "RESET-" + datetime.utcnow().strftime("%Y-%m-%d")
+
+
+@router.post("/reset-local")
+async def reset_local(body: ResetBody, db: AsyncSession = Depends(get_db)):
+    """软重置:把所有 images.cdn_path 置空 + 删光 oss_sync_jobs,**不动 OSS bucket**。
+
+    场景:想让所有图重新走一次本地同步流程(例如改了 storage 配置 / object_key 命名规则)。
+    OSS 上原对象保留;后续 upload 同 key 自动 overwrite。
+
+    需要传 confirm = `RESET-YYYY-MM-DD`(当天 UTC 日期)防误调。
+    """
+    if body.confirm != _today_confirm():
+        raise HTTPException(400, {"code": "bad_confirm", "message": f"confirm 必须是 {_today_confirm()}"})
+
+    img_n = await db.scalar(
+        select(func.count(Image.id)).where(Image.cdn_path.is_not(None))
+    ) or 0
+    job_n = await db.scalar(select(func.count(OssSyncJob.id))) or 0
+
+    await db.execute(update(Image).where(Image.cdn_path.is_not(None)).values(cdn_path=None))
+    from sqlalchemy import delete
+    await db.execute(delete(OssSyncJob))
+    await db.commit()
+    return {"images_reset": int(img_n), "jobs_deleted": int(job_n), "oss_objects_deleted": 0}
+
+
+@router.post("/clear-remote")
+async def clear_remote(body: ResetBody, db: AsyncSession = Depends(get_db)):
+    """全清:软重置 + 删 OSS bucket 上 `i/` 前缀所有对象(只删 lintu 同步的,
+    不动其他前缀的对象)。
+
+    OSS 删除走 batch_delete_objects(1000/批),`i/` 前缀全 listing 后批量删。
+    需要 confirm = `RESET-YYYY-MM-DD`。
+    """
+    if body.confirm != _today_confirm():
+        raise HTTPException(400, {"code": "bad_confirm", "message": f"confirm 必须是 {_today_confirm()}"})
+
+    storage = get_storage()
+    if not storage.is_configured():
+        raise HTTPException(400, {"code": "oss_not_configured", "message": "OSS 未配置,无法清远端"})
+
+    # 1. 拉 OSS i/ 前缀全 list
+    try:
+        keys = storage.list_keys(prefix="i/")
+    except Exception as e:
+        logger.exception("list_keys failed")
+        raise HTTPException(502, {"code": "list_failed", "message": f"列对象失败: {e}"})
+
+    # 2. 批量删
+    deleted = 0
+    if keys:
+        try:
+            deleted = storage.delete_keys(keys)
+        except Exception as e:
+            logger.exception("delete_keys failed")
+            raise HTTPException(502, {"code": "delete_failed", "message": f"删对象失败: {e}"})
+
+    # 3. 软重置本地
+    img_n = await db.scalar(
+        select(func.count(Image.id)).where(Image.cdn_path.is_not(None))
+    ) or 0
+    job_n = await db.scalar(select(func.count(OssSyncJob.id))) or 0
+    await db.execute(update(Image).where(Image.cdn_path.is_not(None)).values(cdn_path=None))
+    from sqlalchemy import delete
+    await db.execute(delete(OssSyncJob))
+    await db.commit()
+
+    return {
+        "images_reset": int(img_n),
+        "jobs_deleted": int(job_n),
+        "oss_objects_listed": len(keys),
+        "oss_objects_deleted": deleted,
+    }

@@ -172,6 +172,44 @@ export function OssSyncTab() {
     },
   })
 
+  // 清空 / 重置 — 两档模式:软重置(只动本地)/ 全清(也删 OSS 上 i/ 前缀对象)
+  // 后端要求 confirm = "RESET-YYYY-MM-DD",前端自动拼当天 UTC 日期。
+  const _todayConfirm = () => {
+    const d = new Date()
+    const utc = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`
+    return `RESET-${utc}`
+  }
+  const resetLocal = useMutation({
+    mutationFn: async () => {
+      const res = await apiFetchRaw(`/oss/reset-local`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: _todayConfirm() }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: (r: any) => {
+      toast.success(`已重置 ${r.images_reset} 张图片 + 删 ${r.jobs_deleted} 个任务(OSS 对象保留)`)
+      refetchStatus()
+    },
+    onError: (e: Error) => toast.error(`重置失败:${e.message}`),
+  })
+  const clearRemote = useMutation({
+    mutationFn: async () => {
+      const res = await apiFetchRaw(`/oss/clear-remote`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: _todayConfirm() }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: (r: any) => {
+      toast.success(`已删 OSS ${r.oss_objects_deleted}/${r.oss_objects_listed} 对象 + 重置 ${r.images_reset} 张本地`)
+      refetchStatus()
+    },
+    onError: (e: Error) => toast.error(`清空失败:${e.message}`),
+  })
+
   const looksMasked = (v: string) => v.includes('****')
   const dirty = !!config && (
     provider !== (config.oss_provider || '')
@@ -270,6 +308,33 @@ export function OssSyncTab() {
               <RefreshCw size={12} className="mr-1" /> 重试 {status.queue.failed} 个失败
             </Button>
           )}
+          <div className="ml-auto flex gap-2">
+            <Button
+              variant="outline" size="sm" className="h-8 text-[12px] text-warning border-warning/30 hover:bg-warning/[0.06]"
+              disabled={!status?.configured || resetLocal.isPending}
+              onClick={() => {
+                const synced = status?.coverage.synced_images ?? 0
+                if (confirm(`软重置:把所有 ${synced} 张已同步图片的 cdn_path 清空 + 删光同步任务队列。\n\n⚠️ OSS bucket 上的对象**保留**,后续重传同 key 会自动覆盖。\n\n继续?`)) {
+                  resetLocal.mutate()
+                }
+              }}
+            >
+              {resetLocal.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
+              软重置(只动本地)
+            </Button>
+            <Button
+              variant="outline" size="sm" className="h-8 text-[12px] text-destructive border-destructive/30 hover:bg-destructive/[0.06]"
+              disabled={!status?.configured || clearRemote.isPending}
+              onClick={() => {
+                if (!confirm(`【危险】清空 OSS 上所有 lintu 同步对象(i/ 前缀)+ 重置本地。\n\n这会真的删 OSS 上的图,客户当前能访问的 CDN URL 全部失效,直到你重新上传。\n\n确认继续吗?`)) return
+                if (!confirm(`再次确认:删除 OSS bucket 上 i/ 前缀全部对象,不可恢复。\n\n继续会触发清空(下一步还会有验证)。`)) return
+                clearRemote.mutate()
+              }}
+            >
+              {clearRemote.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
+              全清(删 OSS 对象)
+            </Button>
+          </div>
         </div>
       </section>
 

@@ -49,6 +49,8 @@ class ObjectStorage(Protocol):
     def public_url(self, object_key: str) -> str: ...
     def is_configured(self) -> bool: ...           # writable (has access keys)
     def is_read_configured(self) -> bool: ...      # read-only public URL synthesis is possible
+    def list_keys(self, prefix: str) -> list[str]: ...
+    def delete_keys(self, keys: list[str]) -> int: ...
 
 
 # ── Aliyun OSS ──────────────────────────────────────────────────────────────
@@ -169,6 +171,29 @@ class AliyunOSSStorage:
             endpoint = "https://" + endpoint
         return f"https://{self.bucket_name}.{endpoint.replace('https://', '').replace('http://', '')}/{object_key}"
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """列出 bucket 内某前缀下所有对象 key。
+        分页(每页 1000)直到拉完。仅用于"清空"操作 — 不要在 hot path 调用。"""
+        import oss2
+        bucket = self._ensure_bucket()
+        keys: list[str] = []
+        for obj in oss2.ObjectIterator(bucket, prefix=prefix):
+            keys.append(obj.key)
+        return keys
+
+    def delete_keys(self, keys: list[str]) -> int:
+        """批量删除对象,返回成功删除数。
+        OSS batch_delete_objects 单次最多 1000 keys,自动分批。"""
+        if not keys:
+            return 0
+        bucket = self._ensure_bucket()
+        total = 0
+        for i in range(0, len(keys), 1000):
+            chunk = keys[i:i + 1000]
+            resp = bucket.batch_delete_objects(chunk)
+            total += len(resp.deleted_keys or [])
+        return total
+
 
 # ── No-op (disabled) ────────────────────────────────────────────────────────
 
@@ -182,6 +207,10 @@ class NullStorage:
         raise RuntimeError("OSS not configured")
     def public_url(self, object_key: str) -> str:  # pragma: no cover
         return ""
+    def list_keys(self, prefix: str) -> list[str]:  # pragma: no cover
+        return []
+    def delete_keys(self, keys: list[str]) -> int:  # pragma: no cover
+        return 0
 
 
 # ── Singleton resolver (rebuilt when config changes) ────────────────────────
