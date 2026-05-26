@@ -25,6 +25,25 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.9',
+    date: '2026-05-26',
+    highlights: 'Windows 自动更新修复:证书指纹固定 + 反版本回滚保护',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          'Windows 自动更新报错 "New version is not signed by the application owner / certificate chain terminated in untrusted root":覆盖 electron-updater 的链校验,改用 SHA-256 证书指纹完全匹配(指纹烤入 main 进程,与签发证书一一锁定);链信任问题彻底消除,publisher 名义伪造也防住',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          '更新流程加反版本回滚保护:autoDownload 改为手动触发,update-available 时先比较 semver,远端版本 ≤ 当前版本直接拒绝下载,防止 latest.yml 被替换为老版本(即使老版本签名合法)的回滚攻击',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.8',
     date: '2026-05-26',
     highlights: '批量压缩 + OSS 对账 + 项目隔离 — 17 天本地深度调试一次性合入',

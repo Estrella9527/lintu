@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electro
 import { autoUpdater } from 'electron-updater'
 import { dirname, join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { spawn, execSync, execFile, type ChildProcess } from 'child_process'
 
 const isDev = !app.isPackaged
 const isWin = process.platform === 'win32'
@@ -502,7 +502,10 @@ ipcMain.handle('open-file', async (_event, filePath: string) => {
 // Disabling in dev because checking against an OSS URL when running locally
 // against vite is just noise.
 
-autoUpdater.autoDownload = true
+// autoDownload = false → 我们手动控制下载时机,以便先做版本反回滚检查;
+// 通过版本检查后再 manually trigger downloadUpdate()。autoInstallOnAppQuit
+// 保持 true,下载完后用户退出 app 时 NSIS 自动接管升级。
+autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
 autoUpdater.logger = {
   info:  (m: string) => console.log('[updater]', m),
@@ -511,14 +514,85 @@ autoUpdater.logger = {
   debug: (_m: string) => {},
 }
 
+// ── Windows 自签证书指纹固定 (cert pinning) ───────────────────────────────
+// 背景:我们用自签证书签 Windows installer,electron-updater 默认走 Windows
+// 链校验,UntrustedRoot 直接 reject (即使 publisherName 匹配也不行)。
+// 解法:覆盖 verifyUpdateCodeSignature,改用 SHA-256 证书指纹完全匹配 —
+// 比原版链校验更严格 (链校验只看 CN,指纹固定锁定**这一张**证书的私钥)。
+// 换证书时必须同步改这个常量并发版。
+const EXPECTED_CERT_THUMBPRINT_SHA256 =
+  '8DC5A968C7A83FC7960E127D513B7BF90C739CABEC433BA724E0B8CF0ADC4078'
+
+if (isWin) {
+  ;(autoUpdater as any).verifyUpdateCodeSignature = (
+    _publisherNames: string[],
+    filePath: string,
+  ): Promise<string | null> => {
+    return new Promise((resolve) => {
+      const escaped = filePath.replace(/'/g, "''")
+      execFile(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-AuthenticodeSignature -FilePath '${escaped}').SignerCertificate.GetCertHashString('SHA256')`,
+        ],
+        { windowsHide: true, timeout: 15_000 },
+        (err, stdout) => {
+          if (err) {
+            resolve(`cert verification failed: ${err.message}`)
+            return
+          }
+          const actual = String(stdout).trim().toUpperCase()
+          if (actual === EXPECTED_CERT_THUMBPRINT_SHA256) {
+            console.log('[updater] cert thumbprint verified')
+            resolve(null)
+          } else {
+            resolve(
+              `cert thumbprint mismatch: got ${actual}, expected ${EXPECTED_CERT_THUMBPRINT_SHA256}`,
+            )
+          }
+        },
+      )
+    })
+  }
+}
+
 function notifyUpdater(event: string, payload?: unknown) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(`updater:${event}`, payload)
   }
 }
 
+// 反回滚:解析 dotted version 字符串,只比较前三段数字。仅供"是否新版"决策。
+function isNewerVersion(remote: string, current: string): boolean {
+  const parse = (s: string) =>
+    s.split('-')[0].split('.').slice(0, 3).map((n) => parseInt(n, 10) || 0)
+  const r = parse(remote)
+  const c = parse(current)
+  for (let i = 0; i < 3; i++) {
+    if (r[i] > c[i]) return true
+    if (r[i] < c[i]) return false
+  }
+  return false
+}
+
 autoUpdater.on('checking-for-update',  () =>     notifyUpdater('checking'))
-autoUpdater.on('update-available',     (info) => notifyUpdater('available', info))
+autoUpdater.on('update-available', (info) => {
+  const current = app.getVersion()
+  const remote = info?.version ?? ''
+  if (!remote || !isNewerVersion(remote, current)) {
+    console.warn(`[updater] refusing downgrade/equal: current=${current} remote=${remote}`)
+    notifyUpdater('not-available', info)
+    return
+  }
+  notifyUpdater('available', info)
+  // 通过反回滚检查后才真正触发下载
+  autoUpdater.downloadUpdate().catch((e) =>
+    console.warn('[updater] downloadUpdate failed:', e?.message ?? e),
+  )
+})
 autoUpdater.on('update-not-available', (info) => notifyUpdater('not-available', info))
 autoUpdater.on('download-progress',    (p) =>    notifyUpdater('progress', p))
 autoUpdater.on('update-downloaded',    (info) => notifyUpdater('downloaded', info))
