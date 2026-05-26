@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { taskCenterActiveTabAtom } from '@/atoms/ui-state'
+import { activeProjectIdAtom } from '@/atoms/project'
 import { TabPage } from '@/components/shared/TabPage'
 import { TaskProgressCard } from '@/components/pipeline/TaskProgressCard'
 import { DetailDrawer } from '@/components/shared/DetailDrawer'
@@ -32,14 +33,16 @@ const TASK_TYPE_LABELS: Record<string, string> = {
 function TaskList({ statuses }: { statuses: string[] }) {
   const queryClient = useQueryClient()
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null)
+  const projectId = useAtomValue(activeProjectIdAtom)
 
   const { data: tasks, isLoading } = useQuery({
-    queryKey: ['tasks', 'center', statuses],
+    queryKey: ['tasks', 'center', statuses, projectId],
     queryFn: async () => {
-      const all = await api.tasks.list()
+      const all = await api.tasks.list(projectId ? { project_id: projectId } : undefined)
       return all.filter((t: TaskRecord) => statuses.includes(t.status))
     },
     refetchInterval: 3000,
+    enabled: !!projectId,
   })
 
   if (isLoading) {
@@ -169,12 +172,14 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 export default function TaskCenter() {
   const [activeTab, setActiveTab] = useAtom(taskCenterActiveTabAtom)
+  const projectId = useAtomValue(activeProjectIdAtom)
 
-  // Fetch all tasks once to get badge counts
+  // Fetch all tasks once to get badge counts(限当前项目)
   const { data: allTasks } = useQuery({
-    queryKey: ['tasks', 'all-for-badges'],
-    queryFn: () => api.tasks.list(),
+    queryKey: ['tasks', 'all-for-badges', projectId],
+    queryFn: () => api.tasks.list(projectId ? { project_id: projectId } : undefined),
     refetchInterval: 5000,
+    enabled: !!projectId,
   })
 
   const countByStatus = (statuses: string[]) =>

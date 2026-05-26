@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
     from sidecar.engines.orient import run_orient
     from sidecar.engines.prompt_parser import run_parse_prompt
     from sidecar.engines.clip_embed import run_embed
+    from sidecar.engines.compress import run_compress
 
     scheduler.register("quality_check", run_quality_check)
     scheduler.register("dedup", run_dedup)
@@ -91,6 +92,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("orient", run_orient)
     scheduler.register("parse_prompt", run_parse_prompt)
     scheduler.register("embed", run_embed)
+    scheduler.register("compress", run_compress)
 
     await scheduler.start()
     await batch_scheduler.start()

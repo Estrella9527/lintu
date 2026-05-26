@@ -28,12 +28,15 @@ interface NavItem {
 
 interface NavSection {
   label: string
+  /** 显示在分组标题旁的范围 tooltip,告诉用户里面的配置作用范围 */
+  hint?: string
   items: NavItem[]
 }
 
 const SECTIONS: NavSection[] = [
   {
     label: '组织',
+    hint: '影响整个组织 · 所有项目共享',
     items: [
       { id: 'org-general',  label: '组织设置',  icon: Building2, orgAdminOnly: true },
       { id: 'org-members',  label: '组织成员',  icon: Users, orgAdminOnly: true },
@@ -42,17 +45,19 @@ const SECTIONS: NavSection[] = [
   },
   {
     label: '当前项目',
+    hint: '仅影响当前选中的项目 · 切项目会变',
     items: [
       { id: 'members',       label: '项目成员',   icon: Users },
-      { id: 'oss-config',    label: 'OSS 连接',   icon: Cloud },
     ],
   },
   {
-    label: '资源库',
+    label: '全局共享(所有项目共用)',
+    hint: '所有项目共用一份 · 改一处全项目生效',
     items: [
       { id: 'ai-provider',    label: 'AI 服务商',  icon: Cpu },
       { id: 'prompt-library', label: '提示词库',   icon: FileText },
       { id: 'tag-system',     label: '标签体系',   icon: Tags },
+      { id: 'oss-config',     label: 'OSS 连接',   icon: Cloud },
     ],
   },
   {
@@ -120,7 +125,10 @@ export default function SettingsPage() {
         <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
           {sections.map((sec) => (
             <div key={sec.label}>
-              <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-foreground/35">
+              <div
+                className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-foreground/35"
+                title={sec.hint || undefined}
+              >
                 {sec.label}
               </div>
               <div className="space-y-0.5">

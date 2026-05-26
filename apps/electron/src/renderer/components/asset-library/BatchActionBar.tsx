@@ -7,8 +7,8 @@ import {
   DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import {
-  CheckCircle, ChevronDown, Cloud, Copy, Download, Loader2, RotateCw, Rocket,
-  ShieldCheck, Tag as TagIcon, Trash2, Wand2, X, XCircle,
+  CheckCircle, ChevronDown, Cloud, Copy, Download, Image as ImageIcon,
+  Loader2, RotateCw, Rocket, ShieldCheck, Tag as TagIcon, Trash2, Wand2, X, XCircle,
 } from 'lucide-react'
 import { activeModuleAtom } from '@/atoms/navigation'
 import { activeProjectIdAtom } from '@/atoms/project'
@@ -89,7 +89,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
   // to the selection AND forces reprocessing (clears prior status/tags/groups).
   const reprocessMutation = useMutation({
     mutationFn: async ({ type, label, extra = {} }: {
-      type: 'quality_check' | 'orient' | 'dedup' | 'tag'
+      type: 'quality_check' | 'orient' | 'dedup' | 'tag' | 'compress'
       label: string
       extra?: Record<string, unknown>
     }) => {
@@ -149,6 +149,34 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
       queryClient.invalidateQueries({ queryKey: ['oss-status'] })
     },
     onError: (e: Error) => toast.error(`OSS 同步失败：${e.message}`),
+  })
+
+  // 选区软重置:把这批图的 cdn_path 清空 + 删它们对应的 jobs。
+  // 不动 OSS 上对象,适合"想让这部分图重走一次同步"。配合上面的"强制重新
+  // 同步 OSS"是替代品:force=true 直接覆盖,软重置则是先 reset 再让你自己
+  // 决定何时回填。
+  const ossResetMutation = useMutation({
+    mutationFn: async () => {
+      if (ids.length === 0) throw new Error('未选择图片')
+      const d = new Date()
+      const utc = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`
+      const r = await apiFetchRaw('/oss/reset-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: `RESET-${utc}`, image_ids: ids }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        throw new Error((err as any)?.error?.message || (err as any)?.detail || `HTTP ${r.status}`)
+      }
+      return r.json() as Promise<{ images_reset: number; jobs_deleted: number }>
+    },
+    onSuccess: ({ images_reset, jobs_deleted }) => {
+      toast.success(`已重置 ${images_reset} 张图的 cdn_path + 删 ${jobs_deleted} 个任务（OSS 对象保留）`)
+      onClear()
+      queryClient.invalidateQueries({ queryKey: ['oss-status'] })
+    },
+    onError: (e: Error) => toast.error(`软重置失败：${e.message}`),
   })
 
   const statusMutation = useMutation({
@@ -331,6 +359,33 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
               <div className="text-[10px] text-foreground/40">用 12 维 schema 重新分类，清除旧 AI 标签</div>
             </div>
           </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              if (confirm(
+                `批量压缩 ${selectedCount} 张图片(强力档)?\n\n` +
+                `· 格式: JPEG q=80 progressive + 4:2:0 子采样\n` +
+                `· 尺寸: 最长边 ≤ 2400px(超过等比缩;覆盖手机全屏 + 4K 显示绰绰有余)\n` +
+                `· 典型 2-3M → 0.4-0.8M(节省 70-85%)\n` +
+                `· 原图自动备份为 <文件名>.orig(可手动 rm 释放空间)\n` +
+                `· 压缩后自动覆盖上传到 OSS\n\n` +
+                `不可逆操作 — 只要 .orig 还在就能恢复。继续?`
+              )) {
+                reprocessMutation.mutate({
+                  type: 'compress',
+                  label: 'JPEG q80 + 2400px',
+                  extra: { quality: 80, max_long_side: 2400, force: false },
+                })
+              }
+            }}
+            disabled={reprocessMutation.isPending}
+            className="text-[12.5px] gap-2"
+          >
+            <ImageIcon size={13} className="text-foreground/55" />
+            <div className="flex-1">
+              <div>批量压缩(强力 · JPEG q80 + 2400px)</div>
+              <div className="text-[10px] text-foreground/40">2-3M → 0.4-0.8M · 原地覆盖 + .orig 备份 · 自动重传 OSS</div>
+            </div>
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => ossSyncMutation.mutate({ force: false })}
@@ -356,6 +411,21 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
             <div className="flex-1">
               <div className="text-warning">强制重新同步 OSS</div>
               <div className="text-[10px] text-foreground/40">覆盖已同步的 CDN 副本</div>
+            </div>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              if (confirm(`软重置 ${selectedCount} 张图的 OSS 同步状态？\n\n• 清空这些图的 cdn_path（数据库标记为"未同步"）\n• 删除它们的同步任务\n• OSS 上的对象保留，后续重传同 key 会自动覆盖\n\n场景:你先用「强制重新同步」重传了一部分图，再对剩下的图用这个软重置，让它们回到"未同步"状态以便有序回填。`)) {
+                ossResetMutation.mutate()
+              }
+            }}
+            disabled={ossResetMutation.isPending}
+            className="text-[12.5px] gap-2"
+          >
+            <Cloud size={13} className="text-foreground/40" />
+            <div className="flex-1">
+              <div>软重置选中图的 OSS 状态</div>
+              <div className="text-[10px] text-foreground/40">清 cdn_path + 删任务,OSS 对象不动</div>
             </div>
           </DropdownMenuItem>
         </DropdownMenuContent>

@@ -25,6 +25,53 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.8',
+    date: '2026-05-26',
+    highlights: '批量压缩 + OSS 对账 + 项目隔离 — 17 天本地深度调试一次性合入',
+    sections: [
+      {
+        kind: 'added',
+        items: [
+          '资产库 → 批量操作 → **批量压缩(强力 · JPEG q80 + 2400px)**:节省 ~68% 存储+流量(2.8M → 0.9M),原地覆盖 + `.orig` 备份(可恢复),压缩成功自动入 OSS 上传队列(force=true 覆盖 CDN 旧图);任务内 4 并发 + scheduler 间 2 并发,SQLite 写锁加 retry',
+          '分发中心 → OSS 同步 Tab 大改:加「OSS 实际」实时探测指标(后端 cache 持久化到 config.json,自动 poll 只读 cache 不每次 list OSS) + 自动检测「库 vs OSS 不一致」并提示',
+          'OSS 「对账库 vs OSS」按钮:实时 list OSS 真实对象 → 把库里标记同步但 OSS 没有的「幽灵 cdn_path」清空 → 自动入 cloud sync 队列推到云端,解决「UGC 拿到 image URL 但 OSS 上无对象 404」的关键问题',
+          'OSS 「强制重推全量到云端」(高级菜单):本地库已对齐但云端 sidecar 没收到时一次性 sync 所有 image',
+          'OSS 「软重置」+ 「全清」操作(高级菜单,双重 confirm):软 = 只清本地 cdn_path + 删任务队列(OSS 对象保留);全清 = 软重置 + 真删 OSS bucket 上 `i/` 前缀全部对象;clear-remote 端点带友好错误提示(识别 AccessDenied → 指引加 RAM 权限)',
+          '资产库选区「软重置 OSS 状态」(BatchActionBar 菜单):支持「先重传一部分图 → 再软重置剩下的」工作流',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          '**项目隔离 P0-1**:任务中心加 activeProjectId 监听,切项目任务列表跟着变(原来共用一套显示所有项目任务)',
+          '**项目隔离 P0-2**:匹配策略按项目独立存(`match_per_project_<pid>` 单顶层 key),每项目独立 strategy/diversity/randomness/cooldown/seasonal_boost/filters/prompt_ids;后端 hydrate 项目级优先 → 全局 fallback → hardcoded,UGC 调云端时 scope.primary_project_id 决定走哪套',
+          '**项目隔离 P1-6**:Settings 分组改为「组织 / 当前项目 / 全局共享(所有项目共用) / 运维 / 应用」+ 鼠标 hover 分组标题显示作用范围 tooltip;OSS 连接从「当前项目」移到「全局共享」(更准确)',
+          'OSS 同步 Tab 按钮区重构:常用 3 个按钮(回填 / 对账 / 重试失败)平铺 + 危险操作折叠到右侧「高级」dropdown(强制重推到云端 / 软重置 / 全清),降视觉噪音',
+          '`Stat` 卡片加 `sub2` 双行显示,OSS 实际数 / 探测时间不再换行错乱',
+          'enqueue_image_sync 加 `force=True` 参数(删历史 done/failed jobs 再 enqueue),修 OSS 重传一直被「已存在」跳过的 bug',
+        ],
+      },
+      {
+        kind: 'fixed',
+        items: [
+          '多 compress task 并发时 SQLite locked 导致 task 整体 fail:加 `_safe_commit` retry(指数退避 5 次最多 ~5s);progress_cb 写失败也只 warn,task 继续跑;batch enqueue OSS 也 retry',
+          'compress skipped 的图(`.orig` 已存在)不入 OSS 队列 → 首次 enqueue 失败后再跑没补传:skipped 也 enqueue(force=True 兜底,enqueue 内部会判断 done jobs 跳过避免重复)',
+          'OSS clear-remote 错误信息晦涩(阿里云 "does not belong to you"):端点识别 AccessDenied 后给具体修复指引(挂 AliyunOSSFullAccess 系统策略)',
+          'OssSyncTab 「OSS 实际」一直显示 `—` / 数字闪烁:后端 cache 持久化到 config.json,默认请求读 cache 永远有值,只有用户主动点刷新才真去探测',
+          'BatchActionBar 强制重新同步 OSS 半失效:之前只清 cdn_path 但 done jobs 留着导致 enqueue 跳过,改为 cdn_path 清空 + 删 done jobs 双管齐下',
+        ],
+      },
+      {
+        kind: 'fixed',
+        items: [
+          '【安全】仓库从 private 转 public 完整清理:真实基础设施 IP / 生产域名 / 客户 OSS bucket 名 / 项目 UUID / 客户景区名全部替换为占位符;`git filter-repo` 重写全部 74 commits + 4 tags,grep history 全敏感模式 0 命中',
+          '【安全】pre-commit hook + .gitleaks 配置防真值再次入库:常见模式(阿里云 LTAI AK / AWS / GitHub PAT / 私钥 / OpenAI sk-)默认拦截;仓库特有黑名单本地维护(不入 git 避免二次泄露)',
+          '【安全】docs/internal/ 目录已 .gitignore:用作真值映射、OSS 配置导出等敏感文件本地存储',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.6',
     date: '2026-05-09',
     highlights: '匹配实验室崩溃修复 + 收紧 user 版鉴权 BYPASS',

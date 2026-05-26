@@ -292,12 +292,17 @@ def content_type_for_ext(ext: str) -> str:
 # ── Enqueue helpers (called from scan / batch_engine after a row commits) ──
 
 
-async def enqueue_image_sync(image_id: str) -> int:
+async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
     """Enqueue 3 upload jobs (original + 300 + 800 thumbs) for an image.
 
     Idempotent: if a (image_id, asset_kind, status='pending'|'running'|'done')
     row already exists, that asset is skipped. Returns the number of NEW rows
     inserted.
+
+    `force=True`: delete previous done/failed jobs for this image first, so
+    every asset_kind gets re-enqueued and re-uploaded (overwrites the CDN
+    copy). Used after image content changes (e.g. compress engine) to
+    refresh the CDN. Pending/running jobs are left alone to avoid races.
 
     No-op when OSS is disabled — we don't want to fill the queue with rows
     that can't be drained.
@@ -306,7 +311,7 @@ async def enqueue_image_sync(image_id: str) -> int:
     if not storage.is_configured():
         return 0
 
-    from sqlalchemy import select
+    from sqlalchemy import select, delete as sql_delete
     from sidecar.config import THUMBNAILS_DIR
     from sidecar.db.models import Image, OssSyncJob
     from sidecar.db.session import async_session
@@ -317,6 +322,16 @@ async def enqueue_image_sync(image_id: str) -> int:
         img = await db.get(Image, image_id)
         if not img:
             return 0
+
+        if force:
+            # 删之前的 done/failed/skipped,留 pending/running 不动
+            # (worker 正在跑的别打断)
+            await db.execute(
+                sql_delete(OssSyncJob)
+                .where(OssSyncJob.image_id == image_id)
+                .where(OssSyncJob.status.in_(["done", "failed", "skipped"]))
+            )
+            await db.commit()
 
         existing = await db.execute(
             select(OssSyncJob.asset_kind)

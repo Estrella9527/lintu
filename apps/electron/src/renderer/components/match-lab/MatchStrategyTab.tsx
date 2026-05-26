@@ -69,26 +69,39 @@ export function MatchStrategyTab() {
   const [seasonalBoost, setSeasonalBoost] = useState<string>('0.05')
   const [filters, setFilters] = useState<CandidateFilters>(EMPTY_FILTERS)
 
-  // Hydrate form from server config when first loaded.
+  // Hydrate form from server config when first loaded OR when project changes.
+  // 优先级:项目级(match_per_project_<pid>)→ 全局(match_default_*)→ hardcoded
   useEffect(() => {
     if (!config) return
-    const s = String(config['match_default_strategy'] || 'balanced').toLowerCase()
+    const projKey = projectId ? `match_per_project_${projectId}` : ''
+    const projCfg = (projKey && config[projKey] && typeof config[projKey] === 'object'
+                     && !Array.isArray(config[projKey])) ? config[projKey] : {}
+
+    // helper: 项目级取 base_key,fallback 全局 match_default_<base_key>
+    const pick = (baseKey: string, globalKey: string) => {
+      if (projCfg[baseKey] !== undefined && projCfg[baseKey] !== null && projCfg[baseKey] !== '') {
+        return projCfg[baseKey]
+      }
+      return config[globalKey]
+    }
+
+    const s = String(pick('strategy', 'match_default_strategy') || 'balanced').toLowerCase()
     setStrategy((['balanced','precise','diverse'].includes(s) ? s : 'balanced') as Strategy)
-    const d = String(config['match_default_diversity'] || 'balanced').toLowerCase()
+    const d = String(pick('diversity', 'match_default_diversity') || 'balanced').toLowerCase()
     setDiversity((['balanced','strict','none'].includes(d) ? d : 'balanced') as Diversity)
-    const r = config['match_default_randomness']
+    const r = pick('randomness', 'match_default_randomness')
     setRandomness(r === undefined || r === null || r === '' ? '0.4' : String(r))
-    const u = config['match_default_unique_per_source']
+    const u = pick('unique_per_source', 'match_default_unique_per_source')
     setUniquePerSource(u === undefined ? true : Boolean(u) && String(u).toLowerCase() !== 'false')
-    const np = config['match_default_no_people']
+    const np = pick('no_people', 'match_default_no_people')
     setNoPeople(np === undefined ? true : Boolean(np) && String(np).toLowerCase() !== 'false')
-    const cd = config['match_recent_cooldown_size']
+    const cd = pick('recent_cooldown_size', 'match_recent_cooldown_size')
     setCooldownSize(cd === undefined || cd === null || cd === '' ? '20' : String(cd))
-    const sb = config['match_seasonal_boost_strength']
+    const sb = pick('seasonal_boost_strength', 'match_seasonal_boost_strength')
     setSeasonalBoost(sb === undefined || sb === null || sb === '' ? '0.05' : String(sb))
 
-    // 候选源默认 — 后端用单 JSON dict 存（key=match_default_filters）
-    const rawFilters = config['match_default_filters']
+    // 候选源 filter — 项目级取 projCfg.filters,fallback 全局 match_default_filters
+    const rawFilters = projCfg.filters !== undefined ? projCfg.filters : config['match_default_filters']
     let parsed: any = null
     if (rawFilters && typeof rawFilters === 'object' && !Array.isArray(rawFilters)) {
       parsed = rawFilters
@@ -105,7 +118,7 @@ export function MatchStrategyTab() {
       tags: parsed?.tags && typeof parsed.tags === 'object' ? parsed.tags : {},
       image_ids: Array.isArray(parsed?.image_ids) ? parsed.image_ids : [],
     })
-  }, [config])
+  }, [config, projectId])
 
   const filterActiveCount = useMemo(() => countActive(filters), [filters])
 
@@ -167,16 +180,31 @@ export function MatchStrategyTab() {
     }
     if (Object.keys(tagPayload).length > 0) filterPayload.tags = tagPayload
 
-    const payload = {
-      match_default_strategy: strategy,
-      match_default_diversity: diversity,
-      match_default_randomness: r,
-      match_default_unique_per_source: uniquePerSource,
-      match_default_no_people: noPeople,
-      match_recent_cooldown_size: cd,
-      match_seasonal_boost_strength: sb,
-      match_default_filters: filterPayload,
+    // 项目级 payload(单 key 写整个项目 dict,不影响其他项目)
+    // base_key 不带 match_default_ 前缀(项目级简写)
+    const projectPayload = {
+      strategy,
+      diversity,
+      randomness: r,
+      unique_per_source: uniquePerSource,
+      no_people: noPeople,
+      recent_cooldown_size: cd,
+      seasonal_boost_strength: sb,
+      filters: filterPayload,
     }
+    const payload: Record<string, any> = projectId
+      ? { [`match_per_project_${projectId}`]: projectPayload }
+      : {
+          // 没选项目 → 兼容老行为写全局(理论上 ProjectSelector 必选,这只是兜底)
+          match_default_strategy: strategy,
+          match_default_diversity: diversity,
+          match_default_randomness: r,
+          match_default_unique_per_source: uniquePerSource,
+          match_default_no_people: noPeople,
+          match_recent_cooldown_size: cd,
+          match_seasonal_boost_strength: sb,
+          match_default_filters: filterPayload,
+        }
     saveMutation.mutate({ payload, ifVersion: loadedVersion })
   }
 

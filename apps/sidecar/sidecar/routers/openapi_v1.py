@@ -438,6 +438,33 @@ async def match_images(body: MatchBody):
         if isinstance(v, bool): return v
         return str(v).lower() in ("1", "true", "yes", "on")
 
+    # 项目级 hydrate helper(2026-05-24):每项目可单独配匹配策略。
+    # 优先级:per-project `match_per_project_<pid>.<base_key>` > 全局 `match_default_<base_key>` > hardcoded
+    # 这样示例景区A和示例景区B可以各自调 randomness / source_type / prompt_ids 等。
+    # 老 UGC 没传 scope.primary_project_id → 没项目级 lookup,走全局。
+    _scope_pid = (body.scope.primary_project_id if body.scope else None) \
+                  or (body.filters.project_id if body.filters else None)
+    _project_cfg: dict = {}
+    if _scope_pid:
+        raw = get_setting(f"match_per_project_{_scope_pid}")
+        if isinstance(raw, dict):
+            _project_cfg = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                import json as _json
+                parsed = _json.loads(raw)
+                if isinstance(parsed, dict):
+                    _project_cfg = parsed
+            except (_json.JSONDecodeError, TypeError):
+                pass
+
+    def _cfg_p(base_key: str, default):
+        """先查项目级,再 fallback 全局 match_default_<key>,再 default"""
+        if base_key in _project_cfg and _project_cfg[base_key] not in (None, ""):
+            return _project_cfg[base_key]
+        v = get_setting(f"match_default_{base_key}")
+        return v if v not in (None, "") else default
+
     def _cfg_float(key: str, default: float) -> float:
         v = get_setting(key)
         try:
@@ -449,17 +476,23 @@ async def match_images(body: MatchBody):
         v = get_setting(key)
         return str(v) if v not in (None, "") else default
 
-    eff_strategy = body.strategy or _cfg_str("match_default_strategy", "balanced")
-    eff_diversity = body.diversity or _cfg_str("match_default_diversity", "balanced")
-    eff_randomness = float(body.randomness) if body.randomness is not None else _cfg_float("match_default_randomness", 0.0)
-    eff_unique_per_source = bool(body.unique_per_source) if body.unique_per_source is not None else _cfg_bool("match_default_unique_per_source", True)
-    eff_no_people = bool(body.no_people) if body.no_people is not None else _cfg_bool("match_default_no_people", True)
+    eff_strategy = body.strategy or str(_cfg_p("strategy", "balanced"))
+    eff_diversity = body.diversity or str(_cfg_p("diversity", "balanced"))
+    try:
+        eff_randomness = float(body.randomness) if body.randomness is not None else float(_cfg_p("randomness", 0.0))
+    except (TypeError, ValueError):
+        eff_randomness = 0.0
+    eff_unique_per_source = bool(body.unique_per_source) if body.unique_per_source is not None else bool(_cfg_p("unique_per_source", True))
+    eff_no_people = bool(body.no_people) if body.no_people is not None else bool(_cfg_p("no_people", True))
     # Server-side recent-shown cooldown: 0 disables, positive N keeps the
     # last N image_ids returned for this project out of new responses
     # until they age out of the window. Defaults to 20 — small enough to
     # not starve common queries, large enough to break the obvious
     # "always the same 8 images" feeling on repetitive UGC text.
-    eff_cooldown_size = int(_cfg_float("match_recent_cooldown_size", 20))
+    try:
+        eff_cooldown_size = int(float(_cfg_p("recent_cooldown_size", 20)))
+    except (TypeError, ValueError):
+        eff_cooldown_size = 20
     if eff_cooldown_size < 0:
         eff_cooldown_size = 0
     if eff_cooldown_size > 500:  # safety cap; bigger windows starve recall
@@ -477,21 +510,22 @@ async def match_images(body: MatchBody):
         exclude_tags["people"] = list(existing_people)
 
     # Operator-tuned default candidate filters — set in 匹配实验室 → 匹配策略.
-    # Stored as a single JSON dict for easy round-trip + cloud sync. Caller
-    # can still override per-call: any field caller explicitly passed wins.
-    # None / unset → fall back to default; [] / "" → caller explicitly cleared.
-    cfg_filters_raw = get_setting("match_default_filters")
+    # 优先级跟其他匹配参数一致:项目级 > 全局 > 空
     cfg_filters: dict = {}
-    if isinstance(cfg_filters_raw, dict):
-        cfg_filters = cfg_filters_raw
-    elif isinstance(cfg_filters_raw, str) and cfg_filters_raw.strip():
-        import json as _json
-        try:
-            parsed = _json.loads(cfg_filters_raw)
-            if isinstance(parsed, dict):
-                cfg_filters = parsed
-        except (_json.JSONDecodeError, TypeError):
-            cfg_filters = {}
+    if isinstance(_project_cfg.get("filters"), dict):
+        cfg_filters = _project_cfg["filters"]
+    else:
+        cfg_filters_raw = get_setting("match_default_filters")
+        if isinstance(cfg_filters_raw, dict):
+            cfg_filters = cfg_filters_raw
+        elif isinstance(cfg_filters_raw, str) and cfg_filters_raw.strip():
+            import json as _json
+            try:
+                parsed = _json.loads(cfg_filters_raw)
+                if isinstance(parsed, dict):
+                    cfg_filters = parsed
+            except (_json.JSONDecodeError, TypeError):
+                cfg_filters = {}
 
     cfg_tag_dims = cfg_filters.get("tags") if isinstance(cfg_filters.get("tags"), dict) else {}
 

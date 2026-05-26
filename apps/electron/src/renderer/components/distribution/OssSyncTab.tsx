@@ -7,7 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { InfoHint } from '@/components/shared/InfoHint'
-import { AlertCircle, CheckCircle2, Cloud, Clock, Eye, EyeOff, Loader2, RefreshCw, Upload } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ChevronDown, Cloud, Clock, Eye, EyeOff, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 
 const API_BASE = 'http://127.0.0.1:7879'
 
@@ -18,7 +22,27 @@ interface OssStatus {
   cdn_base: string
   queue: { pending: number; running: number; done: number; failed: number; skipped: number }
   throughput: { jobs_per_min: number; eta_sec: number | null }
-  coverage: { total_images: number; synced_images: number; pending_images: number; pct: number }
+  coverage: {
+    total_images: number
+    /** OSS bucket 上 unique image 数(后端 cache 上次探测值;手动刷新更新) */
+    remote_synced_images: number | null
+    /** OSS 对象总数(图 + 缩略) */
+    remote_objects: number | null
+    /** 上次探测时间(ISO);null = 从未探测过 */
+    remote_probed_at: string | null
+    /** 这次响应是否真跑了新探测(只在用户点刷新后这一次响应是 true) */
+    remote_probe_just_ran: boolean
+    /** 探测失败原因(null = 没探测过 或 探测成功) */
+    remote_probe_error: string | null
+    /** 历史:数据库 cdn_path 字段标记为同步过的图数(可能跟实际不一致) */
+    db_recorded: number
+    /** 旧字段兼容,等同 db_recorded */
+    synced_images: number
+    pending_images: number
+    pct: number
+    /** db_recorded === remote_synced_images?null = 没探测过 */
+    is_consistent: boolean | null
+  }
 }
 
 interface RecentJob {
@@ -83,8 +107,10 @@ export function OssSyncTab() {
 
   const { data: status, refetch: refetchStatus } = useQuery<OssStatus>({
     queryKey: ['oss-status'],
-    queryFn: () => apiFetchRaw(`/oss/status`).then((r) => r.json()),
-    refetchInterval: 3_000,
+    // 自动 poll 不带 probe,只查 db(快)+ 拿后端 cache 里的上次探测值。
+    // 用户主动点"刷新(含实时探测)"才触发新一次 OSS list(写 cache)。
+    queryFn: () => apiFetchRaw('/oss/status').then(r => r.json()),
+    refetchInterval: 5_000,
   })
 
   const { data: recentData } = useQuery<{ items: RecentJob[] }>({
@@ -194,6 +220,35 @@ export function OssSyncTab() {
     },
     onError: (e: Error) => toast.error(`重置失败:${e.message}`),
   })
+  const reconcile = useMutation({
+    mutationFn: async ({ force_push_all = false }: { force_push_all?: boolean }) => {
+      const qs = force_push_all ? '?force_push_all=true' : ''
+      const res = await apiFetchRaw(`/oss/reconcile${qs}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
+    onSuccess: (r: any) => {
+      const pushed = r.cloud_sync_enqueued ?? 0
+      if (r.ghost_cleared === 0 && pushed === 0) {
+        toast.success(`已一致 · OSS ${r.on_oss} 张 = 库 ${r.db_with_cdn ?? r.db_with_cdn_after} 张(云端未推送)`)
+      } else if (r.ghost_cleared > 0) {
+        toast.success(
+          `对账完成:清 ${r.ghost_cleared} 张幽灵 + 推 ${pushed} 张到云端`,
+          { description: `OSS 实际 ${r.on_oss} · cloud sync 60s 内推完,UGC 立刻对齐` }
+        )
+      } else {
+        toast.success(
+          `强制重推 ${pushed} 张图到云端`,
+          { description: `60s 内 cloud sync 推完,云端数据库对齐` }
+        )
+      }
+      refetchStatus()
+    },
+    onError: (e: Error) => toast.error(`对账失败:${e.message}`),
+  })
+
   const clearRemote = useMutation({
     mutationFn: async () => {
       const res = await apiFetchRaw(`/oss/clear-remote`, {
@@ -240,18 +295,80 @@ export function OssSyncTab() {
           <Button
             variant="ghost" size="sm"
             className="ml-auto h-7 text-[11px]"
-            onClick={() => refetchStatus()}
-            title="刷新"
+            onClick={async () => {
+              // 实时探测:绕过 react-query cache 直接调一次带 probe_remote=true
+              const r = await apiFetchRaw(`/oss/status?probe_remote=true`).then(r => r.json())
+              queryClient.setQueryData(['oss-status'], r)
+              if (r.coverage?.remote_probe_error) {
+                toast.error(`OSS 实时探测失败:${r.coverage.remote_probe_error}`)
+              } else if (r.coverage?.is_consistent === false) {
+                toast.message(
+                  `库记录 ${r.coverage.db_recorded} 张 ≠ OSS 实际 ${r.coverage.remote_synced_images} 张`,
+                  { description: '可能 OSS 被外部清空过。建议:软重置 → 一键回填' }
+                )
+              } else if (r.coverage?.is_consistent === true) {
+                toast.success(`一致 · OSS 实际 ${r.coverage.remote_synced_images} 张(数字已锁定显示,下次刷新前不变)`)
+              } else if (r.coverage?.remote_synced_images != null) {
+                toast.success(`OSS 实际 ${r.coverage.remote_synced_images} 张(已锁定显示)`)
+              }
+            }}
+            title="去 OSS 实时 list 一次,结果会持久化显示,直到你再点一次刷新"
           >
-            <RefreshCw size={11} className="mr-1" /> 刷新
+            <RefreshCw size={11} className="mr-1" /> 刷新(含实时探测)
           </Button>
         </div>
 
+        {/* 主指标:实时在云的状态(每 30s 自动 probe,介于两次 probe 之间显示上次数值不闪烁) */}
         <div className="grid grid-cols-4 gap-3 text-[12px] mb-3">
-          <Stat label="已同步" value={`${(status?.coverage.synced_images ?? 0).toLocaleString()}`} sub={`/${status?.coverage.total_images ?? 0}`} tone="success" />
+          <Stat
+            label="OSS 实际"
+            value={
+              status?.coverage.remote_synced_images != null
+                ? status.coverage.remote_synced_images.toLocaleString()
+                : '—'
+            }
+            sub={
+              status?.coverage.remote_synced_images != null
+                ? `/${status.coverage.total_images}`
+                : '未探测'
+            }
+            sub2={
+              status?.coverage.remote_synced_images != null
+                ? `探测 ${formatRelative(status.coverage.remote_probed_at)}`
+                : '点右上刷新'
+            }
+            tone={
+              status?.coverage.remote_synced_images === 0 ? 'destructive'
+              : (status?.coverage.is_consistent === false ? 'pending' : 'success')
+            }
+          />
           <Stat label="待上传" value={String(status?.queue.pending ?? 0)} tone={status && status.queue.pending > 0 ? 'pending' : 'muted'} />
           <Stat label="正在上传" value={String(status?.queue.running ?? 0)} tone="muted" />
           <Stat label="失败" value={String(status?.queue.failed ?? 0)} tone={status && status.queue.failed > 0 ? 'destructive' : 'muted'} />
+        </div>
+
+        {/* 库记录(历史)+ 一致性提示 */}
+        <div className="flex items-center gap-3 text-[10.5px] text-foreground/45 mb-2 flex-wrap">
+          <span>
+            历史登记 <span className="text-foreground/70 tabular-nums">{(status?.coverage.db_recorded ?? 0).toLocaleString()}</span>
+            <span className="text-foreground/30 ml-0.5"> / {status?.coverage.total_images ?? 0}</span>
+          </span>
+          {status?.coverage.is_consistent === false && status?.coverage.remote_synced_images != null && (
+            <span className="text-warning inline-flex items-center gap-1">
+              <AlertCircle size={10} />
+              库记录与 OSS 不一致(差 {Math.abs((status.coverage.db_recorded || 0) - (status.coverage.remote_synced_images || 0))} 张)— 建议软重置后回填
+            </span>
+          )}
+          {status?.coverage.is_consistent === true && (
+            <span className="text-success inline-flex items-center gap-1">
+              <CheckCircle2 size={10} /> 库与 OSS 一致
+            </span>
+          )}
+          {status?.coverage.remote_probe_error && (
+            <span className="text-destructive truncate" title={status.coverage.remote_probe_error}>
+              探测失败:{status.coverage.remote_probe_error.slice(0, 60)}
+            </span>
+          )}
         </div>
 
         {status && status.coverage.total_images > 0 && (
@@ -286,54 +403,113 @@ export function OssSyncTab() {
           </div>
         )}
 
-        <div className="flex gap-2 mt-3">
+        {/* 主操作行 — 日常 3 个按钮 */}
+        <div className="flex flex-wrap items-center gap-2 mt-3">
           <Button
             size="sm" className="h-8 text-[12px]"
             disabled={!status?.configured || backfill.isPending}
             onClick={() => {
-              if (confirm(`将所有未上传的图片入队上传到 OSS？当前未同步：${status?.coverage.pending_images.toLocaleString()} 张。`)) {
+              if (confirm(`将所有未上传的图片入队上传到 OSS?当前未同步:${status?.coverage.pending_images.toLocaleString()} 张。`)) {
                 backfill.mutate()
               }
             }}
+            title="把库里 cdn_path=NULL 的图全部入 OSS 上传队列"
           >
             {backfill.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
             <Upload size={12} className="mr-1" /> 一键回填全库
+          </Button>
+          <Button
+            variant="outline" size="sm" className="h-8 text-[12px]"
+            onClick={() => reconcile.mutate({ force_push_all: false })}
+            disabled={!status?.configured || reconcile.isPending}
+            title="对账:实时 list OSS,清「幽灵图」(库标记同步但 OSS 没的)+ 推到云端 sidecar"
+          >
+            {reconcile.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
+            <CheckCircle2 size={12} className="mr-1" /> 对账库 vs OSS
           </Button>
           {status && status.queue.failed > 0 && (
             <Button
               variant="outline" size="sm" className="h-8 text-[12px]"
               onClick={() => retryFailed.mutate()}
               disabled={retryFailed.isPending}
+              title="把队列里 failed 的 job 重置为 pending,让 worker 重试"
             >
               <RefreshCw size={12} className="mr-1" /> 重试 {status.queue.failed} 个失败
             </Button>
           )}
-          <div className="ml-auto flex gap-2">
-            <Button
-              variant="outline" size="sm" className="h-8 text-[12px] text-warning border-warning/30 hover:bg-warning/[0.06]"
-              disabled={!status?.configured || resetLocal.isPending}
-              onClick={() => {
-                const synced = status?.coverage.synced_images ?? 0
-                if (confirm(`软重置:把所有 ${synced} 张已同步图片的 cdn_path 清空 + 删光同步任务队列。\n\n⚠️ OSS bucket 上的对象**保留**,后续重传同 key 会自动覆盖。\n\n继续?`)) {
-                  resetLocal.mutate()
-                }
-              }}
-            >
-              {resetLocal.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
-              软重置(只动本地)
-            </Button>
-            <Button
-              variant="outline" size="sm" className="h-8 text-[12px] text-destructive border-destructive/30 hover:bg-destructive/[0.06]"
-              disabled={!status?.configured || clearRemote.isPending}
-              onClick={() => {
-                if (!confirm(`【危险】清空 OSS 上所有 lintu 同步对象(i/ 前缀)+ 重置本地。\n\n这会真的删 OSS 上的图,客户当前能访问的 CDN URL 全部失效,直到你重新上传。\n\n确认继续吗?`)) return
-                if (!confirm(`再次确认:删除 OSS bucket 上 i/ 前缀全部对象,不可恢复。\n\n继续会触发清空(下一步还会有验证)。`)) return
-                clearRemote.mutate()
-              }}
-            >
-              {clearRemote.isPending && <Loader2 size={12} className="mr-1 animate-spin" />}
-              全清(删 OSS 对象)
-            </Button>
+
+          {/* 高级操作 dropdown — 放右侧,折叠减少视觉噪音 */}
+          <div className="ml-auto">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost" size="sm" className="h-8 text-[12px] text-foreground/60"
+                  disabled={!status?.configured}
+                >
+                  高级
+                  <ChevronDown size={12} className="ml-1 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel className="text-[10.5px] text-foreground/40">
+                  云端同步
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => {
+                    const total = status?.coverage.total_images ?? 0
+                    if (confirm(`重推所有 ${total} 张图到云端 sidecar?\n\n用于「本地已对齐但云端没收到」的修复(比如 cloud sync 之前断过)。\n\nworker 在 30-120 秒内推完,不影响 UGC 使用。`)) {
+                      reconcile.mutate({ force_push_all: true })
+                    }
+                  }}
+                  disabled={reconcile.isPending}
+                  className="text-[12.5px] gap-2"
+                >
+                  <Upload size={13} className="text-foreground/55" />
+                  <div className="flex-1">
+                    <div>强制重推全量到云端</div>
+                    <div className="text-[10px] text-foreground/40">把所有 image 入 cloud sync 队列</div>
+                  </div>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[10.5px] text-foreground/40">
+                  危险操作
+                </DropdownMenuLabel>
+
+                <DropdownMenuItem
+                  onClick={() => {
+                    const synced = status?.coverage.synced_images ?? 0
+                    if (confirm(`软重置:把 ${synced} 张已同步图片的 cdn_path 清空 + 删光同步任务队列。\n\n⚠️ OSS 上的对象保留,后续重传同 key 自动覆盖。`)) {
+                      resetLocal.mutate()
+                    }
+                  }}
+                  disabled={resetLocal.isPending}
+                  className="text-[12.5px] gap-2"
+                >
+                  <RefreshCw size={13} className="text-warning" />
+                  <div className="flex-1">
+                    <div className="text-warning">软重置(只动本地)</div>
+                    <div className="text-[10px] text-foreground/40">清 cdn_path,不动 OSS 对象</div>
+                  </div>
+                </DropdownMenuItem>
+
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (!confirm(`【危险】清空 OSS 上 lintu 同步的对象(i/ 前缀)+ 重置本地。\n\n客户当前能访问的 CDN URL 会全部失效,直到你重新上传。`)) return
+                    if (!confirm(`再次确认:删除 OSS bucket 上 i/ 前缀全部对象,不可恢复。`)) return
+                    clearRemote.mutate()
+                  }}
+                  disabled={clearRemote.isPending}
+                  className="text-[12.5px] gap-2"
+                >
+                  <Trash2 size={13} className="text-destructive" />
+                  <div className="flex-1">
+                    <div className="text-destructive">全清(删 OSS 对象)</div>
+                    <div className="text-[10px] text-foreground/40">真删 OSS 上 i/ 对象,需双重确认</div>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </section>
@@ -496,7 +672,7 @@ export function OssSyncTab() {
   )
 }
 
-function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone: 'success' | 'pending' | 'destructive' | 'muted' }) {
+function Stat({ label, value, sub, sub2, tone }: { label: string; value: string; sub?: string; sub2?: string; tone: 'success' | 'pending' | 'destructive' | 'muted' }) {
   const color =
     tone === 'success' ? 'text-success'
     : tone === 'pending' ? 'text-warning'
@@ -505,10 +681,11 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   return (
     <div className="rounded-md bg-foreground/[0.025] px-3 py-2">
       <div className="text-[10.5px] text-foreground/50">{label}</div>
-      <div className="mt-0.5 flex items-baseline gap-1">
+      <div className="mt-0.5 flex items-baseline gap-1 whitespace-nowrap">
         <span className={cn('text-[15px] font-semibold tabular-nums', color)}>{value}</span>
         {sub && <span className="text-[10px] text-foreground/40 tabular-nums">{sub}</span>}
       </div>
+      {sub2 && <div className="text-[10px] text-foreground/35 tabular-nums truncate mt-0.5">{sub2}</div>}
     </div>
   )
 }
