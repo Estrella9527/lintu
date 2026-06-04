@@ -25,6 +25,19 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.2.10',
+    date: '2026-06-04',
+    highlights: 'OSS 刷新按钮卡死体验修复 — 探测时显示 loading + 失败弹 toast',
+    sections: [
+      {
+        kind: 'fixed',
+        items: [
+          '分发中心 → OSS 同步「刷新(含实时探测)」按钮看似无响应:bucket 大时后端 list 整个 i/ 前缀要几秒,按钮原来没 loading 也没 try/catch — 点了像没反应、失败也吞掉。现在改为按钮禁用 + Loader2 旋转图标 + HTTP / 异常都弹 toast',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.9',
     date: '2026-05-26',
     highlights: 'Windows 自动更新修复:证书指纹固定 + 反版本回滚保护',

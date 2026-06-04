@@ -130,6 +130,7 @@ export function OssSyncTab() {
   const [signedTtl, setSignedTtl] = useState('0')
   const [showSecret, setShowSecret] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
+  const [probing, setProbing] = useState(false)
 
   useEffect(() => {
     if (!config) return
@@ -295,26 +296,45 @@ export function OssSyncTab() {
           <Button
             variant="ghost" size="sm"
             className="ml-auto h-7 text-[11px]"
+            disabled={probing}
             onClick={async () => {
-              // 实时探测:绕过 react-query cache 直接调一次带 probe_remote=true
-              const r = await apiFetchRaw(`/oss/status?probe_remote=true`).then(r => r.json())
-              queryClient.setQueryData(['oss-status'], r)
-              if (r.coverage?.remote_probe_error) {
-                toast.error(`OSS 实时探测失败:${r.coverage.remote_probe_error}`)
-              } else if (r.coverage?.is_consistent === false) {
-                toast.message(
-                  `库记录 ${r.coverage.db_recorded} 张 ≠ OSS 实际 ${r.coverage.remote_synced_images} 张`,
-                  { description: '可能 OSS 被外部清空过。建议:软重置 → 一键回填' }
-                )
-              } else if (r.coverage?.is_consistent === true) {
-                toast.success(`一致 · OSS 实际 ${r.coverage.remote_synced_images} 张(数字已锁定显示,下次刷新前不变)`)
-              } else if (r.coverage?.remote_synced_images != null) {
-                toast.success(`OSS 实际 ${r.coverage.remote_synced_images} 张(已锁定显示)`)
+              // 实时探测:绕过 react-query cache 直接调一次带 probe_remote=true。
+              // 后端会 list 整个 i/ 前缀,bucket 大时可能要好几秒 — 全程禁用按钮
+              // + 图标 spinner 让用户知道在跑,失败时弹 toast 而不是吞掉错误。
+              setProbing(true)
+              try {
+                const res = await apiFetchRaw(`/oss/status?probe_remote=true`)
+                if (!res.ok) {
+                  const body = await res.text().catch(() => '')
+                  toast.error(`OSS 刷新失败 · HTTP ${res.status}`, { description: body.slice(0, 200) })
+                  return
+                }
+                const r = await res.json()
+                queryClient.setQueryData(['oss-status'], r)
+                if (r.coverage?.remote_probe_error) {
+                  toast.error(`OSS 实时探测失败:${r.coverage.remote_probe_error}`)
+                } else if (r.coverage?.is_consistent === false) {
+                  toast.message(
+                    `库记录 ${r.coverage.db_recorded} 张 ≠ OSS 实际 ${r.coverage.remote_synced_images} 张`,
+                    { description: '可能 OSS 被外部清空过。建议:软重置 → 一键回填' }
+                  )
+                } else if (r.coverage?.is_consistent === true) {
+                  toast.success(`一致 · OSS 实际 ${r.coverage.remote_synced_images} 张(数字已锁定显示,下次刷新前不变)`)
+                } else if (r.coverage?.remote_synced_images != null) {
+                  toast.success(`OSS 实际 ${r.coverage.remote_synced_images} 张(已锁定显示)`)
+                }
+              } catch (e: any) {
+                toast.error(`OSS 刷新失败:${e?.message ?? String(e)}`)
+              } finally {
+                setProbing(false)
               }
             }}
             title="去 OSS 实时 list 一次,结果会持久化显示,直到你再点一次刷新"
           >
-            <RefreshCw size={11} className="mr-1" /> 刷新(含实时探测)
+            {probing
+              ? <Loader2 size={11} className="mr-1 animate-spin" />
+              : <RefreshCw size={11} className="mr-1" />}
+            {probing ? '探测中…' : '刷新(含实时探测)'}
           </Button>
         </div>
 
