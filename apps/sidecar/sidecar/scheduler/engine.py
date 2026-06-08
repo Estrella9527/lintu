@@ -99,6 +99,8 @@ class TaskScheduler:
         logger.info("TaskScheduler stopped")
 
     async def _main_loop(self):
+        from sidecar.db.tenant import enter_system_context
+        enter_system_context()  # 调度器跨项目取任务,显式进入系统上下文(见 tenant.py)
         while not self._stopped:
             try:
                 task = await self._fetch_next_task()
@@ -290,3 +292,22 @@ class TaskScheduler:
     async def resume_task(self, task_id: str):
         # Re-queue: set status back to queued, the loop will pick it up
         await self._mark_status(task_id, "queued")
+
+    async def retry_task(self, task_id: str) -> bool:
+        """重跑 failed / cancelled 的任务:清错误 + 计数归零 + 重新入队。
+
+        只对终态(failed/cancelled)生效;running/queued/paused 不动,返回 False。
+        """
+        from sidecar.db.session import async_session
+        async with async_session() as db:
+            t = await db.get(Task, task_id)
+            if not t or t.status not in ("failed", "cancelled"):
+                return False
+            t.status = "queued"
+            t.error_message = None
+            t.failed = 0
+            t.processed = 0
+            t.started_at = None
+            t.completed_at = None
+            await db.commit()
+        return True

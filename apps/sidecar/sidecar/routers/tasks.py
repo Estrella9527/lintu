@@ -123,6 +123,15 @@ async def cancel_task(task_id: str):
     return {"ok": True}
 
 
+@router.post("/{task_id}/retry")
+async def retry_task(task_id: str):
+    """重跑失败 / 已取消的任务(重新入队)。"""
+    if not _scheduler:
+        return {"ok": False, "message": "调度器未就绪"}
+    ok = await _scheduler.retry_task(task_id)
+    return {"ok": ok, "message": "" if ok else "仅失败/已取消的任务可重试"}
+
+
 def _task_to_dict(t: Task) -> dict:
     return {
         "id": t.id,

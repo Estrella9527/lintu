@@ -25,15 +25,21 @@ const METHOD_TONE: Record<string, string> = {
  * 这里是简单的「最新 100 条 + 路径前缀过滤 + 重新加载」，没分页 / 无穷滚动 —
  * Phase 1 数据量小够用；Phase 2 看实际访问频率再决定加分页。
  */
+const PAGE = 100
+const MAX_LIMIT = 500  // 后端单次上限
+
 export function AuditLogTab() {
   const user = useCurrentUser()
   const [pathFilter, setPathFilter] = useState('')
+  // 「加载更多」逐次 +100 拉取(后端支持 offset/limit,这里用增长 limit 的简化分页)。
+  // 切换过滤条件时归位到首页。
+  const [limit, setLimit] = useState(PAGE)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['audit-operations', pathFilter],
+    queryKey: ['audit-operations', pathFilter, limit],
     queryFn: () => api.audit.listOperations({
       path_prefix: pathFilter || undefined,
-      limit: 100,
+      limit,
     }),
     enabled: !!user?.is_root,
     refetchInterval: 30_000,
@@ -58,7 +64,7 @@ export function AuditLogTab() {
       <div className="flex items-center gap-2">
         <Input
           value={pathFilter}
-          onChange={(e) => setPathFilter(e.target.value)}
+          onChange={(e) => { setPathFilter(e.target.value); setLimit(PAGE) }}
           placeholder="按路径前缀过滤，如 /api/projects"
           className="h-8 text-[12px] flex-1"
         />
@@ -117,6 +123,25 @@ export function AuditLogTab() {
               </div>
             </div>
           ))}
+          {/* 还有更多(本页拉满 = 可能还有)且未到后端上限时,显示加载更多 */}
+          {items.length >= limit && limit < MAX_LIMIT && (
+            <div className="pt-2 text-center">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isFetching}
+                onClick={() => setLimit((n) => Math.min(n + PAGE, MAX_LIMIT))}
+              >
+                {isFetching && <RefreshCw size={12} className="mr-1.5 animate-spin" />}
+                加载更多
+              </Button>
+            </div>
+          )}
+          {limit >= MAX_LIMIT && items.length >= MAX_LIMIT && (
+            <div className="pt-2 text-center text-[11px] text-foreground/35">
+              已显示最近 {MAX_LIMIT} 条；更早记录请用路径前缀缩小范围查询
+            </div>
+          )}
         </div>
       )}
     </div>

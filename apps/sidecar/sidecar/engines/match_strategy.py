@@ -644,12 +644,14 @@ async def _enrich_and_filter(
                 Image.project_id, Image.generation_metadata,
             )
             .where(Image.id.in_(image_ids))
-            # Pre-publish review gate: only `approved` images can appear in
-            # match results. Pending / rejected / skipped are hidden until
-            # an operator decides via the 「审核」 queue. Existing rows have
-            # default='approved' (alembic 0170), so this is a no-op for the
-            # current library — only future AI-generated images need review.
+            # 候选池双闸门(UGC 需求 2026-06):
+            #   1. review_status='approved' — 审核通过
+            #   2. is_listed=True            — 已上架(运营开关)
+            # 上架而非「是否同步到 OSS」决定一张图能否被 UGC 匹配。存量行迁移
+            # 已回填 is_listed=True,故对现有库无回归;OSS 反向导入的库外图
+            # 默认未上架,需运营显式上架后才进池。
             .where(Image.review_status == "approved")
+            .where(Image.is_listed == True)  # noqa: E712
         )
         meta = {r[0]: r for r in img_rows.all()}
 
@@ -682,16 +684,12 @@ async def _enrich_and_filter(
         else:
             parent_tags = {}
 
-    # Compute cdn_required once: when OSS / CDN is configured (cloud
-    # deployment), images without cdn_path can't be served via the public
-    # URL — including such rows in the API response yields broken-image
-    # frames in UGC. In pure-local mode (no OSS) the /file endpoint serves
-    # source files directly, so we keep all rows.
-    try:
-        from sidecar.engines.oss_sync import get_storage
-        cdn_required = get_storage().is_read_configured()
-    except Exception:
-        cdn_required = False
+    # UGC 需求(2026-06):候选池由「上架」决定,不再由「是否同步到 OSS」决定。
+    # 因此移除 cdn_required 这道隐形硬过滤 —— 否则即便运营上了架,没同步到 OSS
+    # 的图仍会被悄悄丢掉,与"上架即可匹配"的语义冲突。
+    # URL 仍优先用 cdn_path 拼 CDN 地址(见 openapi_v1._image_payload),
+    # 没有 cdn_path 时回退 /file 端点;OSS 反向导入的图本就带 cdn_path。
+    cdn_required = False
 
     out: list[dict] = []
     for img_id in image_ids:

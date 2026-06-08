@@ -66,10 +66,54 @@ def _adopt_existing_db_if_needed() -> None:
         sync_engine.dispose()
 
 
+def _has_pending_migrations() -> bool:
+    """当前库版本是否落后于 head(决定要不要做迁移前备份)。"""
+    if not Path(DB_PATH).exists():
+        return False
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    try:
+        cfg = _alembic_cfg()
+        script = ScriptDirectory.from_config(cfg)
+        head = script.get_current_head()
+        sync_engine = create_engine(f"sqlite:///{DB_PATH}")
+        try:
+            with sync_engine.connect() as conn:
+                current = MigrationContext.configure(conn).get_current_revision()
+        finally:
+            sync_engine.dispose()
+        return current != head
+    except Exception as e:
+        # 判断不了就当作"可能有",走备份路径更安全
+        logger.warning("检测待迁移版本失败,按需备份: %s", e)
+        return True
+
+
 def _run_migrations() -> None:
+    from sidecar.db import backup
+
     _adopt_existing_db_if_needed()
-    command.upgrade(_alembic_cfg(), "head")
+
+    # 仅在确有待应用迁移时做迁移前备份 —— 没有 pending 时(绝大多数正常启动)
+    # 跳过,避免每次开 app 都拷一份库。
+    snapshot = None
+    if _has_pending_migrations():
+        snapshot = backup.backup_before_migration()
+
+    try:
+        command.upgrade(_alembic_cfg(), "head")
+    except Exception as e:
+        logger.error("Alembic 迁移失败: %s", e)
+        if snapshot and backup.restore_from(snapshot):
+            logger.error("数据库已回滚到迁移前状态。请修复迁移脚本后重试。")
+        raise
     logger.info("Alembic upgrade complete")
+
+    # 迁移成功后顺手做一份当日快照(轮转保留最近 7 天)
+    try:
+        backup.daily_snapshot()
+    except Exception as e:
+        logger.warning("每日快照失败(不影响启动): %s", e)
 
 
 async def init_db():

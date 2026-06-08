@@ -36,8 +36,9 @@ from sidecar.scheduler.engine import TaskScheduler
 from sidecar.scheduler.batch_engine import batch_scheduler
 from sidecar.scheduler.oss_worker import oss_worker
 from sidecar.scheduler.cloud_sync_worker import cloud_sync_worker
+from sidecar.scheduler.cloud_pull_worker import cloud_pull_worker
 from sidecar.scheduler.sse import create_sse_router
-from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router
+from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router, generate as generate_router, style_archives as style_archives_router, oss_library as oss_library_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -100,7 +101,10 @@ async def lifespan(app: FastAPI):
     # Cloud sync runs only when LINTU_CLOUD_SYNC_URL is set; in pure local
     # mode it self-disables and returns immediately. Safe to always call.
     await cloud_sync_worker.start()
+    # 多设备同步(方案A)拉取端 — 仅 LINTU_CLOUD_PULL=1 时启用(副设备/多端共享)。
+    await cloud_pull_worker.start()
     yield
+    await cloud_pull_worker.stop()
     await cloud_sync_worker.stop()
     await oss_worker.stop()
     await batch_scheduler.stop()
@@ -177,9 +181,14 @@ if LINTU_MODE == "electron":
     app.include_router(duplicate_groups.router, prefix="/api/duplicate-groups", tags=["duplicate-groups"])
     app.include_router(tag_audit.router, prefix="/api/audit/tagger", tags=["tag-audit"])
     app.include_router(oss.router, prefix="/api/oss", tags=["oss"])
+    app.include_router(oss_library_router.router, prefix="/api/oss-library", tags=["oss-library"])
     app.include_router(match_analytics.router, prefix="/api/match", tags=["match-analytics"])
     app.include_router(match_synonyms.router, prefix="/api/match-synonyms", tags=["match-synonyms"])
     app.include_router(image_review.router, prefix="/api/image-review", tags=["image-review"])
+    # v0.3 创作画布:统一图像生成端点(Ask AI / outpaint / inpaint / matting / ...)
+    app.include_router(generate_router.router, prefix="/api/generate", tags=["generate"])
+    # v0.3 风格档案 CRUD
+    app.include_router(style_archives_router.router, prefix="/api/style-archives", tags=["style-archives"])
     # 用户系统 Phase 1：登录端点不需要鉴权（UserAuthMiddleware 主动放行 /api/auth/*）
     app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
     # 项目邀请 — 路径形如 /api/projects/{pid}/invitations，挂在 /api/projects 下

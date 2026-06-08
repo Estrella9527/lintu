@@ -218,6 +218,14 @@ async def sms_verify(body: SmsVerifyBody, request: Request, db: AsyncSession = D
     raw_token, _sess = await _create_session(db, user, request=request)
     await db.commit()
 
+    # 多设备同步(方案A):用户身份上云。每次登录都 enqueue 一次,既覆盖新用户
+    # 创建,也覆盖 last_login 等字段变更;cloud sync 未配置时 _enqueue 自动 no-op。
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_user_upsert
+        await enqueue_user_upsert(user.id)
+    except Exception:
+        logger.debug("[auth] enqueue_user_upsert skipped", exc_info=True)
+
     return {
         "token": raw_token,
         "user": await _user_payload(db, user),

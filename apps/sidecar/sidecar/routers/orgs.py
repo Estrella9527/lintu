@@ -41,6 +41,27 @@ PHONE_REGEX = re.compile(r"^1[3-9]\d{9}$")
 # ── helpers ────────────────────────────────────────────────────────────
 
 
+async def _sync_identity(
+    org_ids: list[str] | None = None,
+    user_ids: list[str] | None = None,
+    org_member_ids: list[str] | None = None,
+) -> None:
+    """多设备同步(方案A):把身份层写操作 enqueue 到 cloud sync。
+    cloud sync 未配置时各 enqueue 自动 no-op;失败不影响主流程。"""
+    try:
+        from sidecar.scheduler.cloud_sync_worker import (
+            enqueue_org_upsert, enqueue_user_upsert, enqueue_org_member_upsert,
+        )
+        for oid in org_ids or []:
+            await enqueue_org_upsert(oid)
+        for uid in user_ids or []:
+            await enqueue_user_upsert(uid)
+        for mid in org_member_ids or []:
+            await enqueue_org_member_upsert(mid)
+    except Exception:
+        logger.debug("[orgs] _sync_identity enqueue skipped", exc_info=True)
+
+
 def _org_to_dict(o: Organization, member_count: int = 0, project_count: int = 0) -> dict:
     return {
         "id": o.id,
@@ -223,11 +244,13 @@ async def create_org(
         db.add(owner)
         await db.flush()
 
-    db.add(OrganizationMember(
+    member = OrganizationMember(
         org_id=org.id, user_id=owner.id, role="owner", invited_by=user.id,
-    ))
+    )
+    db.add(member)
     await db.commit()
     await db.refresh(org)
+    await _sync_identity(org_ids=[org.id], user_ids=[owner.id], org_member_ids=[member.id])
     return _org_to_dict(org, 1, 0)
 
 
@@ -258,6 +281,7 @@ async def update_org(
 
     await db.commit()
     await db.refresh(org)
+    await _sync_identity(org_ids=[org.id])
     return _org_to_dict(org)
 
 
@@ -272,6 +296,9 @@ async def delete_org(org_id: str, request: Request, db: AsyncSession = Depends(g
     org.status = "deleted"
     org.deleted_at = datetime.utcnow()
     await db.commit()
+    # 软删:推 org upsert(status='deleted'),让其它设备看到状态变更(非物理删除,
+    # 30 天可恢复,故走 upsert 而非 delete 墓碑)。
+    await _sync_identity(org_ids=[org.id])
     return {"ok": True, "soft_deleted": True, "recoverable_until": (
         org.deleted_at.replace() if org.deleted_at else None
     )}
@@ -351,10 +378,12 @@ async def add_org_member(
         }
 
     me = _require_user(request)
-    db.add(OrganizationMember(
+    member = OrganizationMember(
         org_id=org_id, user_id=user.id, role=body.role, invited_by=me.id,
-    ))
+    )
+    db.add(member)
     await db.commit()
+    await _sync_identity(user_ids=[user.id], org_member_ids=[member.id])
     return {"ok": True, "user_id": user.id, "phone": body.phone, "role": body.role}
 
 

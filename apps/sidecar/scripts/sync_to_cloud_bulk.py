@@ -37,7 +37,9 @@ sys.path.insert(0, str(ROOT))
 import httpx  # noqa: E402
 
 from sidecar.config import LINTU_CLOUD_SYNC_URL, LINTU_INTERNAL_SYNC_TOKEN  # noqa: E402
-from sidecar.db.models import ApiKey, Image, Project, Tag  # noqa: E402
+from sidecar.db.models import (  # noqa: E402
+    ApiKey, Image, Organization, OrganizationMember, Project, ProjectMember, Tag, User,
+)
 from sidecar.db.session import async_session  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
@@ -64,9 +66,75 @@ async def push_projects(client: httpx.AsyncClient) -> int:
             "originals_path": p.originals_path,
             "workspace_path": p.workspace_path,
             "color": p.color,
+            "org_id": p.org_id,
         } for p in rows
     ]}
     r = await _post(client, "/internal/sync/projects", payload)
+    return r.get("upserted", len(rows))
+
+
+# ── 身份层(方案A 多设备同步):orgs → users → org_members → project_members ──
+# 顺序按 FK 依赖:org 先于 project / 成员;user 先于成员。
+
+async def push_orgs(client: httpx.AsyncClient) -> int:
+    async with async_session() as db:
+        rows = (await db.execute(select(Organization))).scalars().all()
+    if not rows:
+        return 0
+    payload = {"orgs": [
+        {
+            "id": o.id, "name": o.name, "slug": o.slug, "logo_url": o.logo_url,
+            "contact_email": o.contact_email, "plan": o.plan,
+            "storage_quota_gb": o.storage_quota_gb, "status": o.status,
+        } for o in rows
+    ]}
+    r = await _post(client, "/internal/sync/orgs", payload)
+    return r.get("upserted", len(rows))
+
+
+async def push_users(client: httpx.AsyncClient) -> int:
+    async with async_session() as db:
+        rows = (await db.execute(select(User))).scalars().all()
+    if not rows:
+        return 0
+    payload = {"users": [
+        {
+            "id": u.id, "phone": u.phone, "display_name": u.display_name,
+            "avatar_url": u.avatar_url, "status": u.status,
+            "is_root": u.is_root, "is_platform_owner": u.is_platform_owner,
+        } for u in rows
+    ]}
+    r = await _post(client, "/internal/sync/users", payload)
+    return r.get("upserted", len(rows))
+
+
+async def push_org_members(client: httpx.AsyncClient) -> int:
+    async with async_session() as db:
+        rows = (await db.execute(select(OrganizationMember))).scalars().all()
+    if not rows:
+        return 0
+    payload = {"org_members": [
+        {
+            "id": m.id, "org_id": m.org_id, "user_id": m.user_id,
+            "role": m.role, "invited_by": m.invited_by,
+        } for m in rows
+    ]}
+    r = await _post(client, "/internal/sync/org-members", payload)
+    return r.get("upserted", len(rows))
+
+
+async def push_project_members(client: httpx.AsyncClient) -> int:
+    async with async_session() as db:
+        rows = (await db.execute(select(ProjectMember))).scalars().all()
+    if not rows:
+        return 0
+    payload = {"project_members": [
+        {
+            "id": m.id, "project_id": m.project_id, "user_id": m.user_id,
+            "role": m.role, "invited_by": m.invited_by,
+        } for m in rows
+    ]}
+    r = await _post(client, "/internal/sync/project-members", payload)
     return r.get("upserted", len(rows))
 
 
@@ -260,12 +328,16 @@ async def main() -> None:
             sys.exit(3)
 
         steps = [
-            ("config",     push_config),       # provider config first — images need it for cloud-side query embedding
-            ("projects",   push_projects),
-            ("api-keys",   push_api_keys),
-            ("synonyms",   push_synonyms),
-            ("tag-schema", push_tag_schema),
-            ("images",     push_images),
+            ("config",          push_config),       # provider config first — images need it for cloud-side query embedding
+            ("orgs",            push_orgs),          # 身份层先于 projects(FK org_id)
+            ("users",           push_users),
+            ("org-members",     push_org_members),   # 需要 orgs + users 已在
+            ("projects",        push_projects),      # 需要 orgs 已在
+            ("project-members", push_project_members),  # 需要 projects + users 已在
+            ("api-keys",        push_api_keys),
+            ("synonyms",        push_synonyms),
+            ("tag-schema",      push_tag_schema),
+            ("images",          push_images),
         ]
         for name, fn in steps:
             t0 = time.perf_counter()

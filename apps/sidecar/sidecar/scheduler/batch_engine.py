@@ -32,6 +32,7 @@ from sidecar.config import WORKSPACE_DIR
 from sidecar.db.models import BatchRun, BatchSubtask, Image, Prompt, Task
 from sidecar.db.session import async_session
 from sidecar.engines.generation_pipeline import pipeline
+from sidecar.engines.aigc_label import embed_aigc_label_png
 from sidecar.engines.image_utils import detect_image_extension, effective_file_path, save_image_bytes
 from sidecar.providers.base import PermanentError, ProviderError, TransientError
 
@@ -425,9 +426,13 @@ class BatchScheduler:
     ) -> None:
         """Create rows in chunks; enqueue pending ids as we go.
 
+        系统上下文:同 _worker,producer 也经请求上下文启动,显式切系统上下文。
+
         Idempotent: if some subtasks already exist (resumed batch), they are
         re-discovered via DB query and reused.
         """
+        from sidecar.db.tenant import enter_system_context
+        enter_system_context()
         try:
             existing: set[tuple[str, str]] = set()
             async with async_session() as db:
@@ -478,6 +483,11 @@ class BatchScheduler:
         state: BatchState,
         provider_chain: list[str] | None,
     ) -> None:
+        # 批量 worker 经 start_batch(请求上下文)启动,会冻结触发者的 project_ids。
+        # 切到系统上下文:批量查询按 batch_id 显式作用域,写入显式带 project_id,
+        # 不应依赖"谁点了开始"的请求快照(见 tenant.py)。
+        from sidecar.db.tenant import enter_system_context
+        enter_system_context()
         while not state.cancelled.is_set():
             if state.paused.is_set():
                 await asyncio.sleep(0.5)
@@ -617,7 +627,10 @@ class BatchScheduler:
             extension=out_ext,
         )
         try:
-            save_image_bytes(result.image_data, out_path)
+            # 合规:批量产物同样嵌入 AIGC 隐式标识(与画布生成一致)
+            labeled = embed_aigc_label_png(result.image_data, gtype="img2img",
+                                           model=result.provider_used)
+            save_image_bytes(labeled, out_path)
             with PILImage.open(out_path) as im:
                 w, h = im.size
         except Exception as e:
@@ -687,7 +700,11 @@ class BatchScheduler:
             from sidecar.engines.oss_sync import enqueue_image_sync
             await enqueue_image_sync(new_image_id)
         except Exception as e:
-            logger.debug("oss enqueue (batch) failed for %s: %s", new_image_id, e)
+            # warning 而非 debug:enqueue 失败原来被静默吞掉,图永远不上云但 batch
+            # 仍标 completed。enqueue 已幂等(S5),审核通过路径 + 手动对账都会补
+            # enqueue,所以这里不致命,但必须可见以便排查。
+            logger.warning("oss enqueue (batch) failed for %s(审核通过/对账会补): %s",
+                           new_image_id, e)
 
         async with state.lock:
             state.completed += 1

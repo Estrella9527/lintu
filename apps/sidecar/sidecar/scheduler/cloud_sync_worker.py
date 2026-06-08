@@ -27,7 +27,10 @@ import httpx
 from sqlalchemy import select, update
 
 from sidecar.config import LINTU_CLOUD_SYNC_URL, LINTU_INTERNAL_SYNC_TOKEN
-from sidecar.db.models import ApiKey, CloudSyncJob, Image, Project, Tag
+from sidecar.db.models import (
+    ApiKey, CloudSyncJob, Image, Organization, OrganizationMember,
+    Project, ProjectMember, Tag, User,
+)
 from sidecar.db.session import async_session
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,41 @@ async def enqueue_config_replace() -> None:
     await _enqueue("config", None, "upsert")
 
 
+# ── 身份层(方案A 多设备同步):user / org / 成员关系 ────────────────────────
+
+
+async def enqueue_user_upsert(user_id: str) -> None:
+    await _enqueue("user", user_id, "upsert")
+
+
+async def enqueue_user_delete(user_id: str) -> None:
+    await _enqueue("user", user_id, "delete")
+
+
+async def enqueue_org_upsert(org_id: str) -> None:
+    await _enqueue("org", org_id, "upsert")
+
+
+async def enqueue_org_delete(org_id: str) -> None:
+    await _enqueue("org", org_id, "delete")
+
+
+async def enqueue_org_member_upsert(member_id: str) -> None:
+    await _enqueue("org_member", member_id, "upsert")
+
+
+async def enqueue_org_member_delete(member_id: str) -> None:
+    await _enqueue("org_member", member_id, "delete")
+
+
+async def enqueue_project_member_upsert(member_id: str) -> None:
+    await _enqueue("project_member", member_id, "upsert")
+
+
+async def enqueue_project_member_delete(member_id: str) -> None:
+    await _enqueue("project_member", member_id, "delete")
+
+
 # Keys that get pushed when config changes. Shared with sync_to_cloud_bulk.py
 # so manual + automatic pushes stay consistent. NEVER include OSS write
 # credentials (oss_access_key / oss_access_secret) — cloud is read-only.
@@ -187,6 +225,8 @@ class CloudSyncWorker:
         self._wakeup.set()
 
     async def _run(self) -> None:
+        from sidecar.db.tenant import enter_system_context
+        enter_system_context()  # 云同步队列全局,显式进入系统上下文(见 tenant.py)
         while not self._stopped:
             try:
                 processed = await self._tick()
@@ -283,6 +323,18 @@ class CloudSyncWorker:
                 payload = self._build_config_payload()
                 if payload["settings"]:
                     await self._post(client, f"{url_base}/internal/sync/config", payload)
+            elif entity_type == "user":
+                payload = await self._build_users_payload(ids)
+                await self._post(client, f"{url_base}/internal/sync/users", payload)
+            elif entity_type == "org":
+                payload = await self._build_orgs_payload(ids)
+                await self._post(client, f"{url_base}/internal/sync/orgs", payload)
+            elif entity_type == "org_member":
+                payload = await self._build_org_members_payload(ids)
+                await self._post(client, f"{url_base}/internal/sync/org-members", payload)
+            elif entity_type == "project_member":
+                payload = await self._build_project_members_payload(ids)
+                await self._post(client, f"{url_base}/internal/sync/project-members", payload)
             else:
                 raise ValueError(f"unknown entity_type for upsert: {entity_type}")
         elif op == "delete":
@@ -300,6 +352,14 @@ class CloudSyncWorker:
 
     async def _build_images_payload(self, ids: list[str]) -> dict:
         from sidecar.engines.clip_embed import deserialize_vector
+        # parent_id 防 FK 500:云端 images.parent_id 有自引用 FK。生成图的
+        # parent 若还没在云端(尤其多代 gen→gen 链或孤儿),整批会被 PG 拒成
+        # 500。只保留"parent 是 original(必先于生成图同步)"的 parent_id,
+        # 其余置 NULL — 云端不需要血缘图。与 bulk 脚本同策略。
+        async with async_session() as db:
+            valid_parent_ids = set((await db.execute(
+                select(Image.id).where(Image.source_type == "original")
+            )).scalars().all())
         async with async_session() as db:
             # Pre-publish review gate: only push `approved` rows. Pending /
             # rejected images are operator decisions still in flight; pushing
@@ -344,7 +404,7 @@ class CloudSyncWorker:
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,
-                "parent_id": img.parent_id,
+                "parent_id": img.parent_id if (img.parent_id is None or img.parent_id in valid_parent_ids) else None,
                 "rotated_file_path": img.rotated_file_path,
                 "orient_status": img.orient_status,
                 "cdn_path": img.cdn_path,
@@ -367,6 +427,7 @@ class CloudSyncWorker:
                 "originals_path": p.originals_path,
                 "workspace_path": p.workspace_path,
                 "color": p.color,
+                "org_id": p.org_id,
             } for p in rows
         ]}
 
@@ -387,6 +448,48 @@ class CloudSyncWorker:
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                 "is_active": k.is_active,
             } for k in rows
+        ]}
+
+    async def _build_users_payload(self, ids: list[str]) -> dict:
+        async with async_session() as db:
+            rows = (await db.execute(select(User).where(User.id.in_(ids)))).scalars().all()
+        return {"users": [
+            {
+                "id": u.id, "phone": u.phone, "display_name": u.display_name,
+                "avatar_url": u.avatar_url, "status": u.status,
+                "is_root": u.is_root, "is_platform_owner": u.is_platform_owner,
+            } for u in rows
+        ]}
+
+    async def _build_orgs_payload(self, ids: list[str]) -> dict:
+        async with async_session() as db:
+            rows = (await db.execute(select(Organization).where(Organization.id.in_(ids)))).scalars().all()
+        return {"orgs": [
+            {
+                "id": o.id, "name": o.name, "slug": o.slug, "logo_url": o.logo_url,
+                "contact_email": o.contact_email, "plan": o.plan,
+                "storage_quota_gb": o.storage_quota_gb, "status": o.status,
+            } for o in rows
+        ]}
+
+    async def _build_org_members_payload(self, ids: list[str]) -> dict:
+        async with async_session() as db:
+            rows = (await db.execute(select(OrganizationMember).where(OrganizationMember.id.in_(ids)))).scalars().all()
+        return {"org_members": [
+            {
+                "id": m.id, "org_id": m.org_id, "user_id": m.user_id,
+                "role": m.role, "invited_by": m.invited_by,
+            } for m in rows
+        ]}
+
+    async def _build_project_members_payload(self, ids: list[str]) -> dict:
+        async with async_session() as db:
+            rows = (await db.execute(select(ProjectMember).where(ProjectMember.id.in_(ids)))).scalars().all()
+        return {"project_members": [
+            {
+                "id": m.id, "project_id": m.project_id, "user_id": m.user_id,
+                "role": m.role, "invited_by": m.invited_by,
+            } for m in rows
         ]}
 
     @staticmethod

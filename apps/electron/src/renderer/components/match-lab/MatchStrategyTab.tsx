@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Sparkles } from 'lucide-react'
+import { AlertTriangle, Sparkles, CloudDownload } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { InfoHint } from '@/components/shared/InfoHint'
@@ -16,6 +16,7 @@ import { activeProjectIdAtom } from '@/atoms/project'
 import { CandidateFiltersPanel, EMPTY_FILTERS, countActive, type CandidateFilters } from './CandidateFilters'
 import { SyncStatusBanner } from './SyncStatusBanner'
 import { ConfigAuditTimeline } from './ConfigAuditTimeline'
+import { OssLibraryDialog } from './OssLibraryDialog'
 
 /**
  * 「匹配策略」Tab — 上线前的运营配置面板。
@@ -49,6 +50,7 @@ const DIVERSITY_OPTS: { v: Diversity; label: string; desc: string }[] = [
 export function MatchStrategyTab() {
   const queryClient = useQueryClient()
   const projectId = useAtomValue(activeProjectIdAtom)
+  const [ossLibOpen, setOssLibOpen] = useState(false)
 
   const { data: config, isLoading } = useQuery<Record<string, any>>({
     queryKey: ['config'],
@@ -335,6 +337,25 @@ export function MatchStrategyTab() {
           projectId={projectId ?? null}
         />
       </Group>
+
+      {/* ── OSS 图库:候选池的图从哪来 ──────────────────────────── */}
+      <Group
+        title="OSS 图库"
+        hint="UGC 不直读 OSS,全部走 match 接口。这里把 bucket 里「库外的图」导入灵图库 → 审核 → 上架,上架后即进入匹配候选池。"
+      >
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/8 bg-foreground/[0.015] px-3 py-2.5">
+          <div className="text-[12px] text-foreground/60 leading-relaxed">
+            查看 <strong className="text-foreground/85">OSS</strong> bucket 全量图片，
+            把库外图一键导入（默认待审核 + 未上架），并直接上架 / 下架已入库的图。
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setOssLibOpen(true)}>
+            <CloudDownload size={13} className="mr-1.5" />
+            打开 OSS 图库
+          </Button>
+        </div>
+      </Group>
+
+      <OssLibraryDialog open={ossLibOpen} onOpenChange={setOssLibOpen} projectId={projectId ?? null} />
 
       {/* ── 审计 ─────────────────────────────────────────────── */}
       <ConfigAuditTimeline />

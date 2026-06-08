@@ -1,21 +1,29 @@
+import hashlib
+import json
+import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from PIL import Image as PILImage
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.config import THUMBNAILS_DIR
-from sidecar.db.models import Image, Tag
+from sidecar.db.models import Image, Project, Tag
 from sidecar.db.session import get_db
-from sidecar.engines.image_utils import effective_file_path
+from sidecar.engines.image_utils import compute_perceptual_hashes, effective_file_path
+from sidecar.engines.oss_sync import enqueue_image_sync
 from sidecar.engines.thumbnail import (
     THUMBNAIL_SIZES,
     generate_thumbnail,
     get_thumbnail_path,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -278,6 +286,60 @@ class UpdateTagsBody(BaseModel):
     tags: dict  # {dimension: [values]} or {dimension: value}
 
 
+class ImagePatchBody(BaseModel):
+    """Lightweight PATCH for single-image field updates.
+
+    review_status — 推到审核队列 / 改审核态。
+    is_listed     — 上架 / 下架(决定是否进 UGC 匹配候选池,与审核正交)。"""
+    review_status: Optional[str] = None
+    is_listed: Optional[bool] = None
+
+
+@router.patch("/{image_id}")
+async def patch_image(
+    image_id: str,
+    body: ImagePatchBody,
+    db: AsyncSession = Depends(get_db),
+):
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    from datetime import datetime as _dt
+    if body.review_status is not None:
+        if body.review_status not in {"pending", "approved", "rejected", "skipped"}:
+            raise HTTPException(400, "invalid review_status")
+        img.review_status = body.review_status
+        img.reviewed_at = _dt.utcnow() if body.review_status != "pending" else None
+    if body.is_listed is not None:
+        img.is_listed = body.is_listed
+        img.listed_at = _dt.utcnow() if body.is_listed else None
+    await db.commit()
+    return {"ok": True, "id": image_id, "review_status": img.review_status,
+            "is_listed": img.is_listed}
+
+
+class ListingBody(BaseModel):
+    image_ids: list[str]
+    is_listed: bool
+
+
+@router.post("/batch/listing")
+async def batch_set_listing(body: ListingBody, db: AsyncSession = Depends(get_db)):
+    """批量上架 / 下架。is_listed=True 上架,False 下架。"""
+    if not body.image_ids:
+        return {"ok": True, "updated": 0}
+    from datetime import datetime as _dt
+    rows = (await db.execute(
+        select(Image).where(Image.id.in_(body.image_ids))
+    )).scalars().all()
+    now = _dt.utcnow() if body.is_listed else None
+    for img in rows:
+        img.is_listed = body.is_listed
+        img.listed_at = now
+    await db.commit()
+    return {"ok": True, "updated": len(rows), "is_listed": body.is_listed}
+
+
 @router.put("/{image_id}/tags")
 async def update_tags(
     image_id: str,
@@ -437,6 +499,175 @@ async def batch_update_status(
     )
     await db.commit()
     return {"ok": True}
+
+
+_UPLOAD_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".bmp", ".tiff", ".tif"}
+_UPLOAD_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB / file
+_UPLOAD_MAX_FILES_PER_REQUEST = 30
+
+
+def _safe_ext(filename: str) -> str:
+    """Lowercase the suffix and reject anything outside the allowlist.
+
+    Filename comes straight from the browser/clipboard so it can't be trusted —
+    we never reuse it on disk verbatim. We only consult the suffix to pick the
+    PIL decoder and the on-disk extension.
+    """
+    suf = Path(filename or "").suffix.lower()
+    if suf not in _UPLOAD_ALLOWED_EXTS:
+        # Clipboard pastes often arrive as image/png with filename "image.png"
+        # or no filename at all; that's fine because .png is in the allowlist.
+        # Anything else (.svg, .gif animated, .exe disguised) gets rejected.
+        return ""
+    return suf
+
+
+@router.post("/upload")
+async def upload_images(
+    project_id: str = Form(...),
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Direct image upload — paste / drag-drop entry from the UI.
+
+    Distinct from the scan path: scan walks a directory the user already owns
+    and registers every file in place; upload accepts file bytes from the
+    browser (clipboard or OS drag) and writes them under
+    `<originals_path>/uploads/<yyyymmdd>/`. We auto-approve quality
+    (`quality_status='passed'`) because the user deliberately uploaded these —
+    no point making them click "approve" in 审核 for every drop. Tagging
+    stays 'pending' so the existing tagger workflow picks them up.
+
+    Dedup via md5(file_bytes) ⊆ existing project images. Re-uploading the
+    same file no-ops and returns the existing row, mirroring scan.
+
+    Returns ImageRecord rows plus a `skipped_duplicates` count for the
+    frontend toast.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="no files")
+    if len(files) > _UPLOAD_MAX_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many files (max {_UPLOAD_MAX_FILES_PER_REQUEST} per request)",
+        )
+
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    originals_root = Path(project.originals_path)
+    today = datetime.utcnow().strftime("%Y%m%d")
+    dest_dir = originals_root / "uploads" / today
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    rel_dir = f"uploads/{today}"
+
+    # Dedup against current "live" project images only — exclude rejected
+    # (回收站) rows so that "标记淘汰 → 重新粘贴同一张" works as users expect.
+    # Hard-deleted rows already aren't in the table; this filter handles the
+    # soft-delete case where the row sticks around with quality_status='rejected'.
+    # We need full rows (not just hashes) because the upload caller wants to
+    # display / select the existing image when a duplicate is hit — e.g. AI
+    # 工坊 drag-drop expects "this seed is now selected" regardless of whether
+    # it was newly written or already there.
+    existing_rows = (await db.execute(
+        select(Image).where(
+            Image.project_id == project_id,
+            Image.quality_status != "rejected",
+            Image.file_hash.isnot(None),
+        )
+    )).scalars().all()
+    existing_by_hash: dict[str, Image] = {row.file_hash: row for row in existing_rows}
+
+    created: list[Image] = []
+    duplicate_existing: list[Image] = []
+    skipped_invalid: list[dict] = []
+    new_ids_for_sync: list[str] = []
+
+    for f in files:
+        ext = _safe_ext(f.filename or "image.png")
+        if not ext:
+            skipped_invalid.append({"name": f.filename or "(unnamed)", "reason": "unsupported_format"})
+            continue
+
+        data = await f.read()
+        if not data:
+            skipped_invalid.append({"name": f.filename or "(unnamed)", "reason": "empty"})
+            continue
+        if len(data) > _UPLOAD_MAX_FILE_BYTES:
+            skipped_invalid.append({
+                "name": f.filename or "(unnamed)",
+                "reason": f"too_large ({len(data) // 1024 // 1024} MB > 50 MB)",
+            })
+            continue
+
+        file_hash = hashlib.md5(data).hexdigest()
+        if file_hash in existing_by_hash:
+            duplicate_existing.append(existing_by_hash[file_hash])
+            continue
+
+        # Use the hash as the filename to keep collisions impossible without
+        # relying on UUID — also makes "same bytes ⇒ same path" debuggable.
+        out_name = f"{file_hash}{ext}"
+        out_path = dest_dir / out_name
+        try:
+            out_path.write_bytes(data)
+        except OSError as e:
+            logger.warning("upload write failed for %s: %s", out_path, e)
+            skipped_invalid.append({"name": f.filename or "(unnamed)", "reason": f"write_failed: {e}"})
+            continue
+
+        # Validate it actually decodes as an image. Cheap — reads header only.
+        try:
+            with PILImage.open(out_path) as pil:
+                width, height = pil.size
+        except Exception:
+            out_path.unlink(missing_ok=True)
+            skipped_invalid.append({"name": f.filename or "(unnamed)", "reason": "not_an_image"})
+            continue
+
+        phash_dict = compute_perceptual_hashes(out_path)
+        img = Image(
+            project_id=project_id,
+            file_path=str(out_path),
+            file_name=f.filename or out_name,
+            file_hash=file_hash,
+            phash=json.dumps(phash_dict) if phash_dict else None,
+            width=width,
+            height=height,
+            file_size_kb=len(data) // 1024,
+            # User-initiated uploads bypass auto QC — they wanted this image.
+            # Stays subject to the 审核 review_status flow if pending matters.
+            quality_status="passed",
+            tag_status="pending",
+            source_type="original",
+            relative_dir=rel_dir,
+        )
+        db.add(img)
+        existing_by_hash[file_hash] = img
+        created.append(img)
+
+    if created:
+        await db.flush()
+        new_ids_for_sync = [img.id for img in created]
+        await db.commit()
+        for iid in new_ids_for_sync:
+            try:
+                await enqueue_image_sync(iid)
+            except Exception as e:
+                logger.debug("oss enqueue (upload) failed for %s: %s", iid, e)
+
+    return {
+        "ok": True,
+        "uploaded": len(created),
+        # skipped_duplicates 保留为 count 以兼容老 toast 文案;新调用方应优先
+        # 用 duplicate_images:那是被命中的现有 ImageRecord 数组,UI 可以
+        # 直接拿来回填到 selectedImages,实现"拖了张已有的图也算选中了"。
+        "skipped_duplicates": len(duplicate_existing),
+        "duplicate_images": [_image_to_dict(img) for img in duplicate_existing],
+        "skipped_invalid": skipped_invalid,
+        "images": [_image_to_dict(img) for img in created],
+    }
 
 
 def _image_to_dict(img: Image) -> dict:

@@ -75,6 +75,12 @@ class StrategyBody(BaseModel):
     parameters: str = "[]"
     sort_order: int = 99
     enabled: bool = True
+    # v0.3 创作画布 → 批量策略 桥接字段(全可选,旧调用方不传也兼容)
+    provenance: Optional[str] = None              # "manual" | "from_canvas"
+    canvas_snapshot: Optional[dict] = None
+    style_archive_id: Optional[str] = None
+    speed: Optional[str] = None                   # "draft" | "refined"
+    count_per_image: Optional[int] = None
 
 
 @router.post("")
@@ -83,6 +89,11 @@ async def create_strategy(body: StrategyBody, db: AsyncSession = Depends(get_db)
         name=body.name, icon_keyword=body.icon_keyword, task_type=body.task_type,
         prompt=body.prompt, parameters=body.parameters,
         sort_order=body.sort_order, is_builtin=False, enabled=body.enabled,
+        provenance=body.provenance or "manual",
+        canvas_snapshot=body.canvas_snapshot,
+        style_archive_id=body.style_archive_id,
+        speed=body.speed or "refined",
+        count_per_image=body.count_per_image or 1,
     )
     db.add(s)
     await db.commit()
@@ -102,6 +113,16 @@ async def update_strategy(strategy_id: str, body: StrategyBody, db: AsyncSession
     s.parameters = body.parameters
     s.sort_order = body.sort_order
     s.enabled = body.enabled
+    if body.provenance is not None:
+        s.provenance = body.provenance
+    if body.canvas_snapshot is not None:
+        s.canvas_snapshot = body.canvas_snapshot
+    if body.style_archive_id is not None:
+        s.style_archive_id = body.style_archive_id
+    if body.speed is not None:
+        s.speed = body.speed
+    if body.count_per_image is not None:
+        s.count_per_image = body.count_per_image
     await db.commit()
     return _to_dict(s)
 
@@ -126,4 +147,10 @@ def _to_dict(s: Strategy) -> dict:
         "task_type": s.task_type, "prompt": s.prompt,
         "parameters": s.parameters, "sort_order": s.sort_order,
         "is_builtin": s.is_builtin, "enabled": s.enabled,
+        # v0.3 字段,旧前端会忽略,新前端用来显示「来自画布」标识 + 复用快照
+        "provenance": getattr(s, "provenance", "manual") or "manual",
+        "canvas_snapshot": getattr(s, "canvas_snapshot", None),
+        "style_archive_id": getattr(s, "style_archive_id", None),
+        "speed": getattr(s, "speed", "refined") or "refined",
+        "count_per_image": getattr(s, "count_per_image", 1) or 1,
     }

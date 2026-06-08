@@ -44,6 +44,8 @@ class Project(Base):
     # name in the sidebar selector. Pure visual — no behavioral effect.
     color = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # 多设备同步(方案A):增量 feed 的游标 + LWW 仲裁键。index 供 changes feed 范围扫
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 # ── Image ──
@@ -80,6 +82,14 @@ class Image(Base):
     #   skipped  — operator chose to defer; same effect as pending for now
     review_status = Column(String, default="approved", index=True)
     reviewed_at = Column(DateTime)
+
+    # 上下架(listing)— 与 review_status 正交的运营开关,决定是否参与 UGC 匹配。
+    # 匹配候选池 = (review_status='approved') AND (is_listed=True)。
+    #   - 存量图迁移置 True(保持现有可匹配行为,不回归)
+    #   - OSS 反向导入的库外图显式置 False,必须运营「上架」后才进匹配
+    #   - 「下架」可临时移出匹配池而不改审核状态(区别于 rejected)
+    is_listed = Column(Boolean, default=True, index=True)
+    listed_at = Column(DateTime)
 
     # Dedup
     dedup_group_id = Column(String, index=True)
@@ -265,6 +275,35 @@ class Strategy(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # v0.3 创作画布 → 批量策略 桥接字段。
+    # provenance = 'from_canvas' 时,UI 会在策略库列表显示「来自画布」标识;
+    # canvas_snapshot 存当时画布上所有生成参数(model/ratio/style/strength/...),
+    # 让"一键转批量"能无损还原。
+    provenance = Column(String, default="manual", index=True)   # "manual" | "from_canvas"
+    canvas_snapshot = Column(JSON)                              # 画布参数快照
+    style_archive_id = Column(String, ForeignKey("style_archives.id"))
+    speed = Column(String, default="refined")                   # "draft" | "refined"
+    count_per_image = Column(Integer, default=1)
+
+
+# ── StyleArchive (v0.3 风格档案 — 一致性) ──
+#
+# 一个风格档案 = 一组参考图 + 一致性强度,代表景区视觉风格(如「晨曦丁达尔」)。
+# 用户在创作画布 / 批量策略里挑选一个 StyleArchive,后端在调底模时把 ref_image_ids
+# 转成 sref/oref 参数,实现跨图风格一致。
+class StyleArchive(Base):
+    __tablename__ = "style_archives"
+
+    id               = Column(String, primary_key=True, default=_uid)
+    project_id       = Column(String, ForeignKey("projects.id"), index=True)
+    name             = Column(String, nullable=False)
+    description      = Column(Text, default="")
+    ref_image_ids    = Column(JSON, default=list)              # [ImageRecord.id, ...]
+    strength_default = Column(Float, default=0.7)
+    params           = Column(JSON, default=dict)              # provider 特定参数
+    created_at       = Column(DateTime, default=datetime.utcnow)
+    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 # ── Duplicate Group ──
 
@@ -442,6 +481,30 @@ class CloudSyncJob(Base):
 Index("idx_cloud_sync_status_created", CloudSyncJob.status, CloudSyncJob.created_at)
 
 
+class SyncTombstone(Base):
+    """删除墓碑 —— 多设备同步(方案A 云端权威)的删除事件载体。
+
+    本地/云端硬删一行业务数据时,同时写一条墓碑(entity_type, entity_id,
+    deleted_at)。增量 feed `GET /internal/sync/changes?since=` 从这里读出
+    "since 之后被删了哪些 id",让其它设备 pull 时也能删掉本地对应行。
+
+    为什么不用各表软删 deleted_at:那会牵动所有读查询 / 租户过滤 / 匹配
+    候选池。墓碑表把"删除可追溯"这件事收敛到一张表,读路径零改动。
+
+    幂等:同 (entity_type, entity_id) 反复删只更新 deleted_at(后写胜)。
+    """
+    __tablename__ = "sync_tombstones"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_type = Column(String, nullable=False, index=True)  # 'image'|'project'|'api_key'|'user'|'org'|'org_member'|'project_member'
+    entity_id = Column(String, nullable=False, index=True)
+    deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", name="uq_tombstone_entity"),
+    )
+
+
 class MatchFeedback(Base):
     """One row per (matched image, optional 'was_chosen' flag) emitted from
     the UGC app via POST /open-api/v1/images/{id}/track-usage. Used to
@@ -546,6 +609,7 @@ class Organization(Base):
     status           = Column(String, default="active", server_default="active", index=True)
     deleted_at       = Column(DateTime)
     created_at       = Column(DateTime, default=datetime.utcnow)
+    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 class OrganizationMember(Base):
@@ -564,6 +628,7 @@ class OrganizationMember(Base):
     role            = Column(String, default="member", server_default="member")
     invited_by      = Column(String, ForeignKey("users.id"))
     created_at      = Column(DateTime, default=datetime.utcnow)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     __table_args__ = (
         UniqueConstraint("org_id", "user_id", name="uq_org_member"),
@@ -584,6 +649,7 @@ class User(Base):
     is_platform_owner   = Column(Boolean, default=False, server_default="0", index=True)
     created_at          = Column(DateTime, default=datetime.utcnow)
     last_login_at       = Column(DateTime)
+    updated_at          = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 class Session(Base):
@@ -623,6 +689,7 @@ class ProjectMember(Base):
     role            = Column(String, default="editor", server_default="editor")
     invited_by      = Column(String, ForeignKey("users.id"))
     created_at      = Column(DateTime, default=datetime.utcnow)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", name="uq_project_member"),

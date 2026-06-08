@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
+import { useQueryClient } from '@tanstack/react-query'
 import { assetLibraryNavRequestAtom } from '@/atoms/navigation'
 import {
   assetLibraryActiveTabAtom,
@@ -7,7 +8,7 @@ import {
   assetLibrarySelectedFolderAtom,
 } from '@/atoms/ui-state'
 import { cn } from '@/lib/utils'
-import { Copy, GitFork, LayoutGrid, Star, Trash2 } from 'lucide-react'
+import { Copy, GitFork, LayoutGrid, Loader2, Star, Trash2, Upload } from 'lucide-react'
 import { ImageGrid } from '@/components/asset-library/ImageGrid'
 import { FilterBar, EMPTY_FILTER } from '@/components/asset-library/FilterBar'
 import { ImageInspector } from '@/components/asset-library/ImageInspector'
@@ -15,15 +16,18 @@ import { ImageLightbox } from '@/components/asset-library/ImageLightbox'
 import { BatchActionBar } from '@/components/asset-library/BatchActionBar'
 import { FolderTree } from '@/components/asset-library/FolderTree'
 import { DuplicateGroupsTab } from '@/components/asset-library/DuplicateGroupsTab'
+import { ImageDropOverlay } from '@/components/shared/ImageDropOverlay'
 import { activeProjectIdAtom } from '@/atoms/project'
+import { useImageDropPaste } from '@/hooks/useImageDropPaste'
+import { useUploadImages } from '@/hooks/useUploadImages'
 import type { ImageRecord } from '@/lib/types'
 
 const TABS = [
   { id: 'all', label: '全部图片', icon: LayoutGrid },
   { id: 'duplicates', label: '相似组', icon: Copy },
-  { id: 'derivatives', label: '衍生关系', icon: GitFork },
-  { id: 'favorites', label: '收藏夹', icon: Star },
   { id: 'trash', label: '回收站', icon: Trash2 },
+  // 衍生关系(图谱可视化)/ 收藏夹尚未实装,先从 Tab 隐藏,避免用户点进空白页。
+  // 待功能落地后再加回(图标 GitFork / Star 已 import)。
 ]
 
 export default function AssetLibrary() {
@@ -153,9 +157,32 @@ export default function AssetLibrary() {
 
   const showWorkBench = activeTab === 'all' || activeTab === 'trash'
 
+  // ── 拖拽 / 粘贴上传 ────────────────────────────────────────────────────
+  // 整页接拖拽 + 文档级 paste,上传完去 invalidate images 缓存让 grid 自刷。
+  // 仅在「全部图片」Tab 启用 — 回收站 / 相似组 / 衍生关系 这些聚合视图
+  // 接受拖入图反而误导用户(图会落进 all 视图,不在当前 tab 显示)。
+  const queryClient = useQueryClient()
+  const dropZoneRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const uploadEnabled = activeTab === 'all' && !!projectId
+  const { upload, uploading } = useUploadImages({
+    projectId,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['images', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['folders', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['oss-status'] })
+    },
+  })
+  const { isDragging } = useImageDropPaste({
+    dropRef: dropZoneRef,
+    enabled: uploadEnabled,
+    onFiles: (files) => { void upload(files) },
+  })
+
   return (
     <>
-      <div className="flex flex-col h-full">
+      <div ref={dropZoneRef} className="relative flex flex-col h-full">
+        <ImageDropOverlay visible={isDragging && uploadEnabled} />
         {/* Header + tabs combined in single 40px row */}
         <div className="flex items-center gap-5 px-5 h-[40px] shrink-0 border-b border-foreground/5">
           <h1 className="text-[13px] font-semibold text-foreground/85 shrink-0">资产库</h1>
@@ -186,6 +213,47 @@ export default function AssetLibrary() {
               )
             })}
           </div>
+          {uploadEnabled && (
+            <div className="ml-auto flex items-center gap-1">
+              {/* 不用 `hidden` 属性 — Electron / Chromium 在 display:none 的
+                  input 上调 .click() 偶尔会静默失败。改用 sr-only 定位 + 0 透明,
+                  保留 input 在交互流里。 */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="sr-only"
+                style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || [])
+                  if (files.length) void upload(files)
+                  if (fileInputRef.current) fileInputRef.current.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  fileInputRef.current?.click()
+                }}
+                disabled={uploading}
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1 text-[12px] rounded-md transition-colors',
+                  uploading
+                    ? 'text-foreground/40 cursor-wait'
+                    : 'text-foreground/65 hover:text-foreground hover:bg-foreground/[0.05]',
+                )}
+                title="选择本地图片上传 · 也可直接拖入页面 / Ctrl+V 粘贴截图"
+              >
+                {uploading
+                  ? <Loader2 size={13} className="animate-spin" />
+                  : <Upload size={13} strokeWidth={1.5} />}
+                <span>上传图片</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 3-pane content (Eagle layout) */}

@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, Protocol
 
+from sqlalchemy.exc import IntegrityError
+
 from sidecar.defaults import get_setting
 
 logger = logging.getLogger(__name__)
@@ -180,6 +182,11 @@ class AliyunOSSStorage:
         for obj in oss2.ObjectIterator(bucket, prefix=prefix):
             keys.append(obj.key)
         return keys
+
+    def download(self, object_key: str, local_path: str) -> None:
+        """把 bucket 对象下载到本地(OSS 反向导入用)。"""
+        bucket = self._ensure_bucket()
+        bucket.get_object_to_file(object_key, local_path)
 
     def delete_keys(self, keys: list[str]) -> int:
         """批量删除对象,返回成功删除数。
@@ -362,17 +369,27 @@ async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
                 "image/jpeg",
             ))
 
+        # 逐行 add + flush + savepoint,撞活跃态唯一索引(并发 enqueue 竞态)时
+        # 吞掉 IntegrityError 跳过该行,不影响其余行。比"先查 already 再批量插"
+        # 多一层 DB 级兜底,真正保证幂等。
+        inserted = 0
         for kind, key, local, ctype in plans:
-            db.add(OssSyncJob(
-                image_id=image_id,
-                asset_kind=kind,
-                object_key=key,
-                local_path=local,
-                content_type=ctype,
-                status="pending",
-            ))
+            try:
+                async with db.begin_nested():
+                    db.add(OssSyncJob(
+                        image_id=image_id,
+                        asset_kind=kind,
+                        object_key=key,
+                        local_path=local,
+                        content_type=ctype,
+                        status="pending",
+                    ))
+                inserted += 1
+            except IntegrityError:
+                # 已有活跃 job(并发插入)→ 幂等跳过
+                logger.debug("oss enqueue skip dup: image=%s kind=%s", image_id, kind)
         await db.commit()
-        return len(plans)
+        return inserted
 
 
 async def enqueue_many(image_ids: list[str]) -> int:

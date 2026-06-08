@@ -89,6 +89,15 @@ function TaskList({ statuses }: { statuses: string[] }) {
                   ? () => { api.tasks.cancel(task.id); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
                   : undefined
               }
+              onRetry={
+                task.status === 'failed' || task.status === 'cancelled'
+                  ? async () => {
+                      const r = await api.tasks.retry(task.id) as { ok?: boolean; message?: string }
+                      if (r?.ok) { toast.success('已重新入队'); queryClient.invalidateQueries({ queryKey: ['tasks'] }) }
+                      else toast.error(r?.message || '重试失败')
+                    }
+                  : undefined
+              }
               extraStats={
                 <div className="flex items-center gap-2 text-[12px] text-foreground/50">
                   <Badge variant="secondary" className="text-[10px]">

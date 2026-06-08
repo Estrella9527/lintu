@@ -34,6 +34,10 @@ DB_DIALECT = "postgresql" if DB_URL.startswith("postgresql") else "sqlite"
 LINTU_INTERNAL_SYNC_TOKEN = os.environ.get("LINTU_INTERNAL_SYNC_TOKEN", "").strip()
 # Where the local sync_worker pushes to. Empty = sync disabled (electron-only).
 LINTU_CLOUD_SYNC_URL = os.environ.get("LINTU_CLOUD_SYNC_URL", "").strip()
+# 多设备同步(方案A)拉取开关。默认关:主控桌面端只 push。副设备 / 多端共享同
+# 一账号数据时设 LINTU_CLOUD_PULL=1,开启 cloud_pull_worker 从云端拉变更并合并。
+# 复用 LINTU_CLOUD_SYNC_URL + LINTU_INTERNAL_SYNC_TOKEN 作为目标与鉴权。
+LINTU_CLOUD_PULL = os.environ.get("LINTU_CLOUD_PULL", "").strip() in ("1", "true", "True", "yes")
 
 # 工作空间子目录
 WORKSPACE_DIR = DATA_DIR / "workspace"

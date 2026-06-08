@@ -34,6 +34,27 @@ current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", defau
 current_project_ids: ContextVar[list[str]] = ContextVar("current_project_ids", default=[])
 
 
+def enter_system_context() -> None:
+    """把当前 asyncio 任务切到「系统上下文」(无租户过滤、写入不受 project 限制)。
+
+    后台 worker(OSS 同步 / 批量生成 / 云同步 / 调度器)用。原因:
+
+      - 这些 worker 经由 `asyncio.create_task` 启动。create_task 会**快照**当时
+        的 ContextVar。若 worker 是在某个请求处理中被启动(如 start_batch 来自
+        POST 请求),它会冻结**那个请求用户的 project_ids**,然后长期(可能数小时)
+        带着这份过期上下文跑 —— 既可能过窄(用户权限变更后仍用旧范围),也让
+        行为依赖"谁触发了它"这种隐式状态。
+
+      - worker 本就跨项目工作(OSS 队列是全局的;批量任务对每条写入显式带
+        project_id)。让它们显式进入系统上下文,行为可预测,且不再依赖"启动时
+        ContextVar 恰好为空"这一巧合。
+
+    幂等:每个任务有自己的 ContextVar 副本,这里 set 只影响当前任务。
+    """
+    current_project_ids.set([])
+    current_user_id.set(None)
+
+
 # ── 受隔离保护的实体 ─────────────────────────────────────────────────────
 # 用 with_loader_criteria 时必须给 ORM 类（不是 tablename）— 这样 SQLAlchemy
 # 才能在 subquery / relationship loader / join 子句里同样注入条件。

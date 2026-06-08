@@ -81,6 +81,8 @@ class OssSyncWorker:
             self._task = None
 
     async def _run(self) -> None:
+        from sidecar.db.tenant import enter_system_context
+        enter_system_context()  # OSS 队列是全局的,显式进入系统上下文(见 tenant.py)
         while not self._stop.is_set():
             try:
                 processed = await self._tick()
@@ -121,9 +123,20 @@ class OssSyncWorker:
 
         async def guarded(job):
             async with sem:
-                await self._process_one(job, storage)
+                try:
+                    await self._process_one(job, storage)
+                except Exception as e:
+                    # _process_one 内部已捕获常规上传异常并 _record_attempt;
+                    # 这里兜住它没料到的异常(如 DB 锁、取消),避免一个 job 崩溃
+                    # 把整批 gather 拖垮、让其余 job 卡在 running 永不恢复。
+                    logger.warning("oss job %s 处理异常,记一次尝试: %s", job.id, e)
+                    try:
+                        await self._record_attempt(job, f"unexpected: {e}")
+                    except Exception:
+                        logger.exception("oss job %s record_attempt 也失败", job.id)
 
-        await asyncio.gather(*(guarded(j) for j in jobs), return_exceptions=False)
+        # return_exceptions=True:即便 guarded 仍漏了某个异常,也不会取消其余 job。
+        await asyncio.gather(*(guarded(j) for j in jobs), return_exceptions=True)
         return len(jobs)
 
     async def _process_one(self, job: OssSyncJob, storage) -> None:

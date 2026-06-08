@@ -38,10 +38,13 @@ export function ProfileDialog({ open, onClose }: Props) {
 
   const handlePickFile = () => fileInputRef.current?.click()
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    e.target.value = ''  // 让重新选同一张图也能触发
-    if (!f) return
+  // 头像可以来自三个渠道:点击选文件 / 把图拖到头像方块 / 粘贴(剪贴板)。
+  // 全部走同一个 fileToAvatarDataUrl 路径,保持 256×256 + JPEG 一致。
+  const acceptAvatarFile = async (f: File) => {
+    if (!f.type.startsWith('image/')) {
+      toast.error('只接受 image/* 格式')
+      return
+    }
     setProcessing(true)
     try {
       const dataUrl = await fileToAvatarDataUrl(f, 256)
@@ -51,6 +54,55 @@ export function ProfileDialog({ open, onClose }: Props) {
     } finally {
       setProcessing(false)
     }
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // 让重新选同一张图也能触发
+    if (f) await acceptAvatarFile(f)
+  }
+
+  // 文档级 paste — 仅在 dialog 打开时挂载;若用户在输入框里粘贴文字
+  // 还是正常的,我们只在 clipboardData 里有图时才接管。
+  useEffect(() => {
+    if (!open) return
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (it.kind === 'file' && it.type.startsWith('image/')) {
+          const f = it.getAsFile()
+          if (f) {
+            e.preventDefault()
+            void acceptAvatarFile(f)
+            return
+          }
+        }
+      }
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [open])
+
+  // 拖拽:浏览器默认 drop=打开新页面,必须 preventDefault。只挂在头像方块。
+  const [dragOver, setDragOver] = useState(false)
+  const onAvatarDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    setDragOver(true)
+  }
+  const onAvatarDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+  const onAvatarDragLeave = () => setDragOver(false)
+  const onAvatarDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const f = Array.from(e.dataTransfer.files).find((it) => it.type.startsWith('image/'))
+    if (f) void acceptAvatarFile(f)
   }
 
   const handleClearAvatar = () => setAvatarUrl('')
@@ -88,13 +140,19 @@ export function ProfileDialog({ open, onClose }: Props) {
               <InfoHint text="本地选图后自动裁成正方形 256×256 并 JPEG 压缩；不会泄漏原图分辨率。" />
             </Label>
             <div className="flex items-center gap-3">
-              {/* 头像预览 */}
+              {/* 头像预览 — 也是 drop target,拖图进来直接换头像 */}
               <div
+                onDragEnter={onAvatarDragEnter}
+                onDragOver={onAvatarDragOver}
+                onDragLeave={onAvatarDragLeave}
+                onDrop={onAvatarDrop}
+                title="可直接把图片拖到这里 / 在弹窗任意位置 Ctrl+V 粘贴截图"
                 className={cn(
                   'relative h-16 w-16 shrink-0 rounded-full overflow-hidden flex items-center justify-center',
                   avatarUrl
                     ? 'ring-1 ring-foreground/10'
                     : 'bg-foreground/5 text-foreground/55 text-[20px] font-medium',
+                  dragOver && 'ring-2 ring-accent',
                 )}
               >
                 {avatarUrl ? (

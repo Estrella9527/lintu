@@ -344,6 +344,91 @@ class OpenAICompatProvider(ImageProvider):
 
         return {"image_data": image_data, "cost_usd": cost}
 
+    async def generate_text2img(self, prompt: str, **kwargs) -> dict:
+        """Pure text→image. Routes to /v1/images/generations (no input image).
+
+        For seedream we reuse `_generate_via_seedream(image_path=None,...)`
+        — the helper already handles the no-image case. For OpenAI-compatible
+        Images API models (gpt-image-* / dall-e / flux / imagen) we POST a
+        plain JSON {prompt, model, n, size} to /v1/images/generations.
+
+        Returns {image_data: bytes, cost_usd: float}, same shape as
+        generate_image() so the dispatcher can treat them uniformly.
+        """
+        if _is_seedream(self.model):
+            # Seedream 4.x accepts text-only generations by omitting `image`.
+            url = _build_url(self.base_url, "/images/generations")
+            config_size = (get_setting("image_output_size") or "").strip()
+            size = kwargs.get("size") or _normalize_seedream_size(config_size) or "4K"
+            body = {
+                "model": self.model, "prompt": prompt, "size": size,
+                "watermark": False, "response_format": "b64_json",
+            }
+            timeout = httpx.Timeout(connect=15, read=180, write=60, pool=60)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, headers=self._headers, json=body)
+                if resp.status_code >= 400:
+                    preview = (resp.text or "")[:500]
+                    raise httpx.HTTPStatusError(
+                        f"{resp.status_code} on /v1/images/generations (seedream text2img): {preview}",
+                        request=resp.request, response=resp,
+                    )
+                data = resp.json()
+            entry = (data.get("data") or [{}])[0]
+            b64 = entry.get("b64_json", "")
+            if b64:
+                image_data = base64.b64decode(b64)
+            else:
+                url_result = entry.get("url", "")
+                if not url_result:
+                    raise ValueError(f"No image data in seedream response: {str(data)[:300]}")
+                async with httpx.AsyncClient(timeout=60) as client:
+                    img_resp = await client.get(url_result)
+                    img_resp.raise_for_status()
+                    image_data = img_resp.content
+            return {"image_data": image_data, "cost_usd": 0.02}
+
+        url = _build_url(self.base_url, "/images/generations")
+        config_size = (get_setting("image_output_size") or "").strip()
+        size = (
+            kwargs.get("size")
+            or config_size
+            or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
+        )
+        payload = {"model": self.model, "prompt": prompt, "n": 1, "size": size}
+        if not _is_images_api_model(self.model) or "dall-e" in self.model.lower():
+            payload["response_format"] = "b64_json"
+
+        timeout = httpx.Timeout(connect=15, read=360, write=60, pool=60)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=self._headers, json=payload)
+            if resp.status_code >= 400:
+                preview = (resp.text or "")[:500]
+                raise httpx.HTTPStatusError(
+                    f"{resp.status_code} on /v1/images/generations (text2img): {preview}",
+                    request=resp.request, response=resp,
+                )
+            data = resp.json()
+
+        entry = (data.get("data") or [{}])[0]
+        b64 = entry.get("b64_json", "")
+        if b64:
+            image_data = base64.b64decode(b64)
+        else:
+            url_result = entry.get("url", "")
+            if not url_result:
+                raise ValueError(f"No image data in response: {str(data)[:300]}")
+            async with httpx.AsyncClient(timeout=60) as client:
+                img_resp = await client.get(url_result)
+                img_resp.raise_for_status()
+                image_data = img_resp.content
+
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("input_tokens", 0))
+        out_tok = int(usage.get("output_tokens", 0))
+        cost = (in_tok + out_tok) * 0.00001 if (in_tok or out_tok) else 0.02
+        return {"image_data": image_data, "cost_usd": cost}
+
     async def _generate_via_images_api(self, image_path: str, prompt: str, **kwargs) -> dict:
         """OpenAI Images API — POST /v1/images/edits with multipart/form-data.
 
@@ -357,8 +442,19 @@ class OpenAICompatProvider(ImageProvider):
         if _is_seedream(self.model):
             return await self._generate_via_seedream(image_path, prompt, **kwargs)
 
-        # Generation path — send ORIGINAL bytes. No PIL decode / re-encode.
-        img_bytes, ext, mime = _read_original_bytes(image_path)
+        # v0.3 PR-8: 三种 image 来源,按优先级:
+        #   1. compose_bytes — 外部已经合成好的 RGBA PNG(outpaint:原图按 align
+        #      放进透明 canvas;这种情况完全替代原图)
+        #   2. image_path — 默认走原图字节,不动
+        # mask_bytes 单独传 — inpaint / eraser 时,告诉模型"只改 mask=白的区域"。
+        # OpenAI /v1/images/edits 接受 multipart 的 mask 字段(白=改,黑=保)。
+        compose_bytes: bytes | None = kwargs.get("compose_bytes")
+        mask_bytes: bytes | None = kwargs.get("mask_bytes")
+        if compose_bytes is not None:
+            img_bytes, ext, mime = compose_bytes, "png", "image/png"
+        else:
+            # Generation path — send ORIGINAL bytes. No PIL decode / re-encode.
+            img_bytes, ext, mime = _read_original_bytes(image_path)
         url = _build_url(self.base_url, "/images/edits")
         # gpt-image-2 reverse-engineered proxies regularly take 60-300s to
         # return one image. We give a generous 360s read budget so a healthy
@@ -374,9 +470,14 @@ class OpenAICompatProvider(ImageProvider):
             or config_size
             or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
         )
-        files = {
+        files: dict = {
             "image": (f"seed.{ext}", img_bytes, mime),
         }
+        if mask_bytes is not None:
+            # OpenAI images/edits API:mask 必须是 PNG,跟 image 同尺寸;
+            # alpha 透明(或纯黑) = 保留原像素,不透明白色 = 让模型改写。
+            # 我们的画笔涂抹 export 出 white-on-black PNG,符合 mask 语义。
+            files["mask"] = ("mask.png", mask_bytes, "image/png")
         form = {
             "model": self.model,
             "prompt": prompt,

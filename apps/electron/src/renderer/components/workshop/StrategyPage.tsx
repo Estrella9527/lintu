@@ -1,10 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
-import { workshopPresetAtom } from '@/atoms/workshop'
+import {
+  workshopPresetAtom,
+  workshopSeedsByKeyAtom,
+  workshopSeedsKey,
+} from '@/atoms/workshop'
 import { SeedSelector } from './SeedSelector'
 import { ParameterForm, type FieldConfig } from './ParameterForm'
 import { Button } from '@/components/ui/button'
@@ -24,7 +28,19 @@ export function StrategyPage({ taskType, fields, maxSeedImages, strategyId }: St
   const projectId = useAtomValue(activeProjectIdAtom)
   const [preset, setPreset] = useAtom(workshopPresetAtom)
   const queryClient = useQueryClient()
-  const [seeds, setSeeds] = useState<ImageRecord[]>([])
+
+  // seeds 持久化到 atom,按 (project, taskType) 分桶 — 切换工坊 tab / 切别的
+  // 模块再回来,种子选择不再丢。
+  const [seedsByKey, setSeedsByKey] = useAtom(workshopSeedsByKeyAtom)
+  const seedKey = workshopSeedsKey(projectId, taskType)
+  const seeds = seedsByKey[seedKey] ?? []
+  const setSeeds = useCallback((next: ImageRecord[] | ((prev: ImageRecord[]) => ImageRecord[])) => {
+    setSeedsByKey((prev) => {
+      const cur = prev[seedKey] ?? []
+      const value = typeof next === 'function' ? (next as (p: ImageRecord[]) => ImageRecord[])(cur) : next
+      return { ...prev, [seedKey]: value }
+    })
+  }, [seedKey, setSeedsByKey])
   const [params, setParams] = useState<Record<string, any>>(() => {
     const defaults: Record<string, any> = {}
     fields.forEach((f) => { if (f.default !== undefined) defaults[f.name] = f.default })

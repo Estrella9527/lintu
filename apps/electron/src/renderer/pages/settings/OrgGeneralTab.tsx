@@ -41,10 +41,21 @@ export function OrgGeneralTab() {
 
   const handlePickLogo = () => fileInputRef.current?.click()
 
-  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    e.target.value = ''
-    if (!f) return
+  // 注意:canEdit 必须在依赖它的 useEffect / 回调之前声明,否则
+  // useEffect 的 deps 数组在渲染阶段就要读这个变量,触发 ReferenceError
+  // (temporal dead zone),整页直接挂掉。
+  const canEdit = !!user?.is_platform_owner ||
+    activeOrg?.my_role === 'owner' ||
+    activeOrg?.my_role === 'admin'
+
+  // 同时支持 input / 拖拽 / 粘贴三种渠道,全部走同一份 fileToAvatarDataUrl
+  // 处理(256×256 JPEG)。canEdit=false 时短路,普通成员粘到 logo 区不会改。
+  const acceptLogoFile = async (f: File) => {
+    if (!canEdit) return
+    if (!f.type.startsWith('image/')) {
+      toast.error('只接受 image/* 格式')
+      return
+    }
     setProcessingLogo(true)
     try {
       const dataUrl = await fileToAvatarDataUrl(f, 256)
@@ -56,11 +67,65 @@ export function OrgGeneralTab() {
     }
   }
 
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''
+    if (f) await acceptLogoFile(f)
+  }
+
   const handleClearLogo = () => setLogoUrl('')
 
-  const canEdit = !!user?.is_platform_owner ||
-    activeOrg?.my_role === 'owner' ||
-    activeOrg?.my_role === 'admin'
+  // 文档级 paste — 这个 Tab 是设置页一个面板,paste 不像 ProfileDialog
+  // 那么排他;只在 paste 时刚好聚焦在本 tab 容器内时接管,避免抢 input。
+  const tabContainerRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!canEdit) return
+      // 只接管"本 tab 容器内的 paste",避免影响其他 tab 同时挂载的输入框
+      const target = e.target as HTMLElement | null
+      if (!target) return
+      if (!tabContainerRef.current?.contains(target)) return
+      const tag = target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (it.kind === 'file' && it.type.startsWith('image/')) {
+          const f = it.getAsFile()
+          if (f) {
+            e.preventDefault()
+            void acceptLogoFile(f)
+            return
+          }
+        }
+      }
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [canEdit])
+
+  const [logoDragOver, setLogoDragOver] = useState(false)
+  const onLogoDragEnter = (e: React.DragEvent) => {
+    if (!canEdit) return
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    setLogoDragOver(true)
+  }
+  const onLogoDragOver = (e: React.DragEvent) => {
+    if (!canEdit) return
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+  const onLogoDragLeave = () => setLogoDragOver(false)
+  const onLogoDrop = (e: React.DragEvent) => {
+    if (!canEdit) return
+    e.preventDefault()
+    setLogoDragOver(false)
+    const f = Array.from(e.dataTransfer.files).find((it) => it.type.startsWith('image/'))
+    if (f) void acceptLogoFile(f)
+  }
 
   const saveMutation = useMutation({
     mutationFn: () => api.orgs.update(activeOrg!.id, {
@@ -95,7 +160,7 @@ export function OrgGeneralTab() {
   }
 
   return (
-    <div className="space-y-5 max-w-xl">
+    <div ref={tabContainerRef} className="space-y-5 max-w-xl">
       {/* 概览卡片 */}
       <div className="rounded-lg border border-foreground/8 bg-foreground/[0.015] p-4 flex items-center gap-3">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-accent to-accent/70 text-background overflow-hidden">
@@ -151,13 +216,19 @@ export function OrgGeneralTab() {
             <InfoHint text="本地选图后自动裁成正方形 256×256 并 JPEG 压缩；建议上传方形图片。" />
           </div>
           <div className="flex items-center gap-3">
-            {/* logo 预览 */}
+            {/* logo 预览 — 同时是 drop target */}
             <div
+              onDragEnter={onLogoDragEnter}
+              onDragOver={onLogoDragOver}
+              onDragLeave={onLogoDragLeave}
+              onDrop={onLogoDrop}
+              title={canEdit ? '可直接把图片拖到这里 / 在本页 Ctrl+V 粘贴截图' : ''}
               className={cn(
                 'relative h-16 w-16 shrink-0 rounded-lg overflow-hidden flex items-center justify-center',
                 logoUrl
                   ? 'ring-1 ring-foreground/10'
                   : 'bg-gradient-to-br from-accent to-accent/70 text-background',
+                logoDragOver && 'ring-2 ring-accent',
               )}
             >
               {logoUrl ? (

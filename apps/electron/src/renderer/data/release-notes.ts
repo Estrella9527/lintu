@@ -25,6 +25,47 @@ export interface ReleaseEntry {
 
 export const RELEASES: ReleaseEntry[] = [
   {
+    version: '0.3.0',
+    date: '2026-06-05',
+    highlights: 'AI 工坊重做 — 创作画布(白板)+ 批量策略 双模式,「打样 → 固化 → 量产」一条线',
+    sections: [
+      {
+        kind: 'added',
+        items: [
+          '**AI 工坊「创作画布」模式**:基于 react-konva 的白板,拖入/粘贴/资产库选图,真实分辨率渲染,滚轮以光标为中心缩放,空格 + 拖拽平移,⌘Z / ⌘⇧Z 撤销/重做,8 手柄缩放,自动 fit 视图',
+          '**上下文 AI 操作栏(ContextBar)**:选中图后下方浮出,左侧 Ask AI 渐变主入口 + 一排操作按钮(任意扩图 / 抠图 / 超分 / 中文文字),空间不足自动翻转到上方',
+          '**Ask AI 自然语言改图**:浮层输入「把天空换成晚霞」「去掉游客」等指令,生成候选 → 选一张替换原对象或新增到画布',
+          '**任意尺寸扩图**:对话框输入目标 W×H 或选预设比例(1:1 / 16:9 / 3:4 / 21:9 等),原图区域像素保真,仅新增区域生成(真 8 手柄拖拽留 v0.4)',
+          '**底部 Prompt 栏**:文生图 / 图生图入口切换,模型 / 比例 / 速度(草稿 ↔ 精修)/ 数量 / 风格档案 一栏配齐;⌘Enter 一键生成',
+          '**候选变体网格**:一次生成 N 张,带 草稿/精修 + 尺寸 + cost 标识,hover 显示「替换原图」「新增到画布」两个动作',
+          '**右面板属性页**:当前对象元信息(尺寸 / 位置)+ 删除 + 生成参数快照 + 页脚「存为策略」「加入资产库」',
+          '**存为策略 → 一键转批量**:画布上的探索一键固化为 Strategy(带「来自画布 📐」provenance + canvas_snapshot 完整快照),批量策略 mode 立即可选',
+          '**回画布微调**:批量策略 mode 里 hover「📐」策略 → 出现「回画布」按钮 → 切回创作画布并预填该策略的所有参数',
+          '**风格档案 StyleArchive**:设置 → 风格档案 Tab 新增 CRUD,挑一组参考图存为档案(如「晨曦丁达尔」);画布 Prompt 栏右下拉应用,保证跨图视觉一致',
+          '**资产库 / SeedSelector 加粘贴拖拽** ✨ 早期工作:整页接拖入,Ctrl+V 粘贴截图,SeedSelector 拖入图自动追加到种子选区',
+        ],
+      },
+      {
+        kind: 'improved',
+        items: [
+          'AI 工坊页头部改为 ModeTabs(创作画布 / 批量策略),同一时刻仅展示一个模式;v0.2 时期硬编码的 7 个内置 strategy tab 入口删除(策略本身仍在数据库,批量策略 mode 里继续可用)',
+          '后端新增 `POST /api/generate` 统一图像生成端点,9 个 type(text2img/img2img/outpaint/inpaint/matting/eraser/upscale/text-zh/edit)全部走单一端点;Phase 1 内全部路由到现有 OpenAICompatProvider 的 image2 模型(gpt-image-2 / seedream-2 等),Agent 阶段再做模型 routing',
+          '所有生成产物自动落 ImageRecord + 触发 OSS 同步,无需手动「加入资产库」',
+          '`OpenAICompatProvider` 加 `generate_text2img` 方法,/v1/images/generations 支持纯文生图(原来只有 /v1/images/edits 图生图)',
+          'Strategy 表扩展:加 provenance / canvas_snapshot / style_archive_id / speed / count_per_image 五个字段,向后兼容(老调用方不传也工作)',
+        ],
+      },
+      {
+        kind: 'fixed',
+        items: [
+          'apiFetchRaw 对 FormData / Blob / ArrayBuffer body 不再强塞 application/json — 让浏览器自己加 multipart boundary,修上传 422 missing-field 错误',
+          'OrgGeneralTab 设置页 canEdit 在 useEffect 之前未声明导致 TDZ 错误(整页白屏)',
+          '资产库 / 工坊上传文件按钮在 Electron 部分上下文 .click() 静默失败:把 `<input hidden>` 换成 sr-only 定位,所有上传按钮可靠触发',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.2.10',
     date: '2026-06-04',
     highlights: 'OSS 刷新按钮卡死体验修复 — 探测时显示 loading + 失败弹 toast',

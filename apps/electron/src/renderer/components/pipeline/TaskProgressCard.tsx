@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Pause, Play, X, FileText } from 'lucide-react'
+import { Pause, Play, X, FileText, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useTaskProgress } from '@/hooks/useTaskProgress'
 import type { TaskRecord, TaskProgressEvent } from '@/lib/types'
@@ -13,6 +13,7 @@ interface TaskProgressCardProps {
   onPause?: () => void
   onResume?: () => void
   onCancel?: () => void
+  onRetry?: () => void
   extraStats?: React.ReactNode
 }
 
@@ -22,10 +23,12 @@ export function TaskProgressCard({
   onPause,
   onResume,
   onCancel,
+  onRetry,
   extraStats,
 }: TaskProgressCardProps) {
   const isRunning = task.status === 'running'
   const isPaused = task.status === 'paused'
+  const isRetriable = task.status === 'failed' || task.status === 'cancelled'
   // Auto-subscribe when no external progress was provided AND the task is
   // running. `externalProgress === undefined` means "not passed" (parent
   // didn't opt out, so this card owns its stream). `null` from the parent
@@ -90,6 +93,11 @@ export function TaskProgressCard({
           {(isRunning || isPaused) && onCancel && (
             <Button variant="ghost" size="sm" onClick={onCancel} className="h-7 px-2 text-[12px] text-destructive">
               <X size={12} className="mr-1" /> 取消
+            </Button>
+          )}
+          {isRetriable && onRetry && (
+            <Button variant="ghost" size="sm" onClick={onRetry} className="h-7 px-2 text-[12px]">
+              <RotateCcw size={12} className="mr-1" /> 重试
             </Button>
           )}
         </div>

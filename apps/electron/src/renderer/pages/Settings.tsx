@@ -1,5 +1,5 @@
 import { useAtom, useAtomValue } from 'jotai'
-import { Building2, Cloud, Cog, Cpu, FileText, Info, ScrollText, ShieldCheck, Tags, Users, type LucideIcon } from 'lucide-react'
+import { Building2, Cloud, Cog, Cpu, FileText, Info, Palette, ScrollText, ShieldCheck, Tags, Users, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { settingsTabAtom, type SettingsTabId } from '@/atoms/navigation'
 import { activeOrgAtom } from '@/atoms/auth'
@@ -15,6 +15,7 @@ import { PlatformTab } from './settings/PlatformTab'
 import { AuditLogTab } from './settings/AuditLogTab'
 import { OSSConnectTab } from './settings/OSSConnectTab'
 import { AboutTab } from './settings/AboutTab'
+import { StyleArchiveTab } from './settings/StyleArchiveTab'
 
 interface NavItem {
   id: SettingsTabId
@@ -47,7 +48,8 @@ const SECTIONS: NavSection[] = [
     label: '当前项目',
     hint: '仅影响当前选中的项目 · 切项目会变',
     items: [
-      { id: 'members',       label: '项目成员',   icon: Users },
+      { id: 'members',         label: '项目成员',   icon: Users },
+      { id: 'style-archives',  label: '风格档案',   icon: Palette },
     ],
   },
   {
@@ -84,6 +86,7 @@ function TabContent({ id }: { id: SettingsTabId }) {
     case 'ai-provider': return <AIProviderTab />
     case 'prompt-library': return <PromptLibraryTab />
     case 'tag-system': return <TagSchemaTab />
+    case 'style-archives': return <StyleArchiveTab />
     case 'members': return <MembersTab />
     case 'audit-log': return <AuditLogTab />
     case 'oss-config': return <OSSConnectTab />

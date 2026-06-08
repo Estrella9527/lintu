@@ -112,6 +112,11 @@ export default function ReviewQueue() {
       toast.error('请先选择图片')
       return
     }
+    // 批量拒绝不可撤销:>1 张时二次确认,防误触一次毙掉一屏图。
+    if (decision === 'rejected' && ids.length > 1) {
+      const ok = window.confirm(`确定拒绝选中的 ${ids.length} 张图片？拒绝后将移出审核队列，不可批量撤销。`)
+      if (!ok) return
+    }
     decide.mutate({ ids, decision })
   }
 
@@ -283,7 +288,19 @@ function ReviewGrid({
                 alt={it.file_name}
                 className="w-full h-full object-cover"
                 loading="lazy"
-                onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.2' }}
+                onError={(e) => {
+                  // 缩略图可能还在后台生成,首次失败自动重试一次(加时间戳绕缓存);
+                  // 再失败才淡化。比直接淡化少误伤"刚生成还没就绪"的图。
+                  const el = e.target as HTMLImageElement
+                  const tries = Number(el.dataset.retry || '0')
+                  if (tries < 1) {
+                    el.dataset.retry = String(tries + 1)
+                    const base = api.images.thumbnailUrl(it.id, 300)
+                    setTimeout(() => { el.src = base + (base.includes('?') ? '&' : '?') + 'r=' + Date.now() }, 1200)
+                  } else {
+                    el.style.opacity = '0.2'
+                  }
+                }}
               />
               {showCheckbox && isSelected && (
                 <div className="absolute top-1.5 right-1.5 h-5 w-5 rounded-full bg-accent text-accent-foreground flex items-center justify-center shadow">

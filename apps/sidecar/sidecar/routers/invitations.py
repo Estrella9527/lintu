@@ -217,6 +217,7 @@ async def auto_accept_pending_invitations(db: AsyncSession, user: User) -> int:
     )).scalars().all()
 
     added = 0
+    new_member_ids: list[str] = []
     now = datetime.utcnow()
     for inv in pending:
         existing = await db.scalar(
@@ -227,12 +228,13 @@ async def auto_accept_pending_invitations(db: AsyncSession, user: User) -> int:
         if existing:
             inv.accepted_at = now
             continue
-        db.add(ProjectMember(
+        member = ProjectMember(
             project_id=inv.project_id,
             user_id=user.id,
             role=inv.role,
             invited_by=inv.invited_by,
-        ))
+        )
+        db.add(member)
         try:
             await db.flush()  # 立刻让 unique 约束兑现，避免后续 invitation 误以为成员未存在
         except IntegrityError:
@@ -240,5 +242,16 @@ async def auto_accept_pending_invitations(db: AsyncSession, user: User) -> int:
             inv.accepted_at = now
             continue
         inv.accepted_at = now
+        new_member_ids.append(member.id)
         added += 1
+
+    # 多设备同步(方案A):新加入的项目成员关系上云。worker 会在外层 commit 后
+    # 读到已落库的行;cloud sync 未配置时自动 no-op。
+    if new_member_ids:
+        try:
+            from sidecar.scheduler.cloud_sync_worker import enqueue_project_member_upsert
+            for mid in new_member_ids:
+                await enqueue_project_member_upsert(mid)
+        except Exception:
+            pass
     return added

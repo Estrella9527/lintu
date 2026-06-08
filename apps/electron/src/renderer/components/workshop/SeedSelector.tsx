@@ -1,19 +1,17 @@
-import { useMemo, useState } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAtomValue } from 'jotai'
 
-import { api } from '@/lib/api'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
 import { ThumbnailImage } from '@/components/asset-library/ThumbnailImage'
-import { FolderTree } from '@/components/asset-library/FolderTree'
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from '@/components/ui/dialog'
+import { ImageLightbox } from '@/components/asset-library/ImageLightbox'
+import { ImageDropOverlay } from '@/components/shared/ImageDropOverlay'
+import { SeedPickerDialog } from '@/components/workshop/SeedPickerDialog'
 import { cn } from '@/lib/utils'
-import { Check, FolderOpen, Search, Sparkles } from 'lucide-react'
+import { Eye, FolderOpen, Loader2, Upload, X } from 'lucide-react'
+import { useImageDropPaste } from '@/hooks/useImageDropPaste'
+import { useUploadImages } from '@/hooks/useUploadImages'
 import type { ImageRecord } from '@/lib/types'
 
 interface SeedSelectorProps {
@@ -22,16 +20,50 @@ interface SeedSelectorProps {
   maxSelect?: number
 }
 
-const PAGE_SIZE = 100
-
 export function SeedSelector({ selectedImages, onSelect, maxSelect }: SeedSelectorProps) {
   const [showPicker, setShowPicker] = useState(false)
+  const [lightbox, setLightbox] = useState<{ open: boolean; index: number }>({ open: false, index: 0 })
+  const projectId = useAtomValue(activeProjectIdAtom)
+  const queryClient = useQueryClient()
+  // dropRef 只挂在「下面那个"种子图区"」上,不覆盖按钮行 —— 否则拖拽时
+  // 按钮也会被罩住,用户在拖动过程中没法松手到按钮上,体验很怪。
+  const dropRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // 拖拽 / 粘贴 / 浏览本地 → 上传到当前项目 → 自动追加到 selectedImages。
+  // remaining 让 maxSelect 的硬上限继续生效:如果剩余配额是 2,但用户拖了
+  // 5 张图,我们仍上传 5 张(它们落到资产库不会丢),只是只把前 2 张选中,
+  // 其他 3 张托管给"从资产库选择"的人工补选。
+  const remaining = maxSelect == null ? Infinity : Math.max(0, maxSelect - selectedImages.length)
+  const { upload, uploading } = useUploadImages({
+    projectId,
+    onSuccess: ({ images, duplicate_images }) => {
+      // 把"新上传"和"已在资产库的同 hash 图"统一对待 — 用户拖图的本意是
+      // "把这张图作为种子",不应该因为我们恰好已经存过它就让 UI 显示空白。
+      const candidates = [...images, ...duplicate_images]
+      if (!candidates.length) return
+      queryClient.invalidateQueries({ queryKey: ['images', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['seed-picker', projectId] })
+      const existingIds = new Set(selectedImages.map((i) => i.id))
+      const fresh = candidates.filter((i) => !existingIds.has(i.id))
+      const slotsLeft = maxSelect == null ? fresh.length : Math.max(0, maxSelect - selectedImages.length)
+      const toAdd = fresh.slice(0, slotsLeft)
+      if (toAdd.length) onSelect([...selectedImages, ...toAdd])
+    },
+  })
+  const { isDragging } = useImageDropPaste({
+    dropRef,
+    enabled: !!projectId && remaining > 0,
+    onFiles: (files) => { void upload(files) },
+  })
+
+  const removeOne = (id: string) => onSelect(selectedImages.filter((s) => s.id !== id))
 
   return (
     <>
       <div className="space-y-3">
-        {/* Action row */}
-        <div className="flex gap-2 items-center">
+        {/* 第一行:操作按钮(永远可点,不被 overlay 罩住) */}
+        <div className="flex gap-2 items-center flex-wrap">
           <Button
             variant="outline" size="sm" className="text-[12px] h-8"
             onClick={() => setShowPicker(true)}
@@ -39,9 +71,33 @@ export function SeedSelector({ selectedImages, onSelect, maxSelect }: SeedSelect
             <FolderOpen size={13} className="mr-1.5" />
             从资产库选择 …
           </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="sr-only"
+            style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+            onChange={(e) => {
+              const files = Array.from(e.target.files || [])
+              if (files.length) void upload(files)
+              if (fileInputRef.current) fileInputRef.current.value = ''
+            }}
+          />
+          <Button
+            variant="outline" size="sm" className="text-[12px] h-8"
+            disabled={uploading || !projectId || remaining === 0}
+            onClick={() => fileInputRef.current?.click()}
+            title="也可直接拖入下方框 / Ctrl+V 粘贴截图"
+          >
+            {uploading
+              ? <Loader2 size={13} className="mr-1.5 animate-spin" />
+              : <Upload size={13} className="mr-1.5" />}
+            上传新图作为种子
+          </Button>
           {selectedImages.length > 0 && (
             <Button
-              variant="ghost" size="sm" className="text-[11px] h-8 text-foreground/40"
+              variant="ghost" size="sm" className="text-[11px] h-8 text-foreground/40 ml-auto"
               onClick={() => onSelect([])}
             >
               清空 ({selectedImages.length})
@@ -49,35 +105,77 @@ export function SeedSelector({ selectedImages, onSelect, maxSelect }: SeedSelect
           )}
         </div>
 
-        {/* Selected preview chips */}
-        {selectedImages.length > 0 ? (
-          <div>
-            <div className="text-[12px] text-foreground/55 mb-2">
-              已选 {selectedImages.length} 张{maxSelect ? ` / 最多 ${maxSelect} 张` : ''}
+        {/* 第二行:种子图展示区 / 拖拽落点 */}
+        <div
+          ref={dropRef}
+          className={cn(
+            'relative rounded-lg border border-dashed border-foreground/12 bg-foreground/[0.015]',
+            'min-h-[160px] p-3 transition-colors',
+            isDragging && 'border-accent/45 bg-accent/[0.04]',
+          )}
+        >
+          <ImageDropOverlay
+            visible={isDragging}
+            tone="accent"
+            title="松手即可上传 + 自动作为种子图"
+            subtitle={maxSelect
+              ? `还可加入 ${remaining} 张 · 多余的图也会进资产库`
+              : '将作为本次生成的种子图'}
+          />
+          {selectedImages.length > 0 ? (
+            <>
+              <div className="text-[11.5px] text-foreground/50 mb-2 px-0.5">
+                已选 {selectedImages.length} 张{maxSelect ? ` / 最多 ${maxSelect} 张` : ''}
+                <span className="ml-2 text-foreground/35">· hover 缩略图可预览或移除</span>
+              </div>
+              <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(112px, 1fr))' }}>
+                {selectedImages.map((img, idx) => (
+                  <div
+                    key={img.id}
+                    className="group relative aspect-square rounded-md overflow-hidden ring-1 ring-foreground/8"
+                    title={img.file_name}
+                  >
+                    <ThumbnailImage
+                      imageId={img.id}
+                      size={300}
+                      version={img.updated_at}
+                      className="absolute inset-0 w-full h-full"
+                    />
+                    {/* hover 蒙层 + 两个操作 icon */}
+                    <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/55 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setLightbox({ open: true, index: idx }) }}
+                        className="h-7 w-7 rounded-md bg-white/95 text-foreground hover:bg-white flex items-center justify-center"
+                        title="预览"
+                      >
+                        <Eye size={14} strokeWidth={1.75} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); removeOne(img.id) }}
+                        className="h-7 w-7 rounded-md bg-white/95 text-destructive hover:bg-white flex items-center justify-center"
+                        title="从种子中移除(图片仍保留在资产库)"
+                      >
+                        <X size={14} strokeWidth={2} />
+                      </button>
+                    </div>
+                    {/* 文件名小条(下方半透明) */}
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-1.5 py-1">
+                      <p className="text-[9.5px] text-white/95 truncate">{img.file_name}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center min-h-[136px] gap-1.5 text-foreground/40">
+              <Upload size={20} strokeWidth={1.4} className="text-foreground/30" />
+              <div className="text-[12.5px]">把图片拖到这里 · Ctrl+V 粘贴截图 · 或点上方按钮挑选</div>
+              <div className="text-[11px] text-foreground/30">支持 JPG / PNG / WebP / HEIC,单文件 ≤ 50 MB</div>
             </div>
-            <div className="flex gap-2 flex-wrap">
-              {selectedImages.slice(0, 12).map((img) => (
-                <ThumbnailImage
-                  key={img.id}
-                  imageId={img.id}
-                  size={128}
-                  version={img.updated_at}
-                  className="w-16 h-16 rounded-md"
-                  onClick={() => onSelect(selectedImages.filter((s) => s.id !== img.id))}
-                />
-              ))}
-              {selectedImages.length > 12 && (
-                <div className="w-16 h-16 rounded-md bg-foreground/[0.04] flex items-center justify-center text-[12px] text-foreground/40">
-                  +{selectedImages.length - 12}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-center h-16 rounded-md bg-foreground/[0.02] text-[12px] text-foreground/30">
-            点击上方按钮挑选种子图（支持文件夹/批量）
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <SeedPickerDialog
@@ -87,239 +185,14 @@ export function SeedSelector({ selectedImages, onSelect, maxSelect }: SeedSelect
         onConfirm={(imgs) => { onSelect(imgs); setShowPicker(false) }}
         maxSelect={maxSelect}
       />
+
+      <ImageLightbox
+        open={lightbox.open}
+        images={selectedImages}
+        initialIndex={lightbox.index}
+        onClose={() => setLightbox((s) => ({ ...s, open: false }))}
+      />
     </>
   )
 }
 
-// ── Picker Dialog ──────────────────────────────────────────────────────────
-
-interface SeedPickerDialogProps {
-  open: boolean
-  onClose: () => void
-  initialSelected: ImageRecord[]
-  onConfirm: (imgs: ImageRecord[]) => void
-  maxSelect?: number
-}
-
-function SeedPickerDialog({ open, onClose, initialSelected, onConfirm, maxSelect }: SeedPickerDialogProps) {
-  const projectId = useAtomValue(activeProjectIdAtom)
-  const [selected, setSelected] = useState<Map<string, ImageRecord>>(
-    () => new Map(initialSelected.map((it) => [it.id, it]))
-  )
-  const [folder, setFolder] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [sourceType, setSourceType] = useState<'all' | 'original' | 'generated'>('all')
-  const [lastClickedIdx, setLastClickedIdx] = useState<number | null>(null)
-
-  // Reset selection when dialog re-opens
-  useState(() => {
-    if (open) {
-      setSelected(new Map(initialSelected.map((it) => [it.id, it])))
-    }
-  })
-
-  const { data, fetchNextPage, hasNextPage, isLoading, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: ['seed-picker', projectId, folder, search, sourceType],
-    queryFn: ({ pageParam = 0 }) => {
-      if (!projectId) return Promise.resolve({ items: [], total: 0 })
-      return api.images.list({
-        project_id: projectId,
-        offset: pageParam as number,
-        limit: PAGE_SIZE,
-        search: search || undefined,
-        source_type: sourceType !== 'all' ? sourceType : undefined,
-        ...(folder === '' ? { folder: '' } : folder ? { folder_prefix: folder } : {}),
-        status: 'passed',
-      })
-    },
-    getNextPageParam: (lastPage, pages) =>
-      lastPage.items.length === PAGE_SIZE ? pages.length * PAGE_SIZE : undefined,
-    initialPageParam: 0,
-    enabled: open && !!projectId,
-  })
-
-  const allImages = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data])
-  const total = data?.pages[0]?.total ?? 0
-  const allSelectedInView = allImages.length > 0 && allImages.every((img) => selected.has(img.id))
-
-  const toggleOne = (img: ImageRecord, idx: number, e: React.MouseEvent) => {
-    if (e.shiftKey && lastClickedIdx !== null && lastClickedIdx !== idx) {
-      // Range select between lastClickedIdx and idx
-      const [from, to] = lastClickedIdx < idx ? [lastClickedIdx, idx] : [idx, lastClickedIdx]
-      const next = new Map(selected)
-      const targetState = !selected.has(img.id)
-      for (let i = from; i <= to; i++) {
-        const item = allImages[i]
-        if (!item) continue
-        if (targetState) {
-          if (!maxSelect || next.size < maxSelect) next.set(item.id, item)
-        } else {
-          next.delete(item.id)
-        }
-      }
-      setSelected(next)
-    } else {
-      const next = new Map(selected)
-      if (next.has(img.id)) next.delete(img.id)
-      else if (!maxSelect || next.size < maxSelect) next.set(img.id, img)
-      setSelected(next)
-    }
-    setLastClickedIdx(idx)
-  }
-
-  const toggleAllInView = () => {
-    const next = new Map(selected)
-    if (allSelectedInView) {
-      allImages.forEach((img) => next.delete(img.id))
-    } else {
-      for (const img of allImages) {
-        if (maxSelect && next.size >= maxSelect) break
-        next.set(img.id, img)
-      }
-    }
-    setSelected(next)
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-5xl h-[80vh] p-0 overflow-hidden flex flex-col">
-        <DialogHeader className="px-5 py-3 border-b border-foreground/5">
-          <DialogTitle className="text-[14px] font-medium">选择种子图</DialogTitle>
-        </DialogHeader>
-
-        {/* Body: 2-column layout */}
-        <div className="flex-1 min-h-0 flex">
-          {/* Folder tree */}
-          <aside className="w-52 shrink-0 border-r border-foreground/5 overflow-y-auto px-2 py-3">
-            <h4 className="text-[10px] font-medium text-foreground/45 mb-1.5 px-1.5">文件夹</h4>
-            {projectId && (
-              <FolderTree
-                projectId={projectId}
-                selected={folder}
-                onSelect={(p) => setFolder(p)}
-              />
-            )}
-          </aside>
-
-          {/* Grid + filter */}
-          <div className="flex-1 min-w-0 flex flex-col">
-            {/* Toolbar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-foreground/5">
-              <div className="relative flex-1 max-w-sm">
-                <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-foreground/35" />
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="按文件名搜索"
-                  className="h-7 pl-7 text-[12px]"
-                />
-              </div>
-              <select
-                value={sourceType}
-                onChange={(e) => setSourceType(e.target.value as any)}
-                className="h-7 rounded-md border border-foreground/15 bg-background px-2 text-[11px]"
-              >
-                <option value="all">全部来源</option>
-                <option value="original">仅原图</option>
-                <option value="generated">仅 AI 生成</option>
-              </select>
-              <Button
-                variant="ghost" size="sm" className="h-7 text-[11px]"
-                onClick={toggleAllInView}
-                disabled={allImages.length === 0}
-              >
-                {allSelectedInView ? '全不选' : `全选当前 (${allImages.length})`}
-              </Button>
-              <span className="ml-auto text-[11px] text-foreground/45 tabular-nums">
-                共 {total.toLocaleString()} · 已选 {selected.size}{maxSelect ? ` / ${maxSelect}` : ''}
-              </span>
-            </div>
-
-            {/* Grid */}
-            <div className="flex-1 overflow-y-auto px-4 py-3">
-              {isLoading ? (
-                <div className="grid grid-cols-6 gap-3">
-                  {Array.from({ length: 18 }).map((_, i) => (
-                    <div key={i} className="aspect-square rounded-md bg-foreground/[0.04] animate-pulse" />
-                  ))}
-                </div>
-              ) : allImages.length === 0 ? (
-                <div className="flex items-center justify-center h-48 text-[12px] text-foreground/40">
-                  当前筛选下没有图片
-                </div>
-              ) : (
-                <>
-                  <div className="grid grid-cols-6 gap-3">
-                    {allImages.map((img, idx) => {
-                      const isSel = selected.has(img.id)
-                      return (
-                        <button
-                          key={img.id}
-                          onClick={(e) => toggleOne(img, idx, e)}
-                          className={cn(
-                            'relative rounded-md overflow-hidden bg-foreground/[0.04] transition-all',
-                            'ring-1 ring-transparent hover:ring-foreground/15',
-                            isSel && 'ring-2 ring-accent',
-                          )}
-                          title={`${img.file_name}${img.relative_dir ? ` · ${img.relative_dir}` : ''}`}
-                        >
-                          <ThumbnailImage
-                            imageId={img.id}
-                            size={300}
-                            version={img.updated_at}
-                            className="aspect-square"
-                          />
-                          {isSel && (
-                            <div className="absolute top-1 left-1 w-5 h-5 rounded-sm bg-accent text-white flex items-center justify-center">
-                              <Check size={12} strokeWidth={3} />
-                            </div>
-                          )}
-                          {img.source_type === 'generated' && (
-                            <Badge
-                              variant="secondary"
-                              className="absolute top-1 right-1 text-[8px] px-1 py-0 bg-info/30 text-white border-info/40 backdrop-blur"
-                            >
-                              <Sparkles size={8} className="mr-0.5" /> AI
-                            </Badge>
-                          )}
-                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent p-1">
-                            <p className="text-[9px] text-white/90 truncate">{img.file_name}</p>
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                  {hasNextPage && (
-                    <div className="text-center mt-4">
-                      <Button
-                        variant="ghost" size="sm" className="text-[11px]"
-                        disabled={isFetchingNextPage}
-                        onClick={() => fetchNextPage()}
-                      >
-                        {isFetchingNextPage ? '加载中…' : '加载更多'}
-                      </Button>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-foreground/5 flex items-center justify-between gap-3">
-          <span className="text-[12px] text-foreground/55">
-            提示：<kbd className="px-1 py-0.5 rounded bg-foreground/10 text-foreground/65 mx-1">Shift</kbd>+点击 范围选；
-            支持按文件夹与来源筛选
-          </span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onClose}>取消</Button>
-            <Button size="sm" onClick={() => onConfirm(Array.from(selected.values()))}>
-              确定 ({selected.size})
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}

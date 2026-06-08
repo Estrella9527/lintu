@@ -34,7 +34,9 @@ export interface CurrentOrgSummary {
 }
 
 /** 当前激活组织 id — 跨重启持久化（每次启动会跟 /api/orgs 列表对齐）。 */
-export const activeOrgIdAtom = atomWithStorage<string | null>('lintu-active-org', null)
+export const activeOrgIdAtom = atomWithStorage<string | null>('lintu-active-org', null, undefined, {
+  getOnInit: true,
+})
 
 /** 「我所属的组织」列表 — 启动后第一次 /api/orgs 拿到后填进来。
  *  之后切组织时会单独 fetch；新建 / 改组织也会 invalidate。 */

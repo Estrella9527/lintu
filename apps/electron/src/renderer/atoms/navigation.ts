@@ -13,7 +13,14 @@ export type ModuleId =
   | 'distribution-center'
   | 'settings'
 
-export const activeModuleAtom = atom<ModuleId>('dashboard')
+// 持久化:刷新 / 重启后回到上次所在模块,配合画布快照让创作工作不被打断。
+// getOnInit:true 必须 — jotai 默认不读 localStorage(只用 initialValue)。
+export const activeModuleAtom = atomWithStorage<ModuleId>(
+  'lintu.activeModule',
+  'dashboard',
+  undefined,
+  { getOnInit: true },
+)
 
 /** Optional sub-tab selector for the Settings module. Set together with
  * activeModuleAtom='settings' to deep-link into a specific Settings tab. */
@@ -25,6 +32,7 @@ export type SettingsTabId =
   | 'ai-provider'
   | 'prompt-library'
   | 'tag-system'
+  | 'style-archives'
   | 'members'
   | 'audit-log'
   | 'oss-config'
@@ -32,7 +40,12 @@ export type SettingsTabId =
 export const settingsTabAtom = atom<SettingsTabId>('general')
 
 /** Persist the sidebar collapse preference between sessions. */
-export const sidebarCollapsedAtom = atomWithStorage<boolean>('lintu.sidebarCollapsed', false)
+export const sidebarCollapsedAtom = atomWithStorage<boolean>(
+  'lintu.sidebarCollapsed',
+  false,
+  undefined,
+  { getOnInit: true },
+)
 
 
 /** Cross-page deep-link request for the Asset Library. Caller sets this

@@ -17,12 +17,15 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete as sql_delete, select
+from sqlalchemy import and_, delete as sql_delete, or_, select
 
 from sidecar.config import LINTU_INTERNAL_SYNC_TOKEN
-from sidecar.db.models import ApiKey, Image, Project, Tag
+from sidecar.db.models import (
+    ApiKey, Image, Organization, OrganizationMember, Project,
+    ProjectMember, SyncTombstone, Tag, User,
+)
 from sidecar.db.session import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,6 +93,7 @@ class ProjectSyncBody(BaseModel):
     originals_path: str
     workspace_path: str
     color: Optional[str] = None
+    org_id: Optional[str] = None
 
 
 class BulkProjectsBody(BaseModel):
@@ -118,6 +122,65 @@ class DeleteEventsBody(BaseModel):
     images: list[str] = []
     projects: list[str] = []
     api_keys: list[str] = []
+    users: list[str] = []
+    orgs: list[str] = []
+    org_members: list[str] = []
+    project_members: list[str] = []
+
+
+# ── 多设备同步:身份层实体(方案A 需要,新设备登录要先有 user/org/成员关系)──
+
+class UserSyncBody(BaseModel):
+    id: str
+    phone: str
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    status: Optional[str] = "active"
+    is_root: bool = False
+    is_platform_owner: bool = False
+
+
+class BulkUsersBody(BaseModel):
+    users: list[UserSyncBody]
+
+
+class OrgSyncBody(BaseModel):
+    id: str
+    name: str
+    slug: str
+    logo_url: Optional[str] = None
+    contact_email: Optional[str] = None
+    plan: Optional[str] = "free"
+    storage_quota_gb: Optional[int] = 10
+    status: Optional[str] = "active"
+
+
+class BulkOrgsBody(BaseModel):
+    orgs: list[OrgSyncBody]
+
+
+class OrgMemberSyncBody(BaseModel):
+    id: str
+    org_id: str
+    user_id: str
+    role: Optional[str] = "member"
+    invited_by: Optional[str] = None
+
+
+class BulkOrgMembersBody(BaseModel):
+    org_members: list[OrgMemberSyncBody]
+
+
+class ProjectMemberSyncBody(BaseModel):
+    id: str
+    project_id: str
+    user_id: str
+    role: Optional[str] = "editor"
+    invited_by: Optional[str] = None
+
+
+class BulkProjectMembersBody(BaseModel):
+    project_members: list[ProjectMemberSyncBody]
 
 
 class SynonymsSyncBody(BaseModel):
@@ -159,6 +222,31 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    return dt.isoformat() if dt else None
+
+
+async def record_tombstones(db: AsyncSession, entity_type: str, entity_ids: list[str]) -> None:
+    """登记删除墓碑(幂等,后写胜)。云端 apply 删除时调用,让其它设备 pull 增量
+    feed 时能看到"这些 id 被删了"。不单独 commit — 由调用方事务统一提交。"""
+    if not entity_ids:
+        return
+    now = datetime.utcnow()
+    existing = {
+        t.entity_id: t for t in (await db.execute(
+            select(SyncTombstone)
+            .where(SyncTombstone.entity_type == entity_type)
+            .where(SyncTombstone.entity_id.in_(entity_ids))
+        )).scalars().all()
+    }
+    for eid in entity_ids:
+        row = existing.get(eid)
+        if row:
+            row.deleted_at = now
+        else:
+            db.add(SyncTombstone(entity_type=entity_type, entity_id=eid, deleted_at=now))
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -246,12 +334,15 @@ async def sync_projects(body: BulkProjectsBody, db: AsyncSession = Depends(get_d
             existing.originals_path = p.originals_path
             existing.workspace_path = p.workspace_path
             existing.color = p.color
+            if p.org_id is not None:
+                existing.org_id = p.org_id
         else:
             db.add(Project(
                 id=p.id, name=p.name,
                 originals_path=p.originals_path,
                 workspace_path=p.workspace_path,
                 color=p.color,
+                org_id=p.org_id,
             ))
         n += 1
     await db.commit()
@@ -289,16 +380,22 @@ async def sync_api_keys(body: BulkApiKeysBody, db: AsyncSession = Depends(get_db
 
 @router.post("/deletes", dependencies=[Depends(require_sync_token)])
 async def sync_deletes(body: DeleteEventsBody, db: AsyncSession = Depends(get_db)):
-    """Apply tombstone events: when local user deletes something, cloud
-    drops it too (otherwise UGC keeps matching ghost rows)."""
-    deleted = {"images": 0, "projects": 0, "api_keys": 0}
+    """Apply delete events: when local user deletes something, cloud drops it
+    too (otherwise UGC keeps matching ghost rows). Also writes a SyncTombstone
+    per deleted id so OTHER devices see the deletion via the changes feed."""
+    deleted = {"images": 0, "projects": 0, "api_keys": 0,
+               "users": 0, "orgs": 0, "org_members": 0, "project_members": 0}
+    # 级联删图收集到的 image id(项目删除时)也要登记墓碑
+    cascaded_image_ids: list[str] = []
     if body.images:
         await db.execute(sql_delete(Tag).where(Tag.image_id.in_(body.images)))
         r = await db.execute(sql_delete(Image).where(Image.id.in_(body.images)))
         deleted["images"] = r.rowcount or 0
+        await record_tombstones(db, "image", body.images)
     if body.api_keys:
         r = await db.execute(sql_delete(ApiKey).where(ApiKey.id.in_(body.api_keys)))
         deleted["api_keys"] = r.rowcount or 0
+        await record_tombstones(db, "api_key", body.api_keys)
     if body.projects:
         # cascade: drop images first, then project
         for pid in body.projects:
@@ -308,10 +405,30 @@ async def sync_deletes(body: DeleteEventsBody, db: AsyncSession = Depends(get_db
                 )).all()
             ]
             if ids:
+                cascaded_image_ids.extend(ids)
                 await db.execute(sql_delete(Tag).where(Tag.image_id.in_(ids)))
                 await db.execute(sql_delete(Image).where(Image.id.in_(ids)))
         r = await db.execute(sql_delete(Project).where(Project.id.in_(body.projects)))
         deleted["projects"] = r.rowcount or 0
+        await record_tombstones(db, "project", body.projects)
+        if cascaded_image_ids:
+            await record_tombstones(db, "image", cascaded_image_ids)
+    if body.project_members:
+        r = await db.execute(sql_delete(ProjectMember).where(ProjectMember.id.in_(body.project_members)))
+        deleted["project_members"] = r.rowcount or 0
+        await record_tombstones(db, "project_member", body.project_members)
+    if body.org_members:
+        r = await db.execute(sql_delete(OrganizationMember).where(OrganizationMember.id.in_(body.org_members)))
+        deleted["org_members"] = r.rowcount or 0
+        await record_tombstones(db, "org_member", body.org_members)
+    if body.orgs:
+        r = await db.execute(sql_delete(Organization).where(Organization.id.in_(body.orgs)))
+        deleted["orgs"] = r.rowcount or 0
+        await record_tombstones(db, "org", body.orgs)
+    if body.users:
+        r = await db.execute(sql_delete(User).where(User.id.in_(body.users)))
+        deleted["users"] = r.rowcount or 0
+        await record_tombstones(db, "user", body.users)
     await db.commit()
     # blow caches
     try:
@@ -378,6 +495,244 @@ async def sync_config(body: ConfigSyncBody):
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
     return {"ok": True, "updated_keys": list(body.settings.keys())}
+
+
+# ── 身份层 upsert 接收端(方案A 多设备同步)──────────────────────────────────
+
+
+@router.post("/users", dependencies=[Depends(require_sync_token)])
+async def sync_users(body: BulkUsersBody, db: AsyncSession = Depends(get_db)):
+    """Idempotent upsert。到达顺序裁决(后到的 push 胜),updated_at 由模型
+    onupdate 写为云端时刻,驱动 changes feed 游标。不同步验证码/会话/密钥。"""
+    if not body.users:
+        return {"upserted": 0}
+    n = 0
+    for u in body.users:
+        existing = await db.get(User, u.id)
+        fields = {
+            "phone": u.phone, "display_name": u.display_name,
+            "avatar_url": u.avatar_url, "status": u.status or "active",
+            "is_root": u.is_root, "is_platform_owner": u.is_platform_owner,
+        }
+        if existing:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+        else:
+            db.add(User(id=u.id, **fields))
+        n += 1
+    await db.commit()
+    return {"upserted": n}
+
+
+@router.post("/orgs", dependencies=[Depends(require_sync_token)])
+async def sync_orgs(body: BulkOrgsBody, db: AsyncSession = Depends(get_db)):
+    if not body.orgs:
+        return {"upserted": 0}
+    n = 0
+    for o in body.orgs:
+        existing = await db.get(Organization, o.id)
+        fields = {
+            "name": o.name, "slug": o.slug, "logo_url": o.logo_url,
+            "contact_email": o.contact_email, "plan": o.plan or "free",
+            "storage_quota_gb": o.storage_quota_gb if o.storage_quota_gb is not None else 10,
+            "status": o.status or "active",
+        }
+        if existing:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+        else:
+            db.add(Organization(id=o.id, **fields))
+        n += 1
+    await db.commit()
+    return {"upserted": n}
+
+
+@router.post("/org-members", dependencies=[Depends(require_sync_token)])
+async def sync_org_members(body: BulkOrgMembersBody, db: AsyncSession = Depends(get_db)):
+    if not body.org_members:
+        return {"upserted": 0}
+    n = 0
+    for m in body.org_members:
+        existing = await db.get(OrganizationMember, m.id)
+        fields = {"org_id": m.org_id, "user_id": m.user_id,
+                  "role": m.role or "member", "invited_by": m.invited_by}
+        if existing:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+        else:
+            db.add(OrganizationMember(id=m.id, **fields))
+        n += 1
+    await db.commit()
+    return {"upserted": n}
+
+
+@router.post("/project-members", dependencies=[Depends(require_sync_token)])
+async def sync_project_members(body: BulkProjectMembersBody, db: AsyncSession = Depends(get_db)):
+    if not body.project_members:
+        return {"upserted": 0}
+    n = 0
+    for m in body.project_members:
+        existing = await db.get(ProjectMember, m.id)
+        fields = {"project_id": m.project_id, "user_id": m.user_id,
+                  "role": m.role or "editor", "invited_by": m.invited_by}
+        if existing:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+        else:
+            db.add(ProjectMember(id=m.id, **fields))
+        n += 1
+    await db.commit()
+    return {"upserted": n}
+
+
+# ── 增量拉取 feed(方案A 核心):设备 pull "云端 since 之后变了什么" ──────────
+
+# images 单次返回上限(大表分页);小表(project/user/org/成员)体量小,整段返回。
+_FEED_IMAGE_LIMIT = 500
+_ALL_TYPES = ["image", "project", "api_key", "user", "org", "org_member", "project_member"]
+
+
+def _parse_cursor(s: Optional[str]) -> tuple[datetime, str]:
+    """游标 = "<updated_at iso>|<id>" 复合键,抗同毫秒并列(冷启动回填易出现
+    大量相同 updated_at)。空 → (epoch, "")。"""
+    if not s:
+        return (datetime.min, "")
+    ts_str, _, eid = s.partition("|")
+    return (_parse_dt(ts_str) or datetime.min, eid)
+
+
+def _img_to_body(img: Image, tags: list[dict]) -> dict:
+    from sidecar.engines.clip_embed import deserialize_vector
+    emb_arr = deserialize_vector(img.embedding) if img.embedding else None
+    return {
+        "id": img.id, "project_id": img.project_id, "file_path": img.file_path,
+        "file_name": img.file_name, "file_hash": img.file_hash, "phash": img.phash,
+        "file_size_kb": img.file_size_kb, "width": img.width, "height": img.height,
+        "blur_score": img.blur_score, "brightness": img.brightness,
+        "quality_status": img.quality_status, "reject_reason": img.reject_reason,
+        "is_kept": img.is_kept, "tag_status": img.tag_status, "description": img.description,
+        "source_type": img.source_type, "relative_dir": img.relative_dir,
+        "parent_id": img.parent_id, "rotated_file_path": img.rotated_file_path,
+        "orient_status": img.orient_status, "cdn_path": img.cdn_path,
+        "embedding": emb_arr.tolist() if emb_arr is not None else None,
+        "embedding_model": img.embedding_model, "text_search_blob": img.text_search_blob,
+        "generation_metadata": img.generation_metadata,
+        "tagged_at": _iso(img.tagged_at), "tag_provider": img.tag_provider,
+        "updated_at": _iso(img.updated_at), "tags": tags,
+    }
+
+
+@router.get("/changes", dependencies=[Depends(require_sync_token)])
+async def sync_changes(
+    since: Optional[str] = Query(None, description='游标 "<updated_at iso>|<id>";首拉留空'),
+    types: Optional[str] = Query(None, description="逗号分隔实体类型;留空=全部"),
+    db: AsyncSession = Depends(get_db),
+):
+    """方案A 增量 feed:返回云端在 since 之后的变更(upsert)+ 删除(墓碑)。
+
+    - images:复合游标分页(updated_at, id),单次上限 _FEED_IMAGE_LIMIT;
+    - 其它表体量小,since 之后整段返回;
+    - deletes:since 之后的墓碑;
+    - cursor:images 满页 → 末条 (updated_at|id) 且 has_more=true;否则 → now(消费完所有 ≤now 的小表/删除变更);
+    设备据此循环 pull 直到 has_more=false。
+    """
+    want = set((types or "").split(",")) & set(_ALL_TYPES) if types else set(_ALL_TYPES)
+    since_ts, since_id = _parse_cursor(since)
+    now = datetime.utcnow()
+    out: dict = {"images": [], "projects": [], "api_keys": [], "users": [],
+                 "orgs": [], "org_members": [], "project_members": [],
+                 "deletes": {}, "cursor": since or "", "has_more": False}
+
+    # 1. images — 复合游标分页
+    has_more = False
+    if "image" in want:
+        rows = (await db.execute(
+            select(Image)
+            .where(or_(Image.updated_at > since_ts,
+                       and_(Image.updated_at == since_ts, Image.id > since_id)))
+            .order_by(Image.updated_at.asc(), Image.id.asc())
+            .limit(_FEED_IMAGE_LIMIT)
+        )).scalars().all()
+        if rows:
+            img_ids = [r.id for r in rows]
+            tag_rows = (await db.execute(
+                select(Tag.image_id, Tag.dimension, Tag.value, Tag.source, Tag.confidence)
+                .where(Tag.image_id.in_(img_ids))
+            )).all()
+            tags_by: dict[str, list[dict]] = {}
+            for iid, dim, val, src, conf in tag_rows:
+                tags_by.setdefault(iid, []).append(
+                    {"dimension": dim, "value": val, "source": src, "confidence": conf})
+            out["images"] = [_img_to_body(r, tags_by.get(r.id, [])) for r in rows]
+            if len(rows) == _FEED_IMAGE_LIMIT:
+                has_more = True
+                last = rows[-1]
+                out["cursor"] = f"{_iso(last.updated_at)}|{last.id}"
+
+    # 2. 小表 — since 之后整段(idempotent upsert,体量小)
+    if "project" in want:
+        ps = (await db.execute(select(Project).where(Project.updated_at > since_ts))).scalars().all()
+        out["projects"] = [{
+            "id": p.id, "name": p.name, "originals_path": p.originals_path,
+            "workspace_path": p.workspace_path, "color": p.color, "org_id": p.org_id,
+            "updated_at": _iso(p.updated_at),
+        } for p in ps]
+    if "api_key" in want:
+        ks = (await db.execute(select(ApiKey).where(ApiKey.updated_at > since_ts))).scalars().all()
+        out["api_keys"] = [{
+            "id": k.id, "key_id": k.key_id, "key_secret_hash": k.key_secret_hash,
+            "name": k.name, "client_type": k.client_type, "allowed_origins": k.allowed_origins,
+            "allowed_ips": k.allowed_ips, "scopes": k.scopes, "rate_limit": k.rate_limit,
+            "expires_at": _iso(k.expires_at), "is_active": k.is_active,
+            "updated_at": _iso(k.updated_at),
+        } for k in ks]
+    if "user" in want:
+        us = (await db.execute(select(User).where(User.updated_at > since_ts))).scalars().all()
+        out["users"] = [{
+            "id": u.id, "phone": u.phone, "display_name": u.display_name,
+            "avatar_url": u.avatar_url, "status": u.status, "is_root": u.is_root,
+            "is_platform_owner": u.is_platform_owner, "updated_at": _iso(u.updated_at),
+        } for u in us]
+    if "org" in want:
+        os_ = (await db.execute(select(Organization).where(Organization.updated_at > since_ts))).scalars().all()
+        out["orgs"] = [{
+            "id": o.id, "name": o.name, "slug": o.slug, "logo_url": o.logo_url,
+            "contact_email": o.contact_email, "plan": o.plan,
+            "storage_quota_gb": o.storage_quota_gb, "status": o.status,
+            "updated_at": _iso(o.updated_at),
+        } for o in os_]
+    if "org_member" in want:
+        oms = (await db.execute(select(OrganizationMember).where(OrganizationMember.updated_at > since_ts))).scalars().all()
+        out["org_members"] = [{
+            "id": m.id, "org_id": m.org_id, "user_id": m.user_id,
+            "role": m.role, "invited_by": m.invited_by, "updated_at": _iso(m.updated_at),
+        } for m in oms]
+    if "project_member" in want:
+        pms = (await db.execute(select(ProjectMember).where(ProjectMember.updated_at > since_ts))).scalars().all()
+        out["project_members"] = [{
+            "id": m.id, "project_id": m.project_id, "user_id": m.user_id,
+            "role": m.role, "invited_by": m.invited_by, "updated_at": _iso(m.updated_at),
+        } for m in pms]
+
+    # 3. deletes — since 之后的墓碑(按类型分组)
+    tomb_type_map = {"image": "images", "project": "projects", "api_key": "api_keys",
+                     "user": "users", "org": "orgs", "org_member": "org_members",
+                     "project_member": "project_members"}
+    tombs = (await db.execute(
+        select(SyncTombstone)
+        .where(SyncTombstone.deleted_at > since_ts)
+        .where(SyncTombstone.entity_type.in_(want))
+    )).scalars().all()
+    deletes: dict[str, list[str]] = {}
+    for t in tombs:
+        deletes.setdefault(tomb_type_map.get(t.entity_type, t.entity_type), []).append(t.entity_id)
+    out["deletes"] = deletes
+
+    # 4. 游标推进:images 未满页(已抽干)→ 游标推到 now,消费完所有小表/删除变更
+    out["has_more"] = has_more
+    if not has_more:
+        out["cursor"] = f"{_iso(now)}|~"  # "~" 排在任何 id 之后,确保 = now 的也被含入下次 > 判断的边界
+    return out
 
 
 @router.get("/health", dependencies=[Depends(require_sync_token)])

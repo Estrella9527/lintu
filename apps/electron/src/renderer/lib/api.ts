@@ -140,8 +140,16 @@ export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Res
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
   }
-  // 只对带 body 的请求设 Content-Type（GET 不必，避免缩略图被加 Content-Type 干扰）
-  if (init?.body && !headers['Content-Type'] && !headers['content-type']) {
+  // 默认 JSON。但 FormData / Blob / ArrayBuffer 这类二进制 body 必须由浏览器
+  // 自己加 Content-Type — 比如 multipart 必须带 boundary,我们强塞 application/json
+  // 会让后端解不出字段(422 missing field)。
+  const body = init?.body
+  const isStructured =
+    (typeof FormData !== 'undefined' && body instanceof FormData) ||
+    (typeof Blob !== 'undefined' && body instanceof Blob) ||
+    (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) ||
+    (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams)
+  if (body && !isStructured && !headers['Content-Type'] && !headers['content-type']) {
     headers['Content-Type'] = 'application/json'
   }
   if (_authToken && !headers.Authorization && !headers.authorization) {
@@ -227,6 +235,9 @@ class APIClient {
 
     cancel: (id: string) =>
       this.request(`/tasks/${id}/cancel`, { method: 'POST' }),
+
+    retry: (id: string) =>
+      this.request(`/tasks/${id}/retry`, { method: 'POST' }),
 
     subscribeProgress(
       id: string,
