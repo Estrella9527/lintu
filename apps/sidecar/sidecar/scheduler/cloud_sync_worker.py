@@ -352,14 +352,10 @@ class CloudSyncWorker:
 
     async def _build_images_payload(self, ids: list[str]) -> dict:
         from sidecar.engines.clip_embed import deserialize_vector
-        # parent_id 防 FK 500:云端 images.parent_id 有自引用 FK。生成图的
-        # parent 若还没在云端(尤其多代 gen→gen 链或孤儿),整批会被 PG 拒成
-        # 500。只保留"parent 是 original(必先于生成图同步)"的 parent_id,
-        # 其余置 NULL — 云端不需要血缘图。与 bulk 脚本同策略。
-        async with async_session() as db:
-            valid_parent_ids = set((await db.execute(
-                select(Image.id).where(Image.source_type == "original")
-            )).scalars().all())
+        # parent_id 一律置 NULL:云端 images.parent_id 有自引用 FK,而云端只是
+        # 匹配只读副本、不需要血缘图。任何"parent 还没在云端"的情形(gen→gen 链、
+        # 未同步的原图等)都会让整批被 PG 拒成 500。直接不传血缘,彻底消除这类
+        # FK 违约。(原"只保留 original parent"策略仍会被未同步的原图坑到。)
         async with async_session() as db:
             # Pre-publish review gate: only push `approved` rows. Pending /
             # rejected images are operator decisions still in flight; pushing
@@ -404,7 +400,7 @@ class CloudSyncWorker:
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,
-                "parent_id": img.parent_id if (img.parent_id is None or img.parent_id in valid_parent_ids) else None,
+                "parent_id": None,  # 云端不需血缘;见上方注释
                 "rotated_file_path": img.rotated_file_path,
                 "orient_status": img.orient_status,
                 "cdn_path": img.cdn_path,

@@ -230,7 +230,7 @@ async def push_images(client: httpx.AsyncClient) -> int:
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,
-                "parent_id": img.parent_id if (img.parent_id is None or img.parent_id in valid_id_set) else None,
+                "parent_id": None,  # 云端不需血缘,一律置 NULL 避免自引用 FK 违约
                 "rotated_file_path": img.rotated_file_path,
                 "orient_status": img.orient_status,
                 "cdn_path": img.cdn_path,
