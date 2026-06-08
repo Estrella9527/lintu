@@ -23,6 +23,9 @@ export interface CanvasImageObject {
   height: number              // 原图高
   rotation: number            // 度,顺时针;Phase 1 不开放旋转 UI,但字段先留
   selected: boolean           // 多选场景预留;Phase 1 只支持单选
+  /** 关联线:这张图由画布上哪些对象「发散」而来(img2img / Ask AI / 扩图 等的源对象 id)。
+   *  渲染时从每个 source 画一条线指向本对象,形成发散式创作树。持久化。 */
+  sourceObjectIds?: string[]
 }
 
 export interface CanvasPlaceholderObject {
@@ -42,6 +45,8 @@ export interface CanvasPlaceholderObject {
   height: number
   rotation: number
   selected: boolean
+  /** 同 image:占位框也记录来源对象,这样生成中就能看到关联线,完成后无缝延续。 */
+  sourceObjectIds?: string[]
 }
 
 export type CanvasObject = CanvasImageObject | CanvasPlaceholderObject

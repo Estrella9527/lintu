@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { activeModuleAtom } from '@/atoms/navigation'
+import { assetLibraryActiveTabAtom } from '@/atoms/ui-state'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, Sparkles, CloudDownload } from 'lucide-react'
@@ -16,7 +18,6 @@ import { activeProjectIdAtom } from '@/atoms/project'
 import { CandidateFiltersPanel, EMPTY_FILTERS, countActive, type CandidateFilters } from './CandidateFilters'
 import { SyncStatusBanner } from './SyncStatusBanner'
 import { ConfigAuditTimeline } from './ConfigAuditTimeline'
-import { OssLibraryDialog } from './OssLibraryDialog'
 
 /**
  * 「匹配策略」Tab — 上线前的运营配置面板。
@@ -50,7 +51,8 @@ const DIVERSITY_OPTS: { v: Diversity; label: string; desc: string }[] = [
 export function MatchStrategyTab() {
   const queryClient = useQueryClient()
   const projectId = useAtomValue(activeProjectIdAtom)
-  const [ossLibOpen, setOssLibOpen] = useState(false)
+  const setActiveModule = useSetAtom(activeModuleAtom)
+  const setAssetTab = useSetAtom(assetLibraryActiveTabAtom)
 
   const { data: config, isLoading } = useQuery<Record<string, any>>({
     queryKey: ['config'],
@@ -348,14 +350,12 @@ export function MatchStrategyTab() {
             查看 <strong className="text-foreground/85">OSS</strong> bucket 全量图片，
             把库外图一键导入（默认待审核 + 未上架），并直接上架 / 下架已入库的图。
           </div>
-          <Button size="sm" variant="outline" onClick={() => setOssLibOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => { setAssetTab('oss'); setActiveModule('asset-library') }}>
             <CloudDownload size={13} className="mr-1.5" />
-            打开 OSS 图库
+            去资产库 · OSS 图库
           </Button>
         </div>
       </Group>
-
-      <OssLibraryDialog open={ossLibOpen} onOpenChange={setOssLibOpen} projectId={projectId ?? null} />
 
       {/* ── 审计 ─────────────────────────────────────────────── */}
       <ConfigAuditTimeline />

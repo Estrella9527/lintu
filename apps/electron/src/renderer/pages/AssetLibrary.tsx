@@ -8,8 +8,9 @@ import {
   assetLibrarySelectedFolderAtom,
 } from '@/atoms/ui-state'
 import { cn } from '@/lib/utils'
-import { Copy, GitFork, LayoutGrid, Loader2, Star, Trash2, Upload } from 'lucide-react'
+import { Cloud, Copy, GitFork, LayoutGrid, Loader2, Star, Trash2, Upload } from 'lucide-react'
 import { ImageGrid } from '@/components/asset-library/ImageGrid'
+import { OssLibraryTab } from '@/components/asset-library/OssLibraryTab'
 import { FilterBar, EMPTY_FILTER } from '@/components/asset-library/FilterBar'
 import { ImageInspector } from '@/components/asset-library/ImageInspector'
 import { ImageLightbox } from '@/components/asset-library/ImageLightbox'
@@ -24,6 +25,7 @@ import type { ImageRecord } from '@/lib/types'
 
 const TABS = [
   { id: 'all', label: '全部图片', icon: LayoutGrid },
+  { id: 'oss', label: 'OSS 图库', icon: Cloud },
   { id: 'duplicates', label: '相似组', icon: Copy },
   { id: 'trash', label: '回收站', icon: Trash2 },
   // 衍生关系(图谱可视化)/ 收藏夹尚未实装,先从 Tab 隐藏,避免用户点进空白页。
@@ -306,6 +308,9 @@ export default function AssetLibrary() {
                       tagFilters={activeTab === 'all' ? filter.tags : undefined}
                       promptId={activeTab === 'all' ? (filter.prompt_id || undefined) : undefined}
                       parentId={activeTab === 'all' ? (filter.parent_id || undefined) : undefined}
+                      // 「全部图片」只展示已入库的图;AI 工坊生成图/画布草稿不在此显示,
+                      // 直到运营「加入资产库」。回收站不加此过滤(按淘汰态聚合)。
+                      inLibrary={activeTab === 'all' ? true : undefined}
                       selectedIds={selectedIds}
                       activeId={activeImage?.id ?? null}
                       onToggleSelect={handleToggleSelect}
@@ -331,6 +336,8 @@ export default function AssetLibrary() {
                 请先在流水线中选择目录并扫描图片
               </div>
             )
+          ) : activeTab === 'oss' ? (
+            <OssLibraryTab projectId={projectId} />
           ) : activeTab === 'duplicates' ? (
             <div className="flex-1 overflow-y-auto px-6 py-4">
               <DuplicateGroupsTab />

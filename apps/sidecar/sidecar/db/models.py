@@ -91,6 +91,13 @@ class Image(Base):
     is_listed = Column(Boolean, default=True, index=True)
     listed_at = Column(DateTime)
 
+    # 是否进「资产库」—— 与 review/listing 正交。AI 工坊生成图、拖到画布的本地图
+    # 默认 in_library=False(只是画布草稿:本地存、画布可用、历史可追溯,但不进
+    # 资产库列表、也不自动推 OSS)。运营点「加入资产库」后置 True → 进库 + 推 OSS
+    # → 进而可审核/上架/参与 UGC。流水线扫描 / 资产库直接上传 的图默认 True。
+    #   - 存量图迁移置 True(不回归)
+    in_library = Column(Boolean, default=True, index=True)
+
     # Dedup
     dedup_group_id = Column(String, index=True)
     is_kept = Column(Boolean, default=True)

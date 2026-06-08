@@ -75,6 +75,7 @@ export function SeedPickerDialog({
         source_type: sourceType !== 'all' ? sourceType : undefined,
         ...(folder === '' ? { folder: '' } : folder ? { folder_prefix: folder } : {}),
         status: 'passed',
+        in_library: true,  // 只从「已入库」的图里挑,画布草稿不在此列
       })
     },
     getNextPageParam: (lastPage, pages) =>

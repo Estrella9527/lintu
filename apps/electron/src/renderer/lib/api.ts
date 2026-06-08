@@ -12,6 +12,28 @@ import type {
 const API_BASE = 'http://127.0.0.1:7879/api'
 
 
+// ── OSS 图库 ───────────────────────────────────────────────────────────────
+export interface OssObjectItem {
+  object_key: string
+  in_library: boolean
+  image_id?: string
+  review_status?: string
+  is_listed?: boolean
+  source_type?: string
+  preview_url?: string
+}
+export interface OssDirNode { folder: string; count: number; in_library: number; orphans: number }
+export interface OssScanResult {
+  configured: boolean
+  total_objects: number
+  in_library: number
+  orphans: number
+  dirs: OssDirNode[]
+  items: OssObjectItem[]
+  items_capped?: boolean
+}
+export interface OssObjectsResult { configured: boolean; items: OssObjectItem[]; total: number }
+
 // ── Image list query shape (shared by list + listIds) ──────────────────────
 //
 // Multi-value fields (scene/season/.../style/...): each value becomes a
@@ -45,6 +67,8 @@ export interface ImageListParams {
   prompt_id?: string
   // Filter to derivatives of a given seed image (parent_id == this id)
   parent_id?: string
+  // 资产库成员过滤:true=只看已入库;false=只看画布草稿;不传=全部
+  in_library?: boolean
 }
 
 const TAG_DIMENSION_KEYS = [
@@ -68,6 +92,7 @@ function buildImageQuery(params: ImageListParams): URLSearchParams {
   if (params.folder_prefix) qs.set('folder_prefix', params.folder_prefix)
   if (params.prompt_id) qs.set('prompt_id', params.prompt_id)
   if (params.parent_id) qs.set('parent_id', params.parent_id)
+  if (params.in_library !== undefined) qs.set('in_library', String(params.in_library))
   return qs
 }
 
@@ -347,6 +372,38 @@ class APIClient {
       withTokenParam(`http://localhost:7879/api/images/${id}/file`),
     downloadUrl: (id: string) =>
       withTokenParam(`http://localhost:7879/api/images/${id}/download`),
+
+    // 上下架(单张 / 批量)— OSS 图库与匹配候选池共用
+    setListing: (imageIds: string[], isListed: boolean) =>
+      this.request<{ updated: number }>('/images/batch/listing', {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds, is_listed: isListed }),
+      }),
+
+    // 加入 / 移出资产库(批量)。加入时后端会把原本不在库的图入队推 OSS。
+    setLibrary: (imageIds: string[], inLibrary: boolean) =>
+      this.request<{ updated: number }>('/images/batch/library', {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds, in_library: inLibrary }),
+      }),
+  }
+
+  // ── OSS 图库(bucket 全量视图 + 反向导入)──
+  ossLibrary = {
+    scan: () => this.request<OssScanResult>('/oss-library/scan'),
+    objects: (params: { prefix?: string | null; only?: string; offset?: number; limit?: number }) => {
+      const q = new URLSearchParams()
+      if (params.prefix !== undefined && params.prefix !== null) q.set('prefix', params.prefix)
+      if (params.only) q.set('only', params.only)
+      if (params.offset != null) q.set('offset', String(params.offset))
+      if (params.limit != null) q.set('limit', String(params.limit))
+      return this.request<OssObjectsResult>(`/oss-library/objects?${q.toString()}`)
+    },
+    import: (projectId: string, objectKeys?: string[]) =>
+      this.request<{ imported: number; skipped: number; failed: number; image_ids: string[] }>(
+        '/oss-library/import',
+        { method: 'POST', body: JSON.stringify({ project_id: projectId, object_keys: objectKeys ?? null }) },
+      ),
   }
 
   // ── Stats ──

@@ -53,6 +53,7 @@ def _apply_image_filters(
     folder_prefix: Optional[str] = None,
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    in_library: Optional[bool] = None,
 ):
     """Shared filter pipeline so list_images and list_image_ids stay in sync.
 
@@ -101,6 +102,8 @@ def _apply_image_filters(
         query = query.where(json_field(Image.generation_metadata, "prompt_id") == prompt_id)
     if parent_id:
         query = query.where(Image.parent_id == parent_id)
+    if in_library is not None:
+        query = query.where(Image.in_library == in_library)
     return query
 
 
@@ -128,6 +131,7 @@ async def list_images(
     folder_prefix: Optional[str] = None,
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    in_library: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
     base = select(Image).where(Image.project_id == project_id)
@@ -137,7 +141,7 @@ async def list_images(
         usage=usage, style=style, mood=mood, palette=palette, theme=theme,
         composition=composition, source_type=source_type,
         folder=folder, folder_prefix=folder_prefix, prompt_id=prompt_id,
-        parent_id=parent_id,
+        parent_id=parent_id, in_library=in_library,
     )
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     result = await db.execute(
@@ -169,6 +173,7 @@ async def list_image_ids(
     folder_prefix: Optional[str] = None,
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    in_library: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Return every image id matching the same filters used by list_images.
@@ -183,7 +188,7 @@ async def list_image_ids(
         usage=usage, style=style, mood=mood, palette=palette, theme=theme,
         composition=composition, source_type=source_type,
         folder=folder, folder_prefix=folder_prefix, prompt_id=prompt_id,
-        parent_id=parent_id,
+        parent_id=parent_id, in_library=in_library,
     )
     rows = await db.execute(query.order_by(Image.created_at.desc()))
     ids = [r[0] for r in rows.all()]
@@ -290,9 +295,11 @@ class ImagePatchBody(BaseModel):
     """Lightweight PATCH for single-image field updates.
 
     review_status — 推到审核队列 / 改审核态。
-    is_listed     — 上架 / 下架(决定是否进 UGC 匹配候选池,与审核正交)。"""
+    is_listed     — 上架 / 下架(决定是否进 UGC 匹配候选池,与审核正交)。
+    in_library    — 加入 / 移出资产库(画布草稿 → 入库);置 True 时入队推 OSS。"""
     review_status: Optional[str] = None
     is_listed: Optional[bool] = None
+    in_library: Optional[bool] = None
 
 
 @router.patch("/{image_id}")
@@ -313,9 +320,44 @@ async def patch_image(
     if body.is_listed is not None:
         img.is_listed = body.is_listed
         img.listed_at = _dt.utcnow() if body.is_listed else None
+    enqueue_oss = body.in_library is True and not img.in_library  # 仅"从未入库→入库"才推
+    if body.in_library is not None:
+        img.in_library = body.in_library
     await db.commit()
+    if enqueue_oss:
+        try:
+            await enqueue_image_sync(image_id)
+        except Exception as e:
+            logger.debug("oss enqueue (add to library) failed for %s: %s", image_id, e)
     return {"ok": True, "id": image_id, "review_status": img.review_status,
-            "is_listed": img.is_listed}
+            "is_listed": img.is_listed, "in_library": img.in_library}
+
+
+class LibraryBody(BaseModel):
+    image_ids: list[str]
+    in_library: bool = True
+
+
+@router.post("/batch/library")
+async def batch_set_library(body: LibraryBody, db: AsyncSession = Depends(get_db)):
+    """批量加入 / 移出资产库。加入(True)时把"原本不在库"的图入队推 OSS。"""
+    if not body.image_ids:
+        return {"ok": True, "updated": 0}
+    rows = (await db.execute(
+        select(Image).where(Image.id.in_(body.image_ids))
+    )).scalars().all()
+    to_enqueue: list[str] = []
+    for img in rows:
+        if body.in_library and not img.in_library:
+            to_enqueue.append(img.id)
+        img.in_library = body.in_library
+    await db.commit()
+    for iid in to_enqueue:
+        try:
+            await enqueue_image_sync(iid)
+        except Exception as e:
+            logger.debug("oss enqueue (batch add to library) failed for %s: %s", iid, e)
+    return {"ok": True, "updated": len(rows), "in_library": body.in_library}
 
 
 class ListingBody(BaseModel):
@@ -526,6 +568,8 @@ def _safe_ext(filename: str) -> str:
 async def upload_images(
     project_id: str = Form(...),
     files: List[UploadFile] = File(...),
+    # 资产库直接上传 → True(进库 + 推 OSS);AI 工坊画布拖入 → False(只是画布草稿)
+    in_library: bool = Form(True),
     db: AsyncSession = Depends(get_db),
 ):
     """Direct image upload — paste / drag-drop entry from the UI.
@@ -641,6 +685,7 @@ async def upload_images(
             quality_status="passed",
             tag_status="pending",
             source_type="original",
+            in_library=in_library,
             relative_dir=rel_dir,
         )
         db.add(img)
@@ -651,11 +696,13 @@ async def upload_images(
         await db.flush()
         new_ids_for_sync = [img.id for img in created]
         await db.commit()
-        for iid in new_ids_for_sync:
-            try:
-                await enqueue_image_sync(iid)
-            except Exception as e:
-                logger.debug("oss enqueue (upload) failed for %s: %s", iid, e)
+        # 只有「进资产库」的上传才推 OSS;画布草稿(in_library=False)不推。
+        if in_library:
+            for iid in new_ids_for_sync:
+                try:
+                    await enqueue_image_sync(iid)
+                except Exception as e:
+                    logger.debug("oss enqueue (upload) failed for %s: %s", iid, e)
 
     return {
         "ok": True,
@@ -687,6 +734,9 @@ def _image_to_dict(img: Image) -> dict:
         "tag_status": img.tag_status,
         "description": img.description,
         "source_type": img.source_type,
+        "review_status": img.review_status,
+        "is_listed": bool(img.is_listed),
+        "in_library": bool(img.in_library),
         "relative_dir": img.relative_dir or "",
         "orient_status": img.orient_status or "none",
         "rotated_file_path": img.rotated_file_path,

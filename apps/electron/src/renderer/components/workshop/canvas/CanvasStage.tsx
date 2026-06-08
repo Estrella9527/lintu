@@ -30,6 +30,7 @@ import type { ImageRecord } from '@/lib/types'
 
 import { CanvasImage } from './CanvasImage'
 import { CanvasPlaceholder } from './CanvasPlaceholder'
+import { CanvasLinks } from './CanvasLinks'
 import { CanvasToolbar } from './CanvasToolbar'
 import { CanvasEmpty } from './CanvasEmpty'
 import { ContextBar } from './ContextBar'
@@ -40,7 +41,9 @@ import { generateOnCanvas, type GenerationCandidate } from '@/lib/canvasGenerate
 import { toast } from 'sonner'
 import { CandidateGrid } from './CandidateGrid'
 
-const MIN_SCALE = 0.1
+// 下限放到 0.02(2%)—— 让大画布 / 多对象能一直往外缩到"看全局"的程度,体感接近无限缩小。
+// 不设 0 是因为 scale→0 会让对象不可见、不可交互且坐标换算精度变差。
+const MIN_SCALE = 0.02
 const MAX_SCALE = 8
 const SCALE_STEP = 1.08    // 每次滚轮一格 / 触控板捏合的步长
 
@@ -218,6 +221,7 @@ export function CanvasStage() {
 
   const { upload } = useUploadImages({
     projectId,
+    inLibrary: false,  // 拖到自由画布的图只是草稿,不进资产库 / 不推 OSS,需手动「加入资产库」
     onSuccess: ({ images, duplicate_images }) => {
       // 新上传和已有同 hash 图都拉到画布(PRD §3.1:"拖入图片到画布 → 进入图生图")
       const all = [...images, ...duplicate_images]
@@ -421,6 +425,8 @@ export function CanvasStage() {
       height: cand.h,
       rotation: 0,
       selected: false,
+      // 「新增」= 从源图发散出一张新图 → 连一条关联线;「替换」是原地编辑,不连。
+      sourceObjectIds: action === 'add' && source ? [source.id] : undefined,
     }
     setObjects((prev) => {
       if (action === 'replace' && source) {
@@ -490,9 +496,10 @@ export function CanvasStage() {
       )}
       <ImageDropOverlay visible={isDragging} />
 
-      {/* 右上角浮层:从资产库选图。空态时藏起,因为 CanvasEmpty 已经给了入口 */}
+      {/* 左上角浮层:从资产库选图。空态时藏起,因为 CanvasEmpty 已经给了入口。
+          放左上角,和右上角的「历史记录」按钮、顶部居中的工具条都不重叠。 */}
       {objects.length > 0 && (
-        <div className="absolute top-3 right-3 z-10">
+        <div className="absolute top-3 left-3 z-20">
           <Button
             variant="outline" size="sm"
             className="h-7 text-[12px] bg-background/95 backdrop-blur-sm
@@ -548,6 +555,8 @@ export function CanvasStage() {
           }}
         >
           <Layer>
+            {/* 关联线 — 落在所有图片之下,从源图发散指向衍生图 */}
+            <CanvasLinks />
             {objects.map((obj) => {
               if (isPlaceholderObject(obj)) {
                 return (

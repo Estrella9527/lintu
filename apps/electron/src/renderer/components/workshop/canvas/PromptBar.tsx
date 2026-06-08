@@ -3,8 +3,8 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  ArrowUp, Check, ChevronDown, ImagePlus, Layers, Loader2, Palette,
-  Plus, Settings2, Sparkles, Wand2, X, Zap,
+  ArrowUp, Check, ChevronDown, Layers, Loader2,
+  Plus, Settings2, Sparkles, Wand2, X,
 } from 'lucide-react'
 
 import { activeProjectIdAtom } from '@/atoms/project'
@@ -25,7 +25,6 @@ import { cn } from '@/lib/utils'
 import type { ImageRecord } from '@/lib/types'
 
 import { CandidateGrid } from './CandidateGrid'
-import { StyleArchivePicker } from '@/components/workshop/StyleArchivePicker'
 
 interface ProviderEntry {
   id: string
@@ -41,11 +40,6 @@ const RATIOS: Array<{ label: string; w: number; h: number }> = [
   { label: '16:9',  w: 2048, h: 1152 },
   { label: '9:16',  w: 1152, h: 2048 },
   { label: '自定义', w: 0, h: 0 },
-]
-
-const SPEEDS: Array<{ value: 'draft' | 'refined'; label: string; hint: string }> = [
-  { value: 'draft',   label: '草稿', hint: '低成本探索 · 适合大量出图筛选' },
-  { value: 'refined', label: '精修', hint: '高质量出图 · 适合最终交付' },
 ]
 
 const COUNTS = [1, 2, 3, 4]
@@ -79,9 +73,10 @@ export function PromptBar() {
   const [ratio, setRatio] = useState(RATIOS[0])
   const [customW, setCustomW] = useState(2048)
   const [customH, setCustomH] = useState(1024)
-  const [speed, setSpeed] = useState<'draft' | 'refined'>('refined')
+  // 速度 / 风格档案 已从 UI 移除,固定走默认:精修 + 不套档案
+  const speed = 'refined' as const
   const [count, setCount] = useState(1)
-  const [styleArchiveId, setStyleArchiveId] = useState<string | null>(null)
+  const styleArchiveId: string | null = null
   const [modelId, setModelId] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [candidates, setCandidates] = useState<GenerationCandidate[] | null>(null)
@@ -138,6 +133,7 @@ export function PromptBar() {
   // ── 上传参考图(拖拽 / 粘贴 / 点 + 选本地) ─────────────────────────
   const { upload, uploading } = useUploadImages({
     projectId,
+    inLibrary: false,  // 画布参考图只是草稿,不进资产库 / 不推 OSS,需手动「加入资产库」
     onSuccess: ({ images, duplicate_images }) => {
       const all = [...images, ...duplicate_images]
       if (!all.length) return
@@ -182,6 +178,9 @@ export function PromptBar() {
     const centerY = (canvasH / 2 - viewport.y) / viewport.scale
     const stagger = (objects.length % 4) * 32
     const placeholderId = `co_ph_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    // 关联线:仅当「画布上选中的对象」就是这次图生图的源(没用上传参考图时),
+    // 才连一条线 —— 让发散关系准确(用上传参考图时源不在画布上,不连)。
+    const srcObjIds = (refs.length === 0 && selectedObj) ? [selectedObj.id] : undefined
     const placeholder: CanvasPlaceholderObject = {
       type: 'placeholder',
       id: placeholderId,
@@ -194,6 +193,7 @@ export function PromptBar() {
       height: effH,
       rotation: 0,
       selected: false,
+      sourceObjectIds: srcObjIds,
     }
     setObjects((prev) => [...prev, placeholder])
     setSelectedId(placeholderId)
@@ -254,6 +254,7 @@ export function PromptBar() {
           height: nh,
           rotation: 0,
           selected: false,
+          sourceObjectIds: (o as CanvasPlaceholderObject).sourceObjectIds,  // 延续关联线
         } as CanvasImageObject
       }))
       setLastCost(res.total_cost_usd)
@@ -289,12 +290,13 @@ export function PromptBar() {
   // ── UI ───────────────────────────────────────────────────────────
   return (
     <>
-      <div className="px-4 pt-2 pb-3">
+      {/* 底部居中悬浮 — 宽度取内容区黄金比例(≈61.8%),两端留白 */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 w-[61.8%] max-w-[1100px] min-w-[480px]">
         <div
           ref={containerRef}
-          className="rounded-2xl border border-foreground/12 bg-background
-                     shadow-[0_2px_12px_rgba(0,0,0,0.04)]
-                     focus-within:border-foreground/25 focus-within:shadow-[0_2px_16px_rgba(0,0,0,0.06)]
+          className="rounded-2xl border border-foreground/12 bg-background/95 backdrop-blur
+                     shadow-[0_4px_24px_rgba(0,0,0,0.10)]
+                     focus-within:border-foreground/25 focus-within:shadow-[0_6px_28px_rgba(0,0,0,0.14)]
                      transition-shadow"
         >
           {/* ── 顶部:refs 缩略行(有图或上传中显示) ─────────────────── */}
@@ -443,35 +445,6 @@ export function PromptBar() {
               </div>
             </PopoverChip>
 
-            {/* 速度 */}
-            <PopoverChip
-              icon={<Zap size={11} strokeWidth={1.6} />}
-              label={SPEEDS.find((s) => s.value === speed)?.label || '精修'}
-              tooltip="生成速度 / 质量档"
-            >
-              <div className="space-y-1">
-                {SPEEDS.map((s) => (
-                  <button
-                    key={s.value}
-                    onClick={() => setSpeed(s.value)}
-                    className={cn(
-                      'w-full flex items-start justify-between gap-2 px-2 py-1.5 rounded-md text-left',
-                      'transition-colors',
-                      speed === s.value
-                        ? 'bg-accent/10 text-accent'
-                        : 'text-foreground/70 hover:bg-foreground/[0.05]',
-                    )}
-                  >
-                    <div className="min-w-0">
-                      <div className="text-[12.5px] font-medium">{s.label}</div>
-                      <div className="text-[10.5px] text-foreground/45 mt-0.5">{s.hint}</div>
-                    </div>
-                    {speed === s.value && <Check size={11} className="mt-1" />}
-                  </button>
-                ))}
-              </div>
-            </PopoverChip>
-
             {/* 数量 */}
             <PopoverChip
               icon={<Sparkles size={11} strokeWidth={1.6} />}
@@ -495,31 +468,6 @@ export function PromptBar() {
                 ))}
               </div>
             </PopoverChip>
-
-            {/* 风格档案 */}
-            <PopoverChip
-              icon={<Palette size={11} strokeWidth={1.6} />}
-              label="风格"
-              tooltip="应用风格档案 — 保证跨图一致"
-            >
-              <div className="min-w-[240px]">
-                <StyleArchivePicker
-                  value={styleArchiveId}
-                  onChange={setStyleArchiveId}
-                  showLabel={false}
-                />
-                <div className="text-[10.5px] text-foreground/45 mt-2">
-                  没有档案?去 设置 → 风格档案 新建
-                </div>
-              </div>
-            </PopoverChip>
-
-            {/* 模式 hint(自动判断,不可点) */}
-            <span className="text-[10.5px] text-foreground/35 ml-1 inline-flex items-center gap-1">
-              {effectiveMode === 'img2img'
-                ? <><ImagePlus size={10} /> 图生图(自动)</>
-                : <><Sparkles size={10} /> 文生图(自动)</>}
-            </span>
 
             {/* 发送按钮(右下 圆形) */}
             <button

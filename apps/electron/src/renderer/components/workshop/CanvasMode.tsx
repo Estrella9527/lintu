@@ -9,16 +9,10 @@ import { useSetAtom, useAtom } from 'jotai'
 import { workshopModeAtom } from '@/atoms/workshop'
 
 /**
- * 创作画布 mode 容器 — Phase 1 三栏布局:
- *   ┌────────────────────────────────┬─────────────┐
- *   │  CanvasStage (主白板)          │ PropertyPanel│
- *   │                                │   (右 300px) │
- *   ├────────────────────────────────┤              │
- *   │  PromptBar (底部)              │              │
- *   └────────────────────────────────┴─────────────┘
- *
- * 右面板 PropertyPanel 包含「存为策略」按钮 — canvasParamsAtom 提供快照。
- * 底部 PromptBar 是文生图 / 图生图 入口,把当前配置同步到同一 atom。
+ * 创作画布 mode 容器 — 全自由画布布局:
+ *   整块内容区都是 CanvasStage(自由画布)。PromptBar(底部居中固定宽)与
+ *   HistoryPanel(历史记录,默认收起为右上角按钮,点开为右侧悬浮抽屉)都作为
+ *   悬浮层叠在画布之上,而非占用独立栏位 —— 让画布永远占满整个区域。
  */
 export function CanvasMode() {
   const params = useAtomValue(canvasParamsAtom)
@@ -38,13 +32,14 @@ export function CanvasMode() {
   }
 
   return (
-    <div className="flex h-full w-full">
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="flex-1 min-h-0">
-          <CanvasStage />
-        </div>
-        <PromptBar />
+    <div className="relative h-full w-full overflow-hidden">
+      {/* 自由画布占满整个区域 */}
+      <div className="absolute inset-0">
+        <CanvasStage />
       </div>
+      {/* 底部居中固定宽的图文输入框(悬浮) */}
+      <PromptBar />
+      {/* 历史记录:默认收起为右上角按钮,展开为右侧悬浮抽屉(悬浮在画布上) */}
       <HistoryPanel
         canvasSnapshot={snapshot}
         onTransferToBatch={() => {

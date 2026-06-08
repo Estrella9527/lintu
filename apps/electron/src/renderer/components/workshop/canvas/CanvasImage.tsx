@@ -3,6 +3,7 @@ import { Image as KonvaImage, Rect, Transformer } from 'react-konva'
 import type Konva from 'konva'
 
 import type { CanvasImageObject } from '@/atoms/canvas'
+import { accentColor } from '@/lib/canvasColors'
 
 interface CanvasImageProps {
   obj: CanvasImageObject
@@ -113,12 +114,17 @@ export function CanvasImage({
             'bottom-left', 'bottom-center', 'bottom-right',
           ]}
           rotateEnabled={false}
-          borderStroke="hsl(var(--accent))"
-          borderStrokeWidth={1.5}
-          anchorStroke="hsl(var(--accent))"
+          // 选中框:lintu accent 实线描边 + 略微外扩留白,白底圆角手柄。
+          // (注:canvas 不解析 CSS 变量,必须用 canvasColors 解析出的真实色)
+          padding={3}
+          borderStroke={accentColor()}
+          borderStrokeWidth={2}
+          anchorStroke={accentColor()}
+          anchorStrokeWidth={1.5}
           anchorFill="#ffffff"
-          anchorSize={9}
-          anchorCornerRadius={2}
+          anchorSize={10}
+          anchorCornerRadius={3}
+          // hover 手柄时整体微亮(Konva 支持 anchorStyleFunc 细调,这里保持简洁)
           // 不允许缩到 < 16px(否则会有"消失对象"的恼人场景)
           boundBoxFunc={(_oldBox, newBox) => {
             if (Math.abs(newBox.width) < 16 || Math.abs(newBox.height) < 16) {

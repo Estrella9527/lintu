@@ -52,29 +52,21 @@ def _owned_image_id(key: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _dir_of(key: str) -> str:
+    """对象 key 的"目录"部分(最后一个 / 之前);无 / 则归根目录 ""。
+    例:i/abc.jpg → 'i';uploads/2024/x.jpg → 'uploads/2024';foo.jpg → ''。"""
+    i = key.rfind("/")
+    return key[:i] if i >= 0 else ""
+
+
 _PREVIEW_CAP = 500  # items 明细 + preview_url 上限,避免一次回传/签名上千条
 
 
-async def scan_bucket(preview: bool = True) -> dict:
-    """扫描 bucket,返回每个原图对象的入库/审核/上架状态。
-
-    返回:
-      {
-        "configured": bool,
-        "total_objects": int,          # 原图对象数(不含缩略图)
-        "in_library": int,             # 已入库
-        "orphans": int,                # 库外(可导入)
-        "items": [ { object_key, in_library, image_id?, review_status?,
-                     is_listed?, source_type?, preview_url? } ]  # 最多 _PREVIEW_CAP 条
-      }
-    """
+async def _load_context():
+    """拉 bucket 全量原图 key + 库内 cdn/owned 映射。scan / list_objects 共用。
+    返回 (storage, keys, by_cdn, owned_ids)。"""
     storage = get_storage()
-    if not storage.is_read_configured():
-        return {"configured": False, "total_objects": 0, "in_library": 0, "orphans": 0, "items": []}
-
     keys = [k for k in storage.list_keys(_IMG_PREFIX) if not _is_thumb(k)]
-
-    # 一次性把 cdn_path 已落库的对象捞出来做匹配(cdn_path == object_key)
     async with async_session() as db:
         rows = await db.execute(
             select(Image.id, Image.cdn_path, Image.review_status, Image.is_listed,
@@ -86,51 +78,102 @@ async def scan_bucket(preview: bool = True) -> dict:
             owned_ids.add(iid)
             if cdn:
                 by_cdn[cdn] = (iid, rev, listed, src)
+    return storage, keys, by_cdn, owned_ids
 
-    # 先算全量入库数(不受 items 截断影响),再只把前 _PREVIEW_CAP 条带明细回传。
+
+def _classify(key: str, by_cdn: dict, owned_ids: set) -> dict:
+    """把单个 object key 判成 库内/库外 + 带上审核/上架态。不含 preview_url。"""
+    rec = by_cdn.get(key)
+    if rec is not None:
+        iid, rev, listed, src = rec
+        return {"object_key": key, "in_library": True, "image_id": iid,
+                "review_status": rev, "is_listed": bool(listed), "source_type": src}
+    oid = _owned_image_id(key)
+    if oid and oid in owned_ids:
+        return {"object_key": key, "in_library": True, "image_id": oid}
+    return {"object_key": key, "in_library": False}
+
+
+async def scan_bucket(preview: bool = True) -> dict:
+    """扫描 bucket:返回汇总 + 目录树(dirs)+ 预览明细(items, 最多 _PREVIEW_CAP)。
+
+    dirs: [{ folder, count, in_library, orphans }] —— 供资产库 OSS 图库左侧
+    目录树(按 object key 前缀分组)。
+    """
+    storage = get_storage()
+    if not storage.is_read_configured():
+        return {"configured": False, "total_objects": 0, "in_library": 0,
+                "orphans": 0, "items": [], "dirs": []}
+
+    _s, keys, by_cdn, owned_ids = await _load_context()
+
     in_library = 0
+    # 目录聚合:folder → [total, in_library]
+    dir_agg: dict[str, list[int]] = {}
     for key in keys:
-        if key in by_cdn:
+        info = _classify(key, by_cdn, owned_ids)
+        is_in = info["in_library"]
+        if is_in:
             in_library += 1
-        else:
-            oid = _owned_image_id(key)
-            if oid and oid in owned_ids:
-                in_library += 1
+        d = dir_agg.setdefault(_dir_of(key), [0, 0])
+        d[0] += 1
+        if is_in:
+            d[1] += 1
     orphans = len(keys) - in_library
+    dirs = [
+        {"folder": folder, "count": tot, "in_library": inlib, "orphans": tot - inlib}
+        for folder, (tot, inlib) in sorted(dir_agg.items())
+    ]
 
     items: list[dict] = []
     if preview:
         # 优先展示库外对象(运营更关心要导入哪些),其次已入库的
-        orphan_keys = [k for k in keys if k not in by_cdn and not (
-            (_owned_image_id(k) or "") in owned_ids)]
-        in_lib_keys = [k for k in keys if k not in orphan_keys]
-        ordered = orphan_keys + in_lib_keys
-        for key in ordered[:_PREVIEW_CAP]:
-            rec = by_cdn.get(key)
-            if rec is None:
-                oid = _owned_image_id(key)
-                if oid and oid in owned_ids:
-                    items.append({"object_key": key, "in_library": True, "image_id": oid,
-                                  "preview_url": storage.public_url(key)})
-                else:
-                    items.append({"object_key": key, "in_library": False,
-                                  "preview_url": storage.public_url(key)})
-            else:
-                iid, rev, listed, src = rec
-                items.append({
-                    "object_key": key, "in_library": True, "image_id": iid,
-                    "review_status": rev, "is_listed": bool(listed), "source_type": src,
-                    "preview_url": storage.public_url(key),
-                })
+        classified = [(_classify(k, by_cdn, owned_ids)) for k in keys]
+        classified.sort(key=lambda it: it["in_library"])  # False(库外) 在前
+        for info in classified[:_PREVIEW_CAP]:
+            items.append({**info, "preview_url": storage.public_url(info["object_key"])})
 
     return {
         "configured": True,
         "total_objects": len(keys),
         "in_library": in_library,
         "orphans": orphans,
+        "dirs": dirs,
         "items": items,
         "items_capped": orphans + in_library > _PREVIEW_CAP,
     }
+
+
+async def list_objects(prefix: str | None = None, only: str = "all",
+                       offset: int = 0, limit: int = 120) -> dict:
+    """按目录前缀 + 过滤分页列对象(资产库 OSS 图库网格用)。
+
+    prefix: None=全部目录;""=根目录;"i"/"uploads/2024"=该目录(精确,不含子目录)。
+    only:   'all' | 'orphan'(库外) | 'in_library'(已入库)。
+    返回 { items:[...含 preview_url], total }。
+    """
+    storage = get_storage()
+    if not storage.is_read_configured():
+        return {"configured": False, "items": [], "total": 0}
+
+    _s, keys, by_cdn, owned_ids = await _load_context()
+
+    # 目录过滤(精确匹配该目录,子目录算它自己的目录,符合资产库"文件夹"直观)
+    if prefix is not None:
+        keys = [k for k in keys if _dir_of(k) == prefix]
+
+    classified = [_classify(k, by_cdn, owned_ids) for k in keys]
+    if only == "orphan":
+        classified = [c for c in classified if not c["in_library"]]
+    elif only == "in_library":
+        classified = [c for c in classified if c["in_library"]]
+
+    # 库外在前,稳定排序便于运营批量处理
+    classified.sort(key=lambda it: (it["in_library"], it["object_key"]))
+    total = len(classified)
+    page = classified[offset:offset + limit]
+    items = [{**info, "preview_url": storage.public_url(info["object_key"])} for info in page]
+    return {"configured": True, "items": items, "total": total}
 
 
 async def import_orphans(project_id: str, object_keys: list[str] | None = None) -> dict:

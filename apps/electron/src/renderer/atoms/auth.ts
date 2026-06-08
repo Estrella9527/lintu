@@ -23,6 +23,7 @@ export interface CurrentOrgSummary {
   name: string
   slug: string
   logo_url: string | null
+  contact_email: string | null
   plan: string
   status: string
   storage_quota_gb: number

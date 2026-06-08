@@ -30,6 +30,9 @@ export interface UseUploadImagesOptions {
   projectId: string | null
   /** 上传成功(整体或单批)后回调,方便宿主刷新列表 / 自动选中等 */
   onSuccess?: (result: UploadResult) => void
+  /** 是否直接进资产库。资产库页上传 = true(默认);AI 工坊画布拖入 = false
+   *  (只作画布草稿,不进资产库列表、不推 OSS,需手动「加入资产库」)。 */
+  inLibrary?: boolean
 }
 
 /**
@@ -48,7 +51,7 @@ const CHUNK_SIZE = 30
 const CONCURRENCY = 4
 
 export function useUploadImages(opts: UseUploadImagesOptions) {
-  const { projectId, onSuccess } = opts
+  const { projectId, onSuccess, inLibrary = true } = opts
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
   // 防止用户连点上传时 UI state 被旧批次踩;每次上传开新的 toast id
@@ -98,6 +101,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
         try {
           const form = new FormData()
           form.append('project_id', projectId!)
+          form.append('in_library', String(inLibrary))
           for (const f of chunk) {
             // 客户端没法保证文件名唯一(同截图重复粘贴),后端按 hash 命名落盘,
             // 不会真冲突 — 这里把 filename 传过去只是给后端在 UI / log 里有名字。
@@ -167,7 +171,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
       onSuccess?.(aggregate)
     }
     return aggregate
-  }, [projectId, onSuccess])
+  }, [projectId, onSuccess, inLibrary])
 
   return { upload, uploading, progress }
 }

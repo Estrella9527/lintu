@@ -138,6 +138,8 @@ async def _persist_candidate(
         quality_status="passed",
         tag_status="pending",
         source_type="generated",
+        # 生成图默认只是「画布草稿」,不进资产库、不推 OSS;运营「加入资产库」后才进。
+        in_library=False,
         relative_dir=f"uploads/generated/{today}",
         parent_id=parent_id,
         generation_metadata={
@@ -242,11 +244,7 @@ async def generate(
     await db.flush()
     ids = [im.id for im in persisted]
     await db.commit()
-    for iid in ids:
-        try:
-            await enqueue_image_sync(iid)
-        except Exception as e:
-            logger.debug("oss enqueue (generate) failed for %s: %s", iid, e)
+    # 生成图是画布草稿(in_library=False),不自动推 OSS;运营「加入资产库」时才入队。
 
     return {
         "ok": True,

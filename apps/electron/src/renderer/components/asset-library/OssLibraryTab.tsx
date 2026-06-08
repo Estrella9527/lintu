@@ -1,0 +1,354 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import {
+  Check, CloudDownload, Eye, EyeOff, Loader2, Minus, Plus, RefreshCw,
+} from 'lucide-react'
+
+import { api, type OssObjectItem } from '@/lib/api'
+import { cn } from '@/lib/utils'
+import { OssFolderTree } from './OssFolderTree'
+import { ImageInspector } from './ImageInspector'
+import type { ImageRecord } from '@/lib/types'
+
+const PAGE = 120
+const RH_MIN = 110, RH_MAX = 260, RH_STEP = 18
+
+type OnlyFilter = 'all' | 'orphan' | 'in_library'
+
+/**
+ * 资产库 → OSS 图库 Tab。把 bucket 全量图(库内 + 库外)按目录浏览,对齐本地
+ * 资产库的三栏布局与交互:左目录树 / 中网格(状态角标 + 上架下架导入)/ 右详情。
+ * 已入库对象复用 ImageInspector 展示完整图片信息;库外对象展示对象信息 + 导入。
+ */
+export function OssLibraryTab({ projectId }: { projectId: string | null }) {
+  const queryClient = useQueryClient()
+  const [folder, setFolder] = useState<string | null>(null) // null=全部目录;""=根;"i"=该目录
+  const [only, setOnly] = useState<OnlyFilter>('all')
+  const [rowHeight, setRowHeight] = useState(150)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [active, setActive] = useState<OssObjectItem | null>(null)
+
+  const scan = useQuery({
+    queryKey: ['oss-scan'],
+    queryFn: () => api.ossLibrary.scan(),
+    staleTime: 30_000,
+  })
+
+  const objectsQ = useInfiniteQuery({
+    queryKey: ['oss-objects', folder, only],
+    queryFn: ({ pageParam = 0 }) =>
+      api.ossLibrary.objects({ prefix: folder, only, offset: pageParam as number, limit: PAGE }),
+    getNextPageParam: (last, pages) =>
+      last.items.length === PAGE ? pages.length * PAGE : undefined,
+    initialPageParam: 0,
+    enabled: scan.data?.configured !== false,
+  })
+
+  const items = useMemo(() => objectsQ.data?.pages.flatMap((p) => p.items) ?? [], [objectsQ.data])
+  const total = objectsQ.data?.pages[0]?.total ?? 0
+
+  const refreshAll = useCallback(() => {
+    scan.refetch()
+    queryClient.invalidateQueries({ queryKey: ['oss-objects'] })
+  }, [scan, queryClient])
+
+  const importAll = useMutation({
+    mutationFn: () => api.ossLibrary.import(projectId!, undefined),
+    onSuccess: (r) => {
+      toast.success(`已导入 ${r.imported} 张库外图（待审核 + 未上架），失败 ${r.failed}。已派发向量+打标，处理后到「审核」上架即可参与匹配。`)
+      refreshAll()
+    },
+    onError: (e: any) => toast.error(`导入失败：${String(e?.message || e).slice(0, 160)}`),
+  })
+
+  const importKeys = useMutation({
+    mutationFn: (keys: string[]) => api.ossLibrary.import(projectId!, keys),
+    onSuccess: (r) => { toast.success(`已导入 ${r.imported} 张`); setSelected(new Set()); refreshAll() },
+    onError: (e: any) => toast.error(`导入失败：${String(e?.message || e).slice(0, 140)}`),
+  })
+
+  const setListing = useMutation({
+    mutationFn: ({ ids, listed }: { ids: string[]; listed: boolean }) =>
+      api.images.setListing(ids, listed),
+    onSuccess: (_d, v) => {
+      toast.success(v.listed ? '已上架' : '已下架')
+      setSelected(new Set())
+      refreshAll()
+      queryClient.invalidateQueries({ queryKey: ['images'] })
+    },
+    onError: (e: any) => toast.error(`操作失败：${String(e?.message || e).slice(0, 120)}`),
+  })
+
+  // 选中集 → 拆成 已入库(可上下架) / 库外(可导入)
+  const selectedItems = useMemo(
+    () => items.filter((it) => selected.has(it.object_key)),
+    [items, selected],
+  )
+  const selInLib = selectedItems.filter((i) => i.in_library && i.image_id)
+  const selOrphan = selectedItems.filter((i) => !i.in_library)
+
+  const toggleSelect = (key: string) => setSelected((prev) => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n
+  })
+
+  const data = scan.data
+
+  if (data && !data.configured) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-[13px] text-foreground/40">
+        OSS 未配置。请先到 设置 → OSS 连接 配置 bucket 凭据。
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 min-h-0 overflow-hidden flex">
+      {/* 左：目录树 + 状态筛选 */}
+      <aside className="w-56 shrink-0 overflow-y-auto px-3 py-3 border-r border-foreground/5 space-y-4">
+        <div>
+          <h3 className="text-[11px] font-medium text-foreground/50 mb-2 px-1.5">按目录</h3>
+          {scan.isLoading ? (
+            <div className="space-y-1">{[1, 2, 3].map((i) => <div key={i} className="h-6 rounded bg-foreground/[0.04] animate-pulse" />)}</div>
+          ) : (
+            <OssFolderTree dirs={data?.dirs ?? []} selected={folder}
+              onSelect={(f) => { setFolder(f); setSelected(new Set()) }} />
+          )}
+        </div>
+        <div>
+          <h3 className="text-[11px] font-medium text-foreground/50 mb-2 px-1.5">按状态</h3>
+          <div className="space-y-0.5">
+            {([
+              ['all', '全部', data?.total_objects],
+              ['orphan', '库外（可导入）', data?.orphans],
+              ['in_library', '已入库', data?.in_library],
+            ] as [OnlyFilter, string, number | undefined][]).map(([f, label, n]) => (
+              <button key={f} onClick={() => { setOnly(f); setSelected(new Set()) }}
+                className={cn('w-full flex items-center gap-1 px-1.5 py-1 rounded text-left text-[12px] transition-colors',
+                  only === f ? 'bg-accent/10 text-accent' : 'text-foreground/70 hover:bg-foreground/[0.03]')}>
+                <span className="truncate flex-1">{label}</span>
+                <span className={cn('text-[10px] tabular-nums', only === f ? 'text-accent/80' : 'text-foreground/35')}>
+                  {(n ?? 0).toLocaleString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* 中：工具条 + 网格 */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="sticky top-0 z-20 bg-background px-5 pt-3 pb-2 border-b border-foreground/5 space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[12px] text-foreground/45">
+              {selected.size > 0 ? `已选 ${selected.size} / ${total.toLocaleString()}` : `共 ${total.toLocaleString()} 张`}
+            </span>
+            <Button
+              disabled={!projectId || (data?.orphans ?? 0) === 0 || importAll.isPending}
+              onClick={() => importAll.mutate()}
+              title={!projectId ? '请先选择项目' : ''}>
+              {importAll.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : <CloudDownload size={12} className="mr-1" />}
+              导入全部库外（{(data?.orphans ?? 0).toLocaleString()}）
+            </Button>
+            <button onClick={refreshAll} disabled={scan.isFetching}
+              className="flex items-center gap-1 px-2 py-1 text-[12px] rounded text-foreground/65 hover:bg-foreground/[0.05] disabled:opacity-50">
+              <RefreshCw size={12} className={cn(scan.isFetching && 'animate-spin')} /> 重新扫描
+            </button>
+
+            {/* 行高缩放 */}
+            <div className="ml-auto flex items-center gap-1.5 text-foreground/45">
+              <button onClick={() => setRowHeight((h) => Math.max(RH_MIN, h - RH_STEP))} className="h-6 w-6 rounded hover:bg-foreground/[0.05] flex items-center justify-center"><Minus size={12} /></button>
+              <input type="range" min={RH_MIN} max={RH_MAX} step={RH_STEP} value={rowHeight}
+                onChange={(e) => setRowHeight(Number(e.target.value))} className="w-20 h-1 accent-accent" />
+              <button onClick={() => setRowHeight((h) => Math.min(RH_MAX, h + RH_STEP))} className="h-6 w-6 rounded hover:bg-foreground/[0.05] flex items-center justify-center"><Plus size={12} /></button>
+            </div>
+          </div>
+
+          {/* 批量操作条 */}
+          {selected.size > 0 && (
+            <div className="flex items-center gap-2 rounded-lg border border-accent/20 bg-accent/[0.04] px-3 py-1.5 text-[12px]">
+              <span className="text-foreground/65">已选 {selected.size} 张</span>
+              {selOrphan.length > 0 && (
+                <Button onClick={() => importKeys.mutate(selOrphan.map((i) => i.object_key))} disabled={!projectId || importKeys.isPending}>
+                  <CloudDownload size={12} className="mr-1" /> 导入库外（{selOrphan.length}）
+                </Button>
+              )}
+              {selInLib.length > 0 && <>
+                <Button onClick={() => setListing.mutate({ ids: selInLib.map((i) => i.image_id!), listed: true })} disabled={setListing.isPending}>
+                  <Eye size={12} className="mr-1" /> 上架（{selInLib.length}）
+                </Button>
+                <Button onClick={() => setListing.mutate({ ids: selInLib.map((i) => i.image_id!), listed: false })} disabled={setListing.isPending}>
+                  <EyeOff size={12} className="mr-1" /> 下架（{selInLib.length}）
+                </Button>
+              </>}
+              <button onClick={() => setSelected(new Set())} className="ml-auto text-foreground/45 hover:text-foreground/70">清除</button>
+            </div>
+          )}
+        </div>
+
+        {/* 网格 */}
+        <div className="px-5 pt-3 pb-4">
+          {objectsQ.isLoading ? (
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 18 }).map((_, i) => (
+                <div key={i} className="rounded-md bg-foreground/[0.03] animate-pulse" style={{ width: rowHeight, height: rowHeight }} />
+              ))}
+            </div>
+          ) : items.length === 0 ? (
+            <div className="py-16 text-center text-foreground/35 text-[13px]">该筛选下没有对象</div>
+          ) : (
+            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${rowHeight}px, 1fr))` }}>
+              {items.map((it) => (
+                <OssCell key={it.object_key} item={it} height={rowHeight}
+                  selected={selected.has(it.object_key)} active={active?.object_key === it.object_key}
+                  onToggleSelect={() => toggleSelect(it.object_key)}
+                  onClick={() => setActive(it)}
+                  onListing={(listed) => it.image_id && setListing.mutate({ ids: [it.image_id], listed })}
+                  onImport={() => projectId && importKeys.mutate([it.object_key])}
+                  busy={setListing.isPending || importKeys.isPending} />
+              ))}
+            </div>
+          )}
+          {objectsQ.hasNextPage && <LoadMore onVisible={() => objectsQ.fetchNextPage()} />}
+        </div>
+      </div>
+
+      {/* 右：详情 */}
+      {active?.in_library && active.image_id ? (
+        <ImageInspector image={{ id: active.image_id } as ImageRecord} />
+      ) : (
+        <OssOrphanInspector item={active} projectId={projectId}
+          onImport={() => active && projectId && importKeys.mutate([active.object_key])}
+          importing={importKeys.isPending} />
+      )}
+    </div>
+  )
+}
+
+// ── 网格单元 ─────────────────────────────────────────────────────────────
+function OssCell({
+  item, height, selected, active, onToggleSelect, onClick, onListing, onImport, busy,
+}: {
+  item: OssObjectItem; height: number; selected: boolean; active: boolean
+  onToggleSelect: () => void; onClick: () => void
+  onListing: (listed: boolean) => void; onImport: () => void; busy: boolean
+}) {
+  return (
+    <div
+      className={cn('relative group rounded-md overflow-hidden border bg-foreground/[0.03] cursor-pointer',
+        active ? 'border-accent ring-1 ring-accent' : 'border-foreground/8 hover:border-foreground/20')}
+      style={{ aspectRatio: '1' }}
+      onClick={onClick}
+    >
+      {item.preview_url && (
+        <img src={item.preview_url} alt={item.object_key} loading="lazy" className="w-full h-full object-cover" />
+      )}
+      {/* 选择框 */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleSelect() }}
+        className={cn('absolute top-1.5 left-1.5 w-4 h-4 rounded-sm border flex items-center justify-center transition-all',
+          selected ? 'bg-accent border-accent text-white' : 'border-white/70 bg-black/20 opacity-0 group-hover:opacity-100')}>
+        {selected && <Check size={10} strokeWidth={3} />}
+      </button>
+      {/* 状态角标 */}
+      <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5 items-end">
+        {!item.in_library ? (
+          <Tag tone="warn">库外</Tag>
+        ) : <>
+          <Tag tone={item.review_status === 'approved' ? 'ok' : item.review_status === 'rejected' ? 'bad' : 'muted'}>
+            {item.review_status === 'approved' ? '已审' : item.review_status === 'rejected' ? '拒' : '待审'}
+          </Tag>
+          <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
+        </>}
+      </div>
+      {/* hover 动作 */}
+      <div className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+        {!item.in_library ? (
+          <ActionBtn onClick={onImport} disabled={busy}><CloudDownload size={10} /> 导入</ActionBtn>
+        ) : (
+          <ActionBtn onClick={() => onListing(!item.is_listed)} disabled={busy}>
+            {item.is_listed ? <><EyeOff size={10} /> 下架</> : <><Eye size={10} /> 上架</>}
+          </ActionBtn>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function OssOrphanInspector({ item, projectId, onImport, importing }: {
+  item: OssObjectItem | null; projectId: string | null; onImport: () => void; importing: boolean
+}) {
+  if (!item) {
+    return (
+      <aside className="w-[280px] shrink-0 border-l border-foreground/5 flex items-center justify-center text-[12px] text-foreground/35 px-6 text-center">
+        选中一张图片查看详情
+      </aside>
+    )
+  }
+  const name = item.object_key.split('/').pop() || item.object_key
+  return (
+    <aside className="w-[280px] shrink-0 border-l border-foreground/5 overflow-y-auto">
+      <div className="p-3.5 space-y-3.5">
+        <div className="rounded-md overflow-hidden bg-foreground/[0.04]">
+          {item.preview_url && <img src={item.preview_url} alt={name} className="w-full aspect-[4/3] object-cover" />}
+        </div>
+        <div>
+          <h3 className="text-[13px] font-medium text-foreground/85 break-all leading-tight">{name}</h3>
+          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">库外对象（未进灵图库）</p>
+        </div>
+        {!item.in_library && (
+          <Button block onClick={onImport} disabled={!projectId || importing}>
+            {importing ? <Loader2 size={12} className="animate-spin mr-1.5" /> : <CloudDownload size={12} className="mr-1.5" />}
+            导入到灵图库（待审核）
+          </Button>
+        )}
+        <div className="text-[11px] text-foreground/45 leading-relaxed">
+          导入后默认「待审核 + 未上架」，自动派发向量与打标；到「审核」通过并上架后才进入 UGC 匹配候选池。
+        </div>
+        <div className="pt-2 border-t border-foreground/5">
+          <p className="text-[10px] text-foreground/35 break-all leading-snug">对象 key：{item.object_key}</p>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+// ── 小组件 ───────────────────────────────────────────────────────────────
+function Button({ children, onClick, disabled, block, title }: {
+  children: React.ReactNode; onClick?: () => void; disabled?: boolean; block?: boolean; title?: string
+}) {
+  return (
+    <button onClick={onClick} disabled={disabled} title={title}
+      className={cn('inline-flex items-center justify-center px-2.5 py-1 text-[12px] rounded-md border border-foreground/12 bg-foreground/[0.02] text-foreground/75 hover:bg-foreground/[0.06] transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+        block && 'w-full')}>
+      {children}
+    </button>
+  )
+}
+
+function ActionBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className="bg-background/90 backdrop-blur rounded px-1.5 py-0.5 text-[10px] flex items-center gap-0.5 shadow border border-foreground/10 hover:bg-background disabled:opacity-50">
+      {children}
+    </button>
+  )
+}
+
+function Tag({ children, tone }: { children: React.ReactNode; tone: 'ok' | 'bad' | 'warn' | 'accent' | 'muted' }) {
+  const map: Record<string, string> = {
+    ok: 'bg-emerald-500/85', bad: 'bg-rose-500/85', warn: 'bg-amber-500/90',
+    accent: 'bg-accent/85', muted: 'bg-foreground/55',
+  }
+  return <span className={cn('text-[9px] px-1 rounded text-white', map[tone])}>{children}</span>
+}
+
+function LoadMore({ onVisible }: { onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current; if (!el) return
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) onVisible() }, { rootMargin: '300px' })
+    obs.observe(el); return () => obs.disconnect()
+  }, [onVisible])
+  return <div ref={ref} className="h-4" />
+}

@@ -31,6 +31,8 @@ interface ImageGridProps {
   /** Filter to images whose parent_id == this id (i.e. derivatives
    * of a given seed). */
   parentId?: string
+  /** 资产库成员过滤:true=只看已入库(资产库正式视图);不传=全部 */
+  inLibrary?: boolean
   selectedIds: Set<string>
   onToggleSelect: (id: string) => void
   onSelectAll?: (ids: string[]) => void
@@ -44,7 +46,7 @@ interface ImageGridProps {
 }
 
 export function ImageGrid({
-  projectId, search, status, sourceType, folder, tagFilters, promptId, parentId,
+  projectId, search, status, sourceType, folder, tagFilters, promptId, parentId, inLibrary,
   selectedIds, onToggleSelect, onSelectAll, onClickImage, onDoubleClickImage, activeId,
 }: ImageGridProps) {
   const selectionMode = selectedIds.size > 0
@@ -60,6 +62,7 @@ export function ImageGrid({
     ...(tagFilters || {}),
     prompt_id: promptId || undefined,
     parent_id: parentId || undefined,
+    ...(inLibrary !== undefined ? { in_library: inLibrary } : {}),
     ...(folder === ''
       ? { folder: '' }
       : folder

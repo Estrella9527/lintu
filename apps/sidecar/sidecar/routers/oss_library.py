@@ -13,7 +13,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from sidecar.engines.oss_library import scan_bucket, import_orphans
+from typing import Optional
+
+from fastapi import Query
+
+from sidecar.engines.oss_library import scan_bucket, import_orphans, list_objects
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,12 +25,27 @@ router = APIRouter()
 
 @router.get("/scan")
 async def scan():
-    """扫描 OSS bucket,返回对象清单 + 入库/审核/上架状态汇总。"""
+    """扫描 OSS bucket,返回汇总 + 目录树 + 预览明细。"""
     try:
         return await scan_bucket()
     except Exception as e:
         logger.exception("OSS 扫描失败")
         raise HTTPException(500, {"code": "scan_failed", "message": str(e)})
+
+
+@router.get("/objects")
+async def objects(
+    prefix: Optional[str] = Query(None, description='目录前缀;不传=全部,""=根目录'),
+    only: str = Query("all", description="all | orphan | in_library"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(120, ge=1, le=500),
+):
+    """按目录 + 过滤分页列 OSS 对象(资产库 OSS 图库网格)。"""
+    try:
+        return await list_objects(prefix=prefix, only=only, offset=offset, limit=limit)
+    except Exception as e:
+        logger.exception("OSS 列对象失败")
+        raise HTTPException(500, {"code": "list_failed", "message": str(e)})
 
 
 class ImportBody(BaseModel):

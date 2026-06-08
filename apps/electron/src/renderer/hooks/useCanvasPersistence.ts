@@ -104,7 +104,17 @@ export function useCanvasPersistence(): UseCanvasPersistenceReturn {
         prompt,
         updated_at: new Date().toISOString(),
       }
-      setSnapshots((prev) => ({ ...prev, [projectId]: next }))
+      setSnapshots((prev) => {
+        // 防丢护栏:内存里是「空画布」但存档里「有内容」时,绝不覆盖。
+        // 这种"空"通常是瞬态的 —— 代码热更新 / 模块重载会把 jotai atom 重置成
+        // 默认空值,若此刻 debounce 保存就会把真实存档冲掉(本次事故根因)。
+        // 真正想清空画布请走「清空画布」按钮(clearCanvas,显式删除 entry)。
+        const prevObjs = prev[projectId]?.objects?.length ?? 0
+        if (stripped.length === 0 && prevObjs > 0) {
+          return prev
+        }
+        return { ...prev, [projectId]: next }
+      })
       setLastSavedAt(new Date())
     }, SAVE_DEBOUNCE_MS)
     return () => clearTimeout(timer)

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ArrowRight, Clock, Loader2, RefreshCw, Trash2,
+  ArrowRight, ChevronDown, ChevronRight, Clock, Loader2, PanelRightClose, RefreshCw, Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -49,6 +49,8 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
   const setShowBatch = useSetAtom(workshopBatchDialogAtom)
   const setActiveModule = useSetAtom(activeModuleAtom)
   const [showSave, setShowSave] = useState(false)
+  // 历史记录默认收起 —— 整块区域留给自由画布,需要时点开为右侧悬浮抽屉。
+  const [open, setOpen] = useState(false)
 
   // 当前选中 — 区分 image / placeholder
   const rawSelected = objects.find((o) => o.id === selectedId) || null
@@ -62,13 +64,19 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
     queryFn: () => api.images.list({
       project_id: projectId!,
       source_type: 'generated',
-      limit: 30,
+      // 拉多一点图,聚合成「操作」后行数会显著少于图数,保证仍能看到足够多次操作
+      limit: 80,
       offset: 0,
     }) as Promise<{ items: ImageRecord[] }>,
     enabled: !!projectId,
     refetchInterval: 30_000,
   })
   const history = data?.items || []
+
+  // 按「生成操作」聚合:同一次生成(count=N)的 N 张图,落库 created_at 精确到
+  // 微秒几乎相同(同一次提交),且共享 type / 源图 / prompt。以「类型|源图|
+  // prompt|秒」为键聚合,一次操作只展示一条(代表图=该次第一张),带 ×N 角标。
+  const operations = useMemo(() => groupByOperation(history), [history])
 
   // 选中历史条目 → 加进画布(视口中心 + 稍微 stagger)
   // imageOrId 接受 ImageRecord 或裸 id(用于 parent 链 — 我们只有 id)
@@ -104,27 +112,43 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
   const submitToReview = async () => {
     if (!selectedImage) return
     try {
-      const res = await apiFetchRaw(`/images/${selectedImage.image_id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ review_status: 'pending' }),
-      })
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        toast.error(`加入审核队列失败:${text.slice(0, 120)}`)
-        return
-      }
-      toast.success('已加入审核队列', {
-        action: { label: '去审核', onClick: () => setActiveModule('review-queue') },
+      // 加入资产库:置 in_library=True(后端会把原本不在库的图入队推 OSS)。
+      // 进库后即出现在「资产库」,可继续走审核 / 上架参与 UGC。
+      await api.images.setLibrary([selectedImage.image_id], true)
+      toast.success('已加入资产库', {
+        action: { label: '去资产库', onClick: () => setActiveModule('asset-library') },
       })
     } catch (e) {
-      toast.error(`加入审核队列失败:${(e as Error).message}`)
+      toast.error(`加入资产库失败:${(e as Error).message}`)
     }
   }
 
   return (
     <>
-      <aside className="w-[300px] shrink-0 border-l border-foreground/5 bg-background flex flex-col">
+      {/* 收起态:右上角悬浮按钮 */}
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          className="absolute top-3 right-3 z-30 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
+                     border border-foreground/10 bg-background/95 backdrop-blur
+                     shadow-[0_2px_10px_rgba(0,0,0,0.06)]
+                     text-[12px] text-foreground/75 hover:bg-foreground/[0.05] hover:text-foreground transition-colors"
+          title="展开历史记录"
+        >
+          <Clock size={13} className="text-foreground/55" />
+          历史记录
+          {history.length > 0 && (
+            <span className="rounded-full bg-accent/12 text-accent text-[10px] px-1.5 py-0.5 tabular-nums leading-none">
+              {history.length}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* 展开态:右侧悬浮抽屉(叠在画布上,不占画布栏位) */}
+      {open && (
+      <aside className="absolute top-0 right-0 bottom-0 w-[320px] z-30 border-l border-foreground/8
+                        bg-background/97 backdrop-blur shadow-[-8px_0_24px_rgba(0,0,0,0.08)] flex flex-col">
         <div className="px-4 py-2.5 h-[40px] border-b border-foreground/5 flex items-center gap-2">
           <Clock size={13} className="text-foreground/55" />
           <h3 className="text-[12.5px] font-medium text-foreground/85">历史记录</h3>
@@ -137,6 +161,14 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
             title="手动刷新历史"
           >
             <RefreshCw size={11} strokeWidth={1.6} className={cn(isFetching && 'animate-spin')} />
+          </button>
+          <button
+            onClick={() => setOpen(false)}
+            className="h-6 w-6 inline-flex items-center justify-center rounded-md
+                       text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground transition-colors"
+            title="收起历史记录"
+          >
+            <PanelRightClose size={13} strokeWidth={1.6} />
           </button>
         </div>
 
@@ -191,10 +223,10 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
             </div>
           )}
 
-          {/* 历史列表 */}
+          {/* 历史列表 —— 按「生成操作」聚合:一次生成(不论几张)折叠成一条 */}
           <div>
             <div className="text-[10px] uppercase tracking-wide text-foreground/40 font-medium px-1 mb-1.5">
-              最近生成({history.length})
+              最近生成({operations.length})
             </div>
             {!projectId ? (
               <div className="py-8 text-center text-[11px] text-foreground/40">请先选择项目</div>
@@ -204,7 +236,7 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
                   <div key={i} className="h-16 rounded-lg bg-foreground/[0.04] animate-pulse" />
                 ))}
               </div>
-            ) : history.length === 0 ? (
+            ) : operations.length === 0 ? (
               <div className="py-8 text-center text-[11px] text-foreground/40 leading-relaxed">
                 还没有生成记录 ·
                 <br />
@@ -212,11 +244,11 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
               </div>
             ) : (
               <div className="space-y-1.5">
-                {history.map((img) => (
+                {operations.map((op) => (
                   <HistoryItem
-                    key={img.id}
-                    img={img}
-                    onAddResult={() => addHistoryToCanvas(img)}
+                    key={op.rep.id}
+                    op={op}
+                    onAddImage={(img) => addHistoryToCanvas(img)}
                     onAddSource={(parentId) => addHistoryToCanvas({ id: parentId })}
                   />
                 ))}
@@ -244,6 +276,7 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
           </Button>
         </div>
       </aside>
+      )}
 
       <SaveAsStrategyDialog
         open={showSave}
@@ -272,29 +305,57 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
  *   - 点 source 缩略 → 把源图加到画布(方便"再改一次")
  *   - 点 prompt 区(右侧文字) → 加 result 到画布(默认操作)
  */
+/** 把生成图按「同一次操作」聚合。键 = 类型|源图|prompt|秒级时间。
+ *  history 已按 created_at 倒序,同次的图相邻,聚合后保持时间序。
+ *  返回每组的全部候选(all),供展开逐张挑选。 */
+export interface HistoryOp { rep: ImageRecord; all: ImageRecord[] }
+function groupByOperation(items: ImageRecord[]): HistoryOp[] {
+  const groups: { key: string; all: ImageRecord[] }[] = []
+  const idxByKey = new Map<string, number>()
+  for (const img of items) {
+    const meta = img.generation_metadata as Record<string, any> | null | undefined
+    const type = (meta?.type as string) || img.source_type || ''
+    const prompt = (meta?.prompt as string) || meta?.prompt_content || ''
+    const sec = (img.created_at || '').slice(0, 19)  // 截到秒,丢掉微秒
+    const key = `${type}|${img.parent_id || ''}|${prompt}|${sec}`
+    const at = idxByKey.get(key)
+    if (at != null) {
+      groups[at].all.push(img)
+    } else {
+      idxByKey.set(key, groups.length)
+      groups.push({ key, all: [img] })
+    }
+  }
+  return groups.map((g) => ({ rep: g.all[0], all: g.all }))
+}
+
 function HistoryItem({
-  img, onAddResult, onAddSource,
+  op, onAddImage, onAddSource,
 }: {
-  img: ImageRecord
-  onAddResult: () => void
+  op: HistoryOp
+  onAddImage: (img: ImageRecord) => void
   onAddSource: (parentId: string) => void
 }) {
-  const meta = img.generation_metadata as Record<string, any> | null | undefined
-  const type = (meta?.type as string) || (img.source_type === 'generated' ? 'gen' : 'orig')
+  const { rep, all } = op
+  const count = all.length
+  const [expanded, setExpanded] = useState(false)
+
+  const meta = rep.generation_metadata as Record<string, any> | null | undefined
+  const type = (meta?.type as string) || (rep.source_type === 'generated' ? 'gen' : 'orig')
   const promptText: string = (meta?.prompt as string) || meta?.prompt_content || ''
   const cost: number | undefined = (meta?.cost_usd as number) || undefined
-  const created = img.created_at ? new Date(img.created_at) : null
+  const created = rep.created_at ? new Date(rep.created_at) : null
   const relTime = useMemo(() => formatRelative(created), [created])
-  const parentId: string | null = img.parent_id
+  const parentId: string | null = rep.parent_id
 
   return (
     <div
       className="rounded-lg p-1.5 hover:bg-foreground/[0.04] transition-colors
                  ring-1 ring-transparent hover:ring-foreground/8"
-      title={promptText || img.file_name}
+      title={promptText || rep.file_name}
     >
       <div className="flex gap-2">
-        {/* 缩略区 — 有 parent 时:[src] → [result];否则仅 [result] */}
+        {/* 缩略区 — 有 parent 时:[src] → [代表结果];否则仅 [代表结果] */}
         {parentId ? (
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -307,41 +368,52 @@ function HistoryItem({
             </button>
             <ArrowRight size={9} className="text-foreground/35 shrink-0" />
             <button
-              onClick={(e) => { e.stopPropagation(); onAddResult() }}
-              title="点击把生成结果加到画布"
+              onClick={(e) => { e.stopPropagation(); onAddImage(rep) }}
+              title="点击把这张结果加到画布"
               className="h-12 w-12 rounded-md overflow-hidden ring-1 ring-foreground/15 bg-foreground/[0.04]
                          hover:ring-accent transition-all"
             >
-              <ThumbnailImage imageId={img.id} size={128} className="w-full h-full object-cover" />
+              <ThumbnailImage imageId={rep.id} size={128} className="w-full h-full object-cover" />
             </button>
           </div>
         ) : (
           <button
-            onClick={onAddResult}
-            title="点击把生成结果加到画布"
+            onClick={() => onAddImage(rep)}
+            title="点击把这张结果加到画布"
             className="h-14 w-14 rounded-md overflow-hidden ring-1 ring-foreground/8 shrink-0
                        bg-foreground/[0.04] hover:ring-accent transition-all"
           >
-            <ThumbnailImage imageId={img.id} size={128} className="w-full h-full object-cover" />
+            <ThumbnailImage imageId={rep.id} size={128} className="w-full h-full object-cover" />
           </button>
         )}
-        {/* 文字区 — 点也算加结果 */}
-        <button
-          onClick={onAddResult}
-          className="flex-1 min-w-0 flex flex-col justify-between py-0.5 text-left"
+        {/* 文字区 — 点也算加代表结果(div,避免按钮嵌套) */}
+        <div
+          onClick={() => onAddImage(rep)}
+          className="flex-1 min-w-0 flex flex-col justify-between py-0.5 text-left cursor-pointer"
         >
-          <div className="flex items-start gap-1">
+          <div className="flex items-center gap-1">
             <span className="text-[10px] font-medium text-accent uppercase tracking-wide shrink-0">
               {labelForType(type)}
             </span>
-            {img.width && img.height && (
+            {count > 1 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v) }}
+                className="inline-flex items-center gap-0.5 text-[9px] leading-none px-1 py-0.5 rounded
+                           bg-accent/12 text-accent shrink-0 tabular-nums hover:bg-accent/20 transition-colors"
+                title={expanded ? '收起候选' : `展开这次生成的全部 ${count} 张候选,逐张挑选`}
+              >
+                ×{count}
+                {expanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+              </button>
+            )}
+            {rep.width && rep.height && (
               <span className="text-[10px] text-foreground/35 tabular-nums shrink-0 ml-auto">
-                {img.width}×{img.height}
+                {rep.width}×{rep.height}
               </span>
             )}
           </div>
           <div className="text-[11px] text-foreground/75 leading-snug line-clamp-2">
-            {promptText || img.file_name}
+            {promptText || rep.file_name}
           </div>
           <div className="flex items-center justify-between text-[10px] text-foreground/40">
             <span>{relTime}</span>
@@ -349,8 +421,29 @@ function HistoryItem({
               <span className="tabular-nums">${cost.toFixed(4)}</span>
             )}
           </div>
-        </button>
+        </div>
       </div>
+
+      {/* 展开:这次生成的全部候选,逐张点选加到画布 */}
+      {expanded && count > 1 && (
+        <div className="mt-2 pt-2 border-t border-foreground/8 grid grid-cols-4 gap-1.5">
+          {all.map((c, i) => (
+            <button
+              key={c.id}
+              onClick={(e) => { e.stopPropagation(); onAddImage(c) }}
+              title={`候选 ${i + 1} / ${count} · 点击加到画布`}
+              className="relative aspect-square rounded-md overflow-hidden ring-1 ring-foreground/12
+                         bg-foreground/[0.04] hover:ring-accent transition-all group"
+            >
+              <ThumbnailImage imageId={c.id} size={128} className="w-full h-full object-cover" />
+              <span className="absolute bottom-0.5 right-0.5 text-[8px] leading-none px-1 py-0.5 rounded
+                               bg-black/55 text-white/90 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">
+                {i + 1}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
