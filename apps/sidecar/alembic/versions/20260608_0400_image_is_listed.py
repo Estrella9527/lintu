@@ -24,8 +24,9 @@ def upgrade() -> None:
     with op.batch_alter_table("images") as batch:
         batch.add_column(sa.Column("is_listed", sa.Boolean(), nullable=True))
         batch.add_column(sa.Column("listed_at", sa.DateTime(), nullable=True))
-    # 存量回填 True(保持现状),再建索引
-    op.execute("UPDATE images SET is_listed = 1 WHERE is_listed IS NULL")
+    # 存量回填 True(保持现状),再建索引。用 true(非整数 1):PG 的 boolean 列
+    # 不接受整数字面量;SQLite(3.23+)也认 true,跨库安全。
+    op.execute("UPDATE images SET is_listed = true WHERE is_listed IS NULL")
     op.create_index("ix_images_is_listed", "images", ["is_listed"])
 
 
