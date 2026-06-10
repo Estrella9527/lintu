@@ -88,6 +88,34 @@ def _decode_mask(mask_b64: str | None) -> bytes | None:
         raise HTTPException(400, {"code": "invalid_mask", "message": "mask 必须是 base64 PNG"})
 
 
+def _fit_exact(image_bytes: bytes, target_w: int, target_h: int) -> bytes:
+    """把产物精确适配到用户所选尺寸/比例(cover 裁切 + 缩放)。
+
+    模型只支持固定档位(gpt-image 横竖方三档),16:9 等会被映射到最近档 —
+    这里在落盘前把产物等比放大铺满目标框、居中裁掉溢出,保证用户拿到的
+    就是所选的精确 WxH。比例已一致(±2%)时只做缩放或原样返回。
+    """
+    try:
+        import io
+        with PILImage.open(io.BytesIO(image_bytes)) as im:
+            w, h = im.size
+            if w == target_w and h == target_h:
+                return image_bytes
+            scale = max(target_w / w, target_h / h)
+            nw, nh = round(w * scale), round(h * scale)
+            im = im.convert("RGB") if im.mode not in ("RGB", "RGBA") else im
+            im = im.resize((nw, nh), PILImage.Resampling.LANCZOS)
+            left = (nw - target_w) // 2
+            top = (nh - target_h) // 2
+            im = im.crop((left, top, left + target_w, top + target_h))
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            return buf.getvalue()
+    except Exception:
+        logger.warning("fit_exact failed, keeping provider output as-is", exc_info=True)
+        return image_bytes
+
+
 async def _persist_candidate(
     db: AsyncSession,
     project: Project,
@@ -96,6 +124,8 @@ async def _persist_candidate(
     gtype: str,
     parent_id: str | None,
     prompt_for_meta: str,
+    fit_w: int | None = None,
+    fit_h: int | None = None,
 ) -> Image:
     """Drop a candidate's bytes to disk + INSERT an ImageRecord row.
 
@@ -107,9 +137,14 @@ async def _persist_candidate(
     dest_dir = Path(project.originals_path) / "uploads" / "generated" / today
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    # 精确尺寸:模型档位 ≠ 用户所选比例时,cover 裁切到精确 WxH(6.11 反馈)
+    raw = cand.image_data
+    if fit_w and fit_h:
+        raw = _fit_exact(raw, fit_w, fit_h)
+
     # 合规:写盘前嵌入 AIGC 隐式标识(《AI生成合成内容标识办法》)。
     # 标识跟着文件走,转存/分发后仍在。失败会返回原字节,不阻断生成。
-    labeled = embed_aigc_label_png(cand.image_data, gtype=gtype)
+    labeled = embed_aigc_label_png(raw, gtype=gtype)
 
     file_hash = hashlib.md5(labeled).hexdigest()
     # All providers return PNG-decodable bytes; we don't try to preserve the
@@ -206,6 +241,7 @@ async def generate(
             align_x=body.align_x,
             align_y=body.align_y,
             style_archive_id=body.style_archive_id,
+            speed=body.speed,
         )
     except GenerationFailure as gf:
         # Friendly structured response; canvas UI converts the code → toast text
@@ -219,12 +255,17 @@ async def generate(
     persisted: List[Image] = []
     total_cost = 0.0
     persist_failures: list[str] = []
+    # 精确尺寸适用面:用户给了目标尺寸的类型都裁(含 outpaint/重绘按原图);
+    # matting(透明边界)与 upscale(目标=放大)除外。
+    fit_w = body.target_w if body.type not in ("matting", "upscale") else None
+    fit_h = body.target_h if body.type not in ("matting", "upscale") else None
     for cand in candidates:
         try:
             img = await _persist_candidate(
                 db, project, cand,
                 gtype=body.type, parent_id=parent_id,
                 prompt_for_meta=prompt_for_meta,
+                fit_w=fit_w, fit_h=fit_h,
             )
             persisted.append(img)
             total_cost += cand.cost_usd

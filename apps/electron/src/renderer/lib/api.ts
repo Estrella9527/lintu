@@ -391,9 +391,9 @@ class APIClient {
       withTokenParam(`http://localhost:7879/api/images/${id}/file`),
     downloadUrl: (id: string) =>
       withTokenParam(`http://localhost:7879/api/images/${id}/download`),
-    /** 位图转矢量(SVG)导出 — 服务端 vtracer 转换并缓存 */
-    svgUrl: (id: string) =>
-      withTokenParam(`http://localhost:7879/api/images/${id}/svg`),
+    /** 导出 SVG:ai=ChatGPT 按提示词直接生成矢量(默认) | trace=位图描摹 */
+    svgUrl: (id: string, mode: 'ai' | 'trace' = 'ai') =>
+      withTokenParam(`http://localhost:7879/api/images/${id}/svg?mode=${mode}`),
 
     // 上下架(单张 / 批量)— OSS 图库与匹配候选池共用
     setListing: (imageIds: string[], isListed: boolean) =>

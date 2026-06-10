@@ -81,7 +81,7 @@ export function CanvasImageMenu({
         const rec = await api.images.get(menu.imageId)
         if (rec?.file_name) stem = rec.file_name.replace(/\.[^.]+$/, '')
       } catch { /* 默认名兜底 */ }
-      toast.message('正在矢量化…', { description: '首次转换需要几秒,完成后弹出保存框' })
+      toast.message('AI 正在创作矢量插画…', { description: '按这张图的提示词生成 SVG,约 1 分钟,完成后弹出保存框;期间可继续其他操作' })
       const saved = await window.electronAPI.downloadFile(
         api.images.svgUrl(menu.imageId), `${stem}.svg`,
       )

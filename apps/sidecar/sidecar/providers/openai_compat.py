@@ -416,9 +416,16 @@ class OpenAICompatProvider(ImageProvider):
             or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
         )
         # gpt-image / dall-e 只接受固定档位 — 任意比例映射到最近档(横/竖/方)
-        if any(p in (self.model or "").lower() for p in ("gpt-image", "dall-e")):
+        is_gpt_image = "gpt-image" in (self.model or "").lower()
+        if is_gpt_image or "dall-e" in (self.model or "").lower():
             size = _normalize_images_api_size(size)
         payload = {"model": self.model, "prompt": prompt, "n": 1, "size": size}
+        # gpt-image-2 能力面:质量档 / 透明背景 / 输出格式(kwargs 有才带,
+        # relay 不认会原样报错可见,方便排查)
+        if is_gpt_image:
+            for k in ("quality", "background", "output_format", "output_compression", "moderation"):
+                if kwargs.get(k) is not None:
+                    payload[k] = kwargs[k]
         if not _is_images_api_model(self.model) or "dall-e" in self.model.lower():
             payload["response_format"] = "b64_json"
 
@@ -494,7 +501,8 @@ class OpenAICompatProvider(ImageProvider):
             or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
         )
         # gpt-image / dall-e 只接受固定档位 — 任意比例映射到最近档(横/竖/方)
-        if any(p in (self.model or "").lower() for p in ("gpt-image", "dall-e")):
+        _is_gpt_image_edit = "gpt-image" in (self.model or "").lower()
+        if _is_gpt_image_edit or "dall-e" in (self.model or "").lower():
             size = _normalize_images_api_size(size)
         files: dict = {
             "image": (f"seed.{ext}", img_bytes, mime),
@@ -510,6 +518,13 @@ class OpenAICompatProvider(ImageProvider):
             "n": "1",
             "size": size,
         }
+        # gpt-image-2 能力面(edits):input_fidelity=high 保持输入图细节/人物
+        # 一致(精准扩图/改图的关键)+ 质量档/背景/输出格式按需透传
+        if _is_gpt_image_edit:
+            for k in ("quality", "input_fidelity", "background", "output_format",
+                      "output_compression", "moderation"):
+                if kwargs.get(k) is not None:
+                    form[k] = str(kwargs[k])
         # Only add response_format for non-gpt-image (e.g., DALL-E 2) — it's
         # rejected by gpt-image-*.
         if not _is_images_api_model(self.model) or "dall-e" in self.model.lower():

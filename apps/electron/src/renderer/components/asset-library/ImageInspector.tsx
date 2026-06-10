@@ -62,7 +62,7 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
     if (saved) toast.success(`已保存到 ${saved}`)
   }
   const handleExportSvg = async () => {
-    toast.message('正在矢量化…', { description: '首次转换需要几秒;适合 logo/插画,照片会呈色块矢量风' })
+    toast.message('AI 正在创作矢量插画…', { description: '按提示词/画面生成 SVG,约 1 分钟' })
     const stem = (img.file_name || img.id).replace(/\.[^.]+$/, '')
     const saved = await window.electronAPI.downloadFile(api.images.svgUrl(img.id), `${stem}.svg`)
     if (saved) toast.success(`SVG 已导出到 ${saved}`)

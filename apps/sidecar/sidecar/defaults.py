@@ -113,6 +113,8 @@ DEFAULTS = {
     # 「中文文字」操作默认走文字渲染强的供应商(Seedream/即梦同源)。
     # 名字对应 设置→AI 服务商 里的 relay 名;不存在时自动退回默认链。
     "text_render_provider": "relay:ark-image",
+    # 导出 SVG 默认走 ChatGPT 类模型按提示词直接生成矢量代码(6.11)。
+    "svg_provider": "relay:gpt5.5",
 }
 
 

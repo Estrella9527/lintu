@@ -323,6 +323,7 @@ async def dispatch(
     align_x: str | None = None,
     align_y: str | None = None,
     style_archive_id: str | None = None,
+    speed: str | None = None,
     **provider_kwargs,
 ) -> list[GenerationCandidate]:
     """Generate `count` candidates for the given type.
@@ -379,6 +380,14 @@ async def dispatch(
     providers = _pick_provider_chain(model_id)
 
     extra: dict = dict(provider_kwargs)
+    # gpt-image-2 能力全开(6.11):速度档映射 quality(精修→high,草稿→medium);
+    # 带输入图的操作默认 input_fidelity=high(保持人物/细节/风格一致,扩图与
+    # 改图的精准度靠它)。provider 端只对 gpt-image 系附加这些字段,其他模型忽略。
+    if speed and "quality" not in extra:
+        extra["quality"] = "high" if speed == "refined" else "medium"
+    if input_image_path and gtype in ("img2img", "edit", "outpaint", "inpaint", "eraser", "text-zh") \
+            and "input_fidelity" not in extra:
+        extra["input_fidelity"] = "high"
     # text2img / img2img / edit / text-zh 都把用户选的输出比例传给模型 —— 此前
     # 只有 text2img 传,图生图被丢到全局默认 2048x2048,用户选什么比例都出方图
     # (6.10 反馈 P0)。outpaint 走 compose 路径单独算;inpaint/eraser 在下面按原图。

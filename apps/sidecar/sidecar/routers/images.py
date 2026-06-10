@@ -504,20 +504,54 @@ async def stream_image_file(image_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{image_id}/svg")
-async def export_svg(image_id: str, db: AsyncSession = Depends(get_db)):
-    """位图转矢量(SVG)导出 — vtracer 彩色矢量化,结果缓存到 derived/svg/。
+async def export_svg(
+    image_id: str,
+    mode: str = Query("ai", description="ai=提示词走 ChatGPT 直接生成矢量(默认) | trace=vtracer 位图描摹"),
+    regenerate: bool = Query(False, description="true=忽略缓存重新生成"),
+    db: AsyncSession = Depends(get_db),
+):
+    """导出 SVG(矢量)。
 
-    适合 logo / 插画 / 海报元素;照片类会得到色块化的矢量风格(矢量本质)。
-    源文件不在本地时从 CDN 取一份临时副本再转。
+    默认 ai 模式:把图的提示词(原片则附图看图)交给 ChatGPT 类模型直接产出
+    SVG 代码 — 得到可编辑的矢量插画。trace 模式:vtracer 位图描摹(色块风)。
+    两种结果分开缓存到 derived/svg_ai|svg/。
     """
     img = await db.get(Image, image_id)
     if not img:
         raise HTTPException(404, "Image not found")
 
     from sidecar.config import DERIVED_DIR
-    out_dir = DERIVED_DIR / "svg" / (image_id[:2] or "_")
+    sub = "svg_ai" if mode == "ai" else "svg"
+    out_dir = DERIVED_DIR / sub / (image_id[:2] or "_")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{image_id}.svg"
+    if regenerate:
+        out_path.unlink(missing_ok=True)
+
+    if mode == "ai":
+        if not out_path.exists():
+            from sidecar.engines.svg_ai import SvgAiError, generate_svg_via_llm
+            prompt = None
+            meta = img.generation_metadata or {}
+            if isinstance(meta, dict):
+                prompt = (meta.get("prompt") or "").strip() or None
+            src = Path(effective_file_path(img))
+            src_path = str(src) if src.exists() else None
+            aspect = None
+            if img.width and img.height:
+                from math import gcd
+                g = gcd(img.width, img.height) or 1
+                aspect = (img.width // g, img.height // g)
+            try:
+                svg = await generate_svg_via_llm(prompt=prompt, image_path=src_path, aspect=aspect)
+            except SvgAiError as e:
+                raise HTTPException(502, str(e))
+            out_path.write_text(svg, encoding="utf-8")
+        stem = Path(img.file_name or image_id).stem
+        return FileResponse(
+            out_path, media_type="image/svg+xml", filename=f"{stem}.svg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     if not out_path.exists():
         source = Path(effective_file_path(img))

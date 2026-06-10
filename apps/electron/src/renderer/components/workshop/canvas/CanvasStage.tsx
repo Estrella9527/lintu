@@ -584,12 +584,18 @@ export function CanvasStage() {
             <CanvasLinks />
             {objects.map((obj) => {
               if (isPlaceholderObject(obj)) {
+                // 预生成骨架:图生图时用源对象的图作暗化底,"正在这张图上生成"
+                const srcObj = obj.sourceObjectIds?.length
+                  ? objects.find((o) => o.id === obj.sourceObjectIds![0])
+                  : undefined
+                const srcSrc = srcObj && isImageObject(srcObj) ? srcObj.src : undefined
                 return (
                   <CanvasPlaceholder
                     key={obj.id}
                     obj={obj}
                     isSelected={selectedId === obj.id && !maskMode}
                     onSelect={() => { if (!maskMode) setSelectedId(obj.id) }}
+                    sourceImageSrc={srcSrc}
                     onRemove={() => {
                       setObjects((prev) => prev.filter((x) => x.id !== obj.id))
                       setSelectedId(null)
