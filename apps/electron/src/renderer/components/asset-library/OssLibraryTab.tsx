@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  Check, Cloud, CloudDownload, Eye, EyeOff, Loader2, Minus, Plus, RefreshCw,
+  Check, Cloud, CloudDownload, Eye, EyeOff, Loader2, Minus, Plus, RefreshCw, Trash2,
 } from 'lucide-react'
 
 import { api, type OssObjectItem } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { InfoHint } from '@/components/shared/InfoHint'
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
 import { OssFolderTree } from './OssFolderTree'
 import { ImageInspector } from './ImageInspector'
 import type { ImageRecord } from '@/lib/types'
@@ -90,6 +93,40 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
     mutationFn: (keys: string[]) => api.ossLibrary.import(projectId!, keys),
     onSuccess: (r) => { toast.success(`已导入 ${r.imported} 张`); setSelected(new Set()); refreshAll() },
     onError: (e: any) => toast.error(`导入失败：${String(e?.message || e).slice(0, 140)}`),
+  })
+
+  // OSS 文件删除:先弹确认(列明 未纳管直接删 / 已入库连记录删 / 云端跳过)
+  const [confirmDel, setConfirmDel] = useState<{
+    keys: string[]; nOrphan: number; nLocal: number; nCloud: number
+  } | null>(null)
+
+  const requestDelete = useCallback((its: OssObjectItem[]) => {
+    if (!its.length) return
+    setConfirmDel({
+      keys: its.map((i) => i.object_key),
+      nOrphan: its.filter((i) => i.status === 'orphan').length,
+      nLocal: its.filter((i) => i.status === 'local').length,
+      nCloud: its.filter((i) => i.status === 'cloud').length,
+    })
+  }, [])
+
+  const deleteObjects = useMutation({
+    mutationFn: (keys: string[]) => api.ossLibrary.deleteObjects(keys, true),
+    onSuccess: (r) => {
+      if (r.error) { toast.error(r.error); return }
+      const parts = [`已删除 ${r.deleted_objects} 个文件`]
+      if (r.deleted_records) parts.push(`含 ${r.deleted_records} 条图库记录(本地+云端)`)
+      if (r.skipped_cloud) parts.push(`跳过 ${r.skipped_cloud} 个云端发布对象`)
+      toast.success(parts.join(' · '))
+      setConfirmDel(null)
+      setSelected(new Set())
+      setActive(null)
+      queryClient.invalidateQueries({ queryKey: ['oss-scan'] })
+      queryClient.invalidateQueries({ queryKey: ['oss-objects'] })
+      queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['image-folders'] })
+    },
+    onError: (e: any) => toast.error(`删除失败：${String(e?.message || e).slice(0, 160)}`),
   })
 
   const setListing = useMutation({
@@ -218,6 +255,14 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
                   <EyeOff size={12} className="mr-1" /> 下架（{selInLib.length}）
                 </Button>
               </>}
+              {(selOrphan.length > 0 || selInLib.length > 0) && (
+                <button
+                  onClick={() => requestDelete(selectedItems)}
+                  disabled={deleteObjects.isPending}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[12px] rounded-md border border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40">
+                  <Trash2 size={12} /> 删除文件（{selOrphan.length + selInLib.length}）
+                </button>
+              )}
               <button onClick={() => setSelected(new Set())} className="ml-auto text-foreground/45 hover:text-foreground/70">清除</button>
             </div>
           )}
@@ -242,7 +287,8 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
                   onClick={() => setActive(it)}
                   onListing={(listed) => it.image_id && setListing.mutate({ ids: [it.image_id], listed })}
                   onImport={() => projectId && importKeys.mutate([it.object_key])}
-                  busy={setListing.isPending || importKeys.isPending} />
+                  onDelete={() => requestDelete([it])}
+                  busy={setListing.isPending || importKeys.isPending || deleteObjects.isPending} />
               ))}
             </div>
           )}
@@ -258,8 +304,44 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
       ) : (
         <OssOrphanInspector item={active} projectId={projectId}
           onImport={() => active && projectId && importKeys.mutate([active.object_key])}
+          onDelete={() => active && requestDelete([active])}
           importing={importKeys.isPending} />
       )}
+
+      {/* 删除确认 — 列明三类影响,防误删 */}
+      <Dialog open={!!confirmDel} onOpenChange={(o) => !o && setConfirmDel(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-[14px]">删除 OSS 仓文件</DialogTitle>
+          </DialogHeader>
+          {confirmDel && (
+            <div className="space-y-2 text-[12.5px] text-foreground/75">
+              {confirmDel.nOrphan > 0 && (
+                <p>· <b>{confirmDel.nOrphan}</b> 个未纳管文件将从 OSS 仓<b>永久删除</b></p>
+              )}
+              {confirmDel.nLocal > 0 && (
+                <p className="text-rose-600 dark:text-rose-400">
+                  · <b>{confirmDel.nLocal}</b> 个已入库对象将<b>连同图库记录一起删除</b>(本机 + 云端 + 文件与缩略图),标签等信息不可恢复
+                </p>
+              )}
+              {confirmDel.nCloud > 0 && (
+                <p className="text-foreground/45">· {confirmDel.nCloud} 个云端已发布对象将被跳过(由发布它的电脑管理)</p>
+              )}
+              <p className="text-[11.5px] text-foreground/45 pt-1">文件删除不可撤销,请确认。</p>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button onClick={() => setConfirmDel(null)}>取消</Button>
+            <button
+              onClick={() => confirmDel && deleteObjects.mutate(confirmDel.keys)}
+              disabled={deleteObjects.isPending}
+              className="inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[12px] rounded-md bg-rose-600 text-white hover:bg-rose-700 transition-colors disabled:opacity-50">
+              {deleteObjects.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              确认删除
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -345,11 +427,11 @@ function CloudImageInspector({ item }: { item: OssObjectItem }) {
 
 // ── 网格单元 ─────────────────────────────────────────────────────────────
 function OssCell({
-  item, height, selected, active, onToggleSelect, onClick, onListing, onImport, busy,
+  item, height, selected, active, onToggleSelect, onClick, onListing, onImport, onDelete, busy,
 }: {
   item: OssObjectItem; height: number; selected: boolean; active: boolean
   onToggleSelect: () => void; onClick: () => void
-  onListing: (listed: boolean) => void; onImport: () => void; busy: boolean
+  onListing: (listed: boolean) => void; onImport: () => void; onDelete: () => void; busy: boolean
 }) {
   return (
     <div
@@ -385,8 +467,8 @@ function OssCell({
           <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
         </>}
       </div>
-      {/* hover 动作:未纳管→导入;本机→上下架;云端→无(去详情看远端信息) */}
-      <div className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+      {/* hover 动作:未纳管→导入+删;本机→上下架+删;云端→无(去详情看远端信息) */}
+      <div className="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
         {item.status === 'orphan' ? (
           <ActionBtn onClick={onImport} disabled={busy}><CloudDownload size={10} /> 导入</ActionBtn>
         ) : item.status === 'local' ? (
@@ -394,13 +476,17 @@ function OssCell({
             {item.is_listed ? <><EyeOff size={10} /> 下架</> : <><Eye size={10} /> 上架</>}
           </ActionBtn>
         ) : null}
+        {item.status !== 'cloud' && (
+          <ActionBtn onClick={onDelete} disabled={busy}><Trash2 size={10} /></ActionBtn>
+        )}
       </div>
     </div>
   )
 }
 
-function OssOrphanInspector({ item, projectId, onImport, importing }: {
-  item: OssObjectItem | null; projectId: string | null; onImport: () => void; importing: boolean
+function OssOrphanInspector({ item, projectId, onImport, onDelete, importing }: {
+  item: OssObjectItem | null; projectId: string | null
+  onImport: () => void; onDelete: () => void; importing: boolean
 }) {
   if (!item) {
     return (
@@ -425,6 +511,13 @@ function OssOrphanInspector({ item, projectId, onImport, importing }: {
             {importing ? <Loader2 size={12} className="animate-spin mr-1.5" /> : <CloudDownload size={12} className="mr-1.5" />}
             导入到灵图库（待审核）
           </Button>
+        )}
+        {item.status === 'orphan' && (
+          <button
+            onClick={onDelete}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[12px] rounded-md border border-rose-500/25 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors">
+            <Trash2 size={12} /> 从 OSS 仓删除此文件
+          </button>
         )}
         <div className="text-[11px] text-foreground/45 leading-relaxed">
           导入后默认「待审核 + 未上架」，自动派发向量与打标；到「审核」通过并上架后才进入 UGC 匹配候选池。

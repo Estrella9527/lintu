@@ -428,6 +428,16 @@ class APIClient {
         '/oss-library/import',
         { method: 'POST', body: JSON.stringify({ project_id: projectId, object_keys: objectKeys ?? null }) },
       ),
+
+    /** 删除 OSS 仓文件。deleteRecords=true 时本机已入库的连记录(本地+云端)一起删 */
+    deleteObjects: (objectKeys: string[], deleteRecords: boolean) =>
+      this.request<{
+        deleted_objects: number; deleted_records: number
+        skipped_local: number; skipped_cloud: number; error?: string
+      }>('/oss-library/delete-objects', {
+        method: 'POST',
+        body: JSON.stringify({ object_keys: objectKeys, delete_records: deleteRecords }),
+      }),
   }
 
   // ── Stats ──

@@ -18,7 +18,8 @@ from typing import Optional
 from fastapi import Query
 
 from sidecar.engines.oss_library import (
-    cloud_image_detail, import_orphans, list_objects, scan_bucket,
+    cloud_image_detail, delete_bucket_objects, import_orphans, list_objects,
+    scan_bucket,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,25 @@ async def cloud_image(image_id: str):
     if detail is None:
         raise HTTPException(404, {"code": "not_found", "message": "云端无此图或未配置同步凭据"})
     return detail
+
+
+class DeleteObjectsBody(BaseModel):
+    object_keys: list[str]
+    # True = 本机已入库的对象连同灵图记录(本地+云端)一起删;False = 只删未纳管文件
+    delete_records: bool = False
+
+
+@router.post("/delete-objects")
+async def delete_objects(body: DeleteObjectsBody):
+    """删除 OSS 仓文件。未纳管直接删;本机已入库需 delete_records=true(连记录);
+    云端已发布一律跳过(由发布端管理)。"""
+    if not body.object_keys:
+        return {"deleted_objects": 0, "deleted_records": 0, "skipped_local": 0, "skipped_cloud": 0}
+    try:
+        return await delete_bucket_objects(body.object_keys, body.delete_records)
+    except Exception as e:
+        logger.exception("OSS 删除对象失败")
+        raise HTTPException(500, {"code": "delete_failed", "message": str(e)})
 
 
 class ImportBody(BaseModel):

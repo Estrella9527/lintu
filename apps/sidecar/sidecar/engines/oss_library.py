@@ -294,6 +294,101 @@ async def list_objects(prefix: str | None = None, only: str = "all",
     return {"configured": True, "items": items, "total": total}
 
 
+async def delete_bucket_objects(object_keys: list[str], delete_records: bool = False) -> dict:
+    """删除 OSS 仓内的文件(OSS 文件管理核心动作)。
+
+    规则(按对象三态):
+      orphan(未纳管)   直接删文件 —— 没有任何记录引用,安全。
+      local(本机已入库) 仅当 delete_records=True:连同灵图记录一起删
+                        (本地记录+引用清理+推云端删除墓碑),并删文件及其
+                        缩略衍生(i/{id}_300/_800.jpg)。否则跳过。
+      cloud(云端已发布) 一律跳过 —— 由发布它的电脑管理,本机不代删。
+
+    返回 {deleted_objects, deleted_records, skipped_local, skipped_cloud}。
+    删除后就地更新缓存(从缓存 keys 移除),不必全量重扫。
+    """
+    storage = get_storage()
+    if not storage.is_configured():
+        return {"error": "OSS 未配置写入凭据(只读模式不能删除)",
+                "deleted_objects": 0, "deleted_records": 0,
+                "skipped_local": 0, "skipped_cloud": 0}
+
+    _s, keys, by_cdn, owned_ids, cloud_map, _sa, _ch = await _load_context()
+    keyset = set(keys)
+    want = [k for k in object_keys if k in keyset]
+
+    file_keys: list[str] = []      # 真正要从 bucket 删的(含缩略衍生)
+    primary_keys: list[str] = []   # 主对象(用于缓存剔除与计数)
+    record_ids: list[str] = []
+    skipped_local = skipped_cloud = 0
+    for k in want:
+        info = _classify(k, by_cdn, owned_ids, cloud_map)
+        st = info["status"]
+        if st == "orphan":
+            primary_keys.append(k)
+            file_keys.append(k)
+        elif st == "local":
+            if not delete_records:
+                skipped_local += 1
+                continue
+            iid = info.get("image_id")
+            primary_keys.append(k)
+            file_keys.append(k)
+            if iid:
+                record_ids.append(iid)
+                file_keys += [f"i/{iid}_300.jpg", f"i/{iid}_800.jpg"]
+        else:  # cloud
+            skipped_cloud += 1
+
+    # 1. 删本机记录(含全部外键引用,SQLite 不强制 FK 也要清干净)+ 推云端删除
+    if record_ids:
+        from sqlalchemy import delete as sql_delete, update as sql_update, or_
+        from sidecar.db.models import (
+            BatchSubtask, DuplicateGroup, MatchFeedback, OssSyncJob, Tag,
+        )
+        async with async_session() as db:
+            CHUNK = 500
+            for i in range(0, len(record_ids), CHUNK):
+                ids = record_ids[i:i + CHUNK]
+                await db.execute(sql_delete(MatchFeedback).where(MatchFeedback.image_id.in_(ids)))
+                await db.execute(sql_delete(OssSyncJob).where(OssSyncJob.image_id.in_(ids)))
+                await db.execute(sql_delete(BatchSubtask).where(
+                    or_(BatchSubtask.seed_image_id.in_(ids), BatchSubtask.output_image_id.in_(ids))))
+                await db.execute(sql_update(DuplicateGroup)
+                                 .where(DuplicateGroup.kept_image_id.in_(ids))
+                                 .values(kept_image_id=None))
+                await db.execute(sql_update(Image).where(Image.parent_id.in_(ids)).values(parent_id=None))
+                await db.execute(sql_delete(Tag).where(Tag.image_id.in_(ids)))
+                await db.execute(sql_delete(Image).where(Image.id.in_(ids)))
+                await db.commit()
+        try:
+            from sidecar.scheduler.cloud_sync_worker import enqueue_image_delete
+            for iid in record_ids:
+                await enqueue_image_delete(iid)
+        except Exception:
+            logger.warning("云端删除入队失败(本地已删,可稍后对账)", exc_info=True)
+
+    # 2. 删 bucket 文件
+    deleted_objects = 0
+    if file_keys:
+        deleted_objects = storage.delete_keys(file_keys)
+
+    # 3. 就地更新缓存(剔除已删 key,免全量重扫)
+    cache = _read_cache()
+    if cache and primary_keys:
+        removed = set(primary_keys)
+        cache["keys"] = [k for k in cache["keys"] if k not in removed]
+        cache["cloud"] = {k: v for k, v in (cache.get("cloud") or {}).items() if k not in removed}
+        try:
+            _CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False))
+        except Exception:
+            pass
+
+    return {"deleted_objects": len(primary_keys), "deleted_records": len(record_ids),
+            "skipped_local": skipped_local, "skipped_cloud": skipped_cloud,
+            "raw_deleted": deleted_objects}
+
+
 async def cloud_image_detail(image_id: str) -> dict | None:
     """单张云端已发布图的完整信息(含标签),给详情面板用。本机代云端查,
     渲染层不接触同步凭据。云端不可达/没配凭据 → None。"""
