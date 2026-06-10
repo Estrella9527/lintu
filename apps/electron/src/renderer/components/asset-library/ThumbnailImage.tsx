@@ -48,8 +48,12 @@ export function ThumbnailImage({ imageId, alt, size = 300, className, onClick, v
         <div className="absolute inset-0 animate-pulse bg-foreground/[0.04]" />
       )}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center text-foreground/20">
-          <ImageOff size={20} />
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-foreground/25"
+          title="原图文件不在本机(可能被移动或删除),且云端无副本。信息仍保留;找回源目录后可重新关联。"
+        >
+          <ImageOff size={18} />
+          <span className="text-[9px] text-foreground/30">源文件缺失</span>
         </div>
       )}
     </div>

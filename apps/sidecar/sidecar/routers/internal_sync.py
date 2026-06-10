@@ -23,8 +23,9 @@ from sqlalchemy import and_, delete as sql_delete, or_, select
 
 from sidecar.config import LINTU_INTERNAL_SYNC_TOKEN
 from sidecar.db.models import (
-    ApiKey, Image, Organization, OrganizationMember, Project,
-    ProjectMember, SyncTombstone, Tag, User,
+    ApiKey, BatchSubtask, DuplicateGroup, Image, MatchFeedback, Organization,
+    OrganizationMember, OssSyncJob, Project, ProjectMember, SyncTombstone,
+    Tag, User,
 )
 from sidecar.db.session import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -390,6 +391,27 @@ async def sync_api_keys(body: BulkApiKeysBody, db: AsyncSession = Depends(get_db
     return {"upserted": n}
 
 
+async def _purge_image_refs(db: AsyncSession, image_ids: list[str]) -> None:
+    """删 images 前清掉所有指向它们的外键引用,否则 PG 直接 FK 违约 500
+    (本次教训:match_feedback 引用参与过 UGC 匹配的图)。
+    SQLite 端没开 FK 强制所以从未暴露;PG 端必须按依赖顺序清。"""
+    from sqlalchemy import update as sql_update
+    CHUNK = 500
+    for i in range(0, len(image_ids), CHUNK):
+        ids = image_ids[i:i + CHUNK]
+        await db.execute(sql_delete(MatchFeedback).where(MatchFeedback.image_id.in_(ids)))
+        await db.execute(sql_delete(OssSyncJob).where(OssSyncJob.image_id.in_(ids)))
+        await db.execute(sql_delete(BatchSubtask).where(
+            or_(BatchSubtask.seed_image_id.in_(ids), BatchSubtask.output_image_id.in_(ids))
+        ))
+        await db.execute(sql_update(DuplicateGroup)
+                         .where(DuplicateGroup.kept_image_id.in_(ids))
+                         .values(kept_image_id=None))
+        # 子图引用(parent_id 自引用):指向被删图的子图置空血缘
+        await db.execute(sql_update(Image).where(Image.parent_id.in_(ids)).values(parent_id=None))
+        await db.execute(sql_delete(Tag).where(Tag.image_id.in_(ids)))
+
+
 @router.post("/deletes", dependencies=[Depends(require_sync_token)])
 async def sync_deletes(body: DeleteEventsBody, db: AsyncSession = Depends(get_db)):
     """Apply delete events: when local user deletes something, cloud drops it
@@ -400,7 +422,7 @@ async def sync_deletes(body: DeleteEventsBody, db: AsyncSession = Depends(get_db
     # 级联删图收集到的 image id(项目删除时)也要登记墓碑
     cascaded_image_ids: list[str] = []
     if body.images:
-        await db.execute(sql_delete(Tag).where(Tag.image_id.in_(body.images)))
+        await _purge_image_refs(db, body.images)
         r = await db.execute(sql_delete(Image).where(Image.id.in_(body.images)))
         deleted["images"] = r.rowcount or 0
         await record_tombstones(db, "image", body.images)
@@ -418,7 +440,7 @@ async def sync_deletes(body: DeleteEventsBody, db: AsyncSession = Depends(get_db
             ]
             if ids:
                 cascaded_image_ids.extend(ids)
-                await db.execute(sql_delete(Tag).where(Tag.image_id.in_(ids)))
+                await _purge_image_refs(db, ids)
                 await db.execute(sql_delete(Image).where(Image.id.in_(ids)))
         r = await db.execute(sql_delete(Project).where(Project.id.in_(body.projects)))
         deleted["projects"] = r.rowcount or 0
