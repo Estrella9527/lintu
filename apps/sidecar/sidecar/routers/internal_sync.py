@@ -79,6 +79,10 @@ class ImageSyncBody(BaseModel):
     generation_metadata: Optional[dict] = None
     tagged_at: Optional[str] = None
     tag_provider: Optional[str] = None
+    # 协作状态三件套(跨端流转;老客户端不传 → None,upsert 时跳过不覆盖)
+    review_status: Optional[str] = None
+    is_listed: Optional[bool] = None
+    in_library: Optional[bool] = None
     # Per-image tags (replaces all existing tags for this image)
     tags: list[dict[str, Any]] = []                 # [{dimension, value, source, confidence}, ...]
 
@@ -295,6 +299,14 @@ async def sync_images(body: BulkImagesBody, db: AsyncSession = Depends(get_db)):
             "tagged_at": _parse_dt(it.tagged_at),
             "tag_provider": it.tag_provider,
         }
+        # 协作状态三件套:老客户端不传(None)就不覆盖现有值,避免把
+        # 云端已对齐的 审核/上架/入库 态冲回默认。
+        if it.review_status is not None:
+            fields["review_status"] = it.review_status
+        if it.is_listed is not None:
+            fields["is_listed"] = it.is_listed
+        if it.in_library is not None:
+            fields["in_library"] = it.in_library
         if existing:
             for k, v in fields.items():
                 setattr(existing, k, v)
@@ -618,6 +630,9 @@ def _img_to_body(img: Image, tags: list[dict]) -> dict:
         "embedding_model": img.embedding_model, "text_search_blob": img.text_search_blob,
         "generation_metadata": img.generation_metadata,
         "tagged_at": _iso(img.tagged_at), "tag_provider": img.tag_provider,
+        "review_status": img.review_status,
+        "is_listed": bool(img.is_listed) if img.is_listed is not None else None,
+        "in_library": bool(img.in_library) if img.in_library is not None else None,
         "updated_at": _iso(img.updated_at), "tags": tags,
     }
 

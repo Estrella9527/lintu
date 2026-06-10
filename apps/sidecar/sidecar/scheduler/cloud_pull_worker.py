@@ -32,6 +32,7 @@ from sqlalchemy import delete as sql_delete, select
 
 from sidecar.config import (
     DATA_DIR, LINTU_CLOUD_PULL, LINTU_CLOUD_SYNC_URL, LINTU_INTERNAL_SYNC_TOKEN,
+    LINTU_MODE,
 )
 from sidecar.db.models import (
     ApiKey, Image, Organization, OrganizationMember, Project, ProjectMember, Tag, User,
@@ -54,11 +55,38 @@ def _load_cursor() -> str:
     return ""
 
 
-def _save_cursor(cursor: str) -> None:
+def _save_state(cursor: str, last_counts: dict | None = None) -> None:
+    """存游标 + 最近一次同步信息(设置页「多设备同步」状态展示用)。"""
+    state: dict = {"cursor": cursor}
     try:
-        _STATE_FILE.write_text(json.dumps({"cursor": cursor}, ensure_ascii=False))
+        if _STATE_FILE.exists():
+            state = json.loads(_STATE_FILE.read_text()) or {}
+        state["cursor"] = cursor
+    except Exception:
+        pass
+    state["last_at"] = datetime.utcnow().isoformat()
+    if last_counts:
+        state["last_counts"] = last_counts
+    try:
+        _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False))
     except Exception:
         logger.warning("cloud_pull: 存游标失败", exc_info=True)
+
+
+def pull_status() -> dict:
+    """给设置页用的状态快照:开关 + 上次同步时间/计数。"""
+    from sidecar.defaults import get_setting
+    enabled = LINTU_CLOUD_PULL or str(get_setting("cloud_pull_enabled") or "").lower() in ("1", "true", "yes")
+    out = {"enabled": bool(enabled), "last_at": None, "last_counts": None, "cursor": ""}
+    try:
+        if _STATE_FILE.exists():
+            st = json.loads(_STATE_FILE.read_text()) or {}
+            out["last_at"] = st.get("last_at")
+            out["last_counts"] = st.get("last_counts")
+            out["cursor"] = st.get("cursor") or ""
+    except Exception:
+        pass
+    return out
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -75,16 +103,26 @@ class CloudPullWorker:
         self._stopped = False
         self._task: asyncio.Task | None = None
 
+    @staticmethod
+    def _enabled() -> bool:
+        """env 强开(运维) 或 设置页开关 cloud_pull_enabled(每 tick 现读,改完即生效)。"""
+        if LINTU_CLOUD_PULL:
+            return True
+        from sidecar.defaults import get_setting
+        return str(get_setting("cloud_pull_enabled") or "").lower() in ("1", "true", "yes")
+
     async def start(self) -> None:
-        if not LINTU_CLOUD_PULL:
-            logger.info("cloud_pull_worker: disabled (LINTU_CLOUD_PULL 未开)")
+        # 云端(server 模式)永不拉自己;桌面端常驻 loop,开关由每 tick 判定。
+        if LINTU_MODE != "electron":
+            logger.info("cloud_pull_worker: server mode,不启动")
             return
         if not LINTU_CLOUD_SYNC_URL or not LINTU_INTERNAL_SYNC_TOKEN:
             logger.warning("cloud_pull_worker: 需要 LINTU_CLOUD_SYNC_URL + LINTU_INTERNAL_SYNC_TOKEN,已禁用")
             return
         self._stopped = False
         self._task = asyncio.create_task(self._run())
-        logger.info("cloud_pull_worker: started ← %s", LINTU_CLOUD_SYNC_URL)
+        logger.info("cloud_pull_worker: loop started ← %s (enabled=%s)",
+                    LINTU_CLOUD_SYNC_URL, self._enabled())
 
     async def stop(self) -> None:
         self._stopped = True
@@ -99,8 +137,10 @@ class CloudPullWorker:
         url = f"{LINTU_CLOUD_SYNC_URL.rstrip('/')}/internal/sync/changes"
         while not self._stopped:
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=_HTTP_TIMEOUT) as client:
-                    await self._drain(client, url)
+                # 设置页开关每 tick 现读:关 → 本轮跳过(改完即生效,无需重启)
+                if self._enabled():
+                    async with httpx.AsyncClient(headers=headers, timeout=_HTTP_TIMEOUT) as client:
+                        await self._drain(client, url)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -122,7 +162,7 @@ class CloudPullWorker:
             data = resp.json()
             applied = await self._apply(data)
             cursor = data.get("cursor") or cursor
-            _save_cursor(cursor)
+            _save_state(cursor, applied)
             pages += 1
             if applied:
                 logger.info("cloud_pull: 第%d页 apply %s, cursor=%s", pages, applied, cursor[:32])
@@ -261,6 +301,13 @@ class CloudPullWorker:
                 "generation_metadata": it.get("generation_metadata"),
                 "tagged_at": _parse_dt(it.get("tagged_at")), "tag_provider": it.get("tag_provider"),
             }
+            # 协作状态三件套:老云端 feed 不带(None)时不覆盖本地值
+            if it.get("review_status") is not None:
+                fields["review_status"] = it["review_status"]
+            if it.get("is_listed") is not None:
+                fields["is_listed"] = it["is_listed"]
+            if it.get("in_library") is not None:
+                fields["in_library"] = it["in_library"]
             existing = await db.get(Image, it["id"])
             if existing:
                 for k, v in fields.items():

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image as PILImage
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -252,6 +252,28 @@ async def get_image(image_id: str, db: AsyncSession = Depends(get_db)):
 # ── Thumbnail endpoint ──
 
 
+def _cdn_fallback(img: Image, *, thumb_size: int | None = None) -> RedirectResponse | None:
+    """本地文件缺失时 302 到 CDN —— 多设备同步拉回的图只有元数据没有本地文件,
+    浏览/缩略全靠云端副本。thumb_size 给定时跳到对应缩略 key(OSS 只有 300/800,
+    128 就近用 300);否则跳原图(cdn_path)。CDN 未配置或该图没传过 → None(404 照旧)。"""
+    if not getattr(img, "cdn_path", None):
+        return None
+    try:
+        from sidecar.engines.oss_sync import get_storage, object_key_for
+        storage = get_storage()
+        if not storage.is_read_configured():
+            return None
+        if thumb_size is not None:
+            kind = "thumb_300" if thumb_size <= 300 else "thumb_800"
+            key = object_key_for(img.id, kind, "jpg")
+        else:
+            key = img.cdn_path
+        return RedirectResponse(storage.public_url(key), status_code=302)
+    except Exception:
+        logger.debug("cdn fallback failed for %s", img.id, exc_info=True)
+        return None
+
+
 @router.get("/{image_id}/thumbnail")
 async def get_thumbnail(
     image_id: str,
@@ -280,6 +302,9 @@ async def get_thumbnail(
 
     if needs_regenerate:
         if not source.exists():
+            fb = _cdn_fallback(img, thumb_size=size)
+            if fb:
+                return fb
             raise HTTPException(404, "Source image file not found")
         generate_thumbnail(str(source), thumb_path, size)
 
@@ -335,6 +360,13 @@ async def patch_image(
             await enqueue_image_sync(image_id)
         except Exception as e:
             logger.debug("oss enqueue (add to library) failed for %s: %s", image_id, e)
+    # 状态变更推云端(多人协作:上下架/入库态跨端流转;pending 会被 push 过滤)
+    if body.review_status is not None or body.is_listed is not None or body.in_library is not None:
+        try:
+            from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+            await enqueue_image_upsert(image_id)
+        except Exception as e:
+            logger.debug("cloud sync enqueue failed for %s: %s", image_id, e)
     return {"ok": True, "id": image_id, "review_status": img.review_status,
             "is_listed": img.is_listed, "in_library": img.in_library}
 
@@ -363,6 +395,13 @@ async def batch_set_library(body: LibraryBody, db: AsyncSession = Depends(get_db
             await enqueue_image_sync(iid)
         except Exception as e:
             logger.debug("oss enqueue (batch add to library) failed for %s: %s", iid, e)
+    # 入库态推云端(跨端流转)
+    from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+    for img in rows:
+        try:
+            await enqueue_image_upsert(img.id)
+        except Exception as e:
+            logger.debug("cloud sync enqueue failed for %s: %s", img.id, e)
     return {"ok": True, "updated": len(rows), "in_library": body.in_library}
 
 
@@ -385,6 +424,13 @@ async def batch_set_listing(body: ListingBody, db: AsyncSession = Depends(get_db
         img.is_listed = body.is_listed
         img.listed_at = now
     await db.commit()
+    # 上下架推云端(跨端流转;pending 图会被 push 的 approved 过滤拦下)
+    from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+    for img in rows:
+        try:
+            await enqueue_image_upsert(img.id)
+        except Exception as e:
+            logger.debug("cloud sync enqueue failed for %s: %s", img.id, e)
     return {"ok": True, "updated": len(rows), "is_listed": body.is_listed}
 
 
@@ -441,6 +487,9 @@ async def stream_image_file(image_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Image not found")
     source = Path(effective_file_path(img))
     if not source.exists():
+        fb = _cdn_fallback(img)
+        if fb:
+            return fb
         raise HTTPException(404, "Source file not found")
     mime = _EXT_MIME.get(source.suffix.lower(), "application/octet-stream")
     return FileResponse(
@@ -463,6 +512,9 @@ async def download_image(image_id: str, db: AsyncSession = Depends(get_db)):
     # imported" escape hatch.
     source = Path(img.file_path)
     if not source.exists():
+        fb = _cdn_fallback(img)
+        if fb:
+            return fb
         raise HTTPException(404, "Source file not found")
     return FileResponse(
         source,

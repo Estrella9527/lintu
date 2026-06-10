@@ -617,6 +617,15 @@ class APIClient {
         body: JSON.stringify({ data, if_version: ifVersion ?? null }),
       }),
 
+    // 多设备同步(拉取端)状态:开关 + 上次同步时间/计数
+    cloudPullStatus: () =>
+      this.request<{
+        enabled: boolean
+        last_at: string | null
+        last_counts: Record<string, number> | null
+        cursor: string
+      }>('/config/cloud-pull-status'),
+
     /** 当前 sidecar 进程是否会把 config 改动推到云端 — 决定「匹配策略」
      * 等页面顶部该显示「只本地生效」还是「保存即同步线上 UGC」。 */
     syncStatus: () =>

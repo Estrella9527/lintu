@@ -397,6 +397,10 @@ class CloudSyncWorker:
                 "reject_reason": img.reject_reason,
                 "is_kept": img.is_kept,
                 "tag_status": img.tag_status,
+                # 协作状态三件套 — 跨端流转审核/上架/入库态(拉取端靠它们展示)
+                "review_status": img.review_status,
+                "is_listed": bool(img.is_listed),
+                "in_library": bool(img.in_library),
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,

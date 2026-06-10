@@ -240,6 +240,9 @@ async def push_images(client: httpx.AsyncClient) -> int:
                 "generation_metadata": img.generation_metadata,
                 "tagged_at": img.tagged_at.isoformat() if img.tagged_at else None,
                 "tag_provider": img.tag_provider,
+                "review_status": img.review_status,
+                "is_listed": bool(img.is_listed),
+                "in_library": bool(img.in_library),
                 "tags": tags_by_img.get(img.id, []),
             })
 

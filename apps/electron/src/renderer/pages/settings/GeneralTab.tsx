@@ -8,6 +8,7 @@ import { themeAtom, type ThemeMode } from '@/atoms/theme'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
 import { InfoHint } from '@/components/shared/InfoHint'
 
@@ -30,6 +31,14 @@ export function GeneralTab() {
 
   const [maxMb, setMaxMb] = useState<string>('')
   const [policy, setPolicy] = useState<OversizePolicy>('fail')
+  const [pullEnabled, setPullEnabled] = useState(false)
+
+  // 多设备同步状态(开关回显 + 上次同步时间);开着时 10s 轮询刷新时间
+  const { data: pullStatus } = useQuery({
+    queryKey: ['cloud-pull-status'],
+    queryFn: () => api.config.cloudPullStatus(),
+    refetchInterval: 10_000,
+  })
 
   useEffect(() => {
     if (!config) return
@@ -37,6 +46,8 @@ export function GeneralTab() {
     setMaxMb(bytes > 0 ? String(Math.round(bytes / (1024 * 1024))) : '0')
     const p = String(config['upload_oversize_policy'] || 'fail').toLowerCase()
     setPolicy(p === 'shrink' ? 'shrink' : 'fail')
+    const cp = config['cloud_pull_enabled'] as unknown
+    setPullEnabled(cp === true || String(cp).toLowerCase() === 'true' || String(cp) === '1')
   }, [config])
 
   const saveMutation = useMutation({
@@ -139,6 +150,46 @@ export function GeneralTab() {
           <Button size="sm" onClick={saveUploadPolicy} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? '保存中…' : '保存上传策略'}
           </Button>
+        </div>
+      </section>
+
+      <section>
+        <div className="flex items-center gap-1.5 mb-3">
+          <h3 className="text-[13px] font-medium text-foreground/80">多设备同步</h3>
+          <InfoHint text={
+            '打开后,本机每 30 秒从云端拉回其他电脑上「已审核发布」的图片、标签和上下架状态。\n' +
+            '本机的审核发布始终会自动同步给其他电脑,此开关只控制"收不收别人的"。\n' +
+            '注意:协作约定是 打标 → 审核 在同一台电脑完成;审核通过即对全组织可见。'
+          } />
+        </div>
+        <div className="rounded-md border border-foreground/5 p-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[12.5px] text-foreground/75">
+              同步其他电脑已发布的图片与标签
+            </p>
+            <p className="text-[11px] text-foreground/40 mt-0.5">
+              {pullStatus?.enabled
+                ? pullStatus?.last_at
+                  ? `已开启 · 上次同步 ${new Date(pullStatus.last_at + 'Z').toLocaleString()}`
+                  : '已开启 · 等待首次同步(最长 30 秒)'
+                : '未开启 · 本机看不到其他电脑的打标与审核结果'}
+            </p>
+          </div>
+          <Switch
+            checked={!!pullEnabled}
+            onCheckedChange={async (v) => {
+              setPullEnabled(v)
+              try {
+                await api.config.update({ cloud_pull_enabled: v })
+                toast.success(v ? '多设备同步已开启,30 秒内开始首次同步' : '多设备同步已关闭')
+                queryClient.invalidateQueries({ queryKey: ['config'] })
+                queryClient.invalidateQueries({ queryKey: ['cloud-pull-status'] })
+              } catch (e: any) {
+                setPullEnabled(!v)
+                toast.error(`保存失败:${e?.message || e}`)
+              }
+            }}
+          />
         </div>
       </section>
     </div>

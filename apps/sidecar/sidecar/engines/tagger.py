@@ -226,6 +226,14 @@ async def run_tagging(task: Task, progress_cb):
                             )
                             await inner_db.commit()
 
+                        # 打标结果推云端(多人协作:别的电脑拉取后能看到标签)。
+                        # push worker 只放行 approved 的图,pending 入队会被过滤,无害。
+                        try:
+                            from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+                            await enqueue_image_upsert(img.id)
+                        except Exception:
+                            logger.debug("cloud sync enqueue failed for %s (non-fatal)", img.id)
+
                         async with lock:
                             total_cost += result.get("cost_usd", 0)
                             processed += 1

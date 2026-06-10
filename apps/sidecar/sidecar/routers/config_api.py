@@ -355,6 +355,13 @@ async def reset_match_cooldown(project_id: str | None = None):
     return {"ok": True, "cleared": n, "project_id": project_id}
 
 
+@router.get("/cloud-pull-status")
+async def get_cloud_pull_status():
+    """设置页「多设备同步」状态:开关 + 上次同步时间/计数。"""
+    from sidecar.scheduler.cloud_pull_worker import pull_status
+    return pull_status()
+
+
 @router.get("/match-cooldown")
 async def get_match_cooldown_state():
     """Inspect what the cooldown currently holds (debug endpoint)."""

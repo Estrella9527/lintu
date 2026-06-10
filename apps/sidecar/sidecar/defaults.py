@@ -104,6 +104,10 @@ DEFAULTS = {
     "matrix_col_dimension": "scene",
     "matrix_p0_threshold": 50,
     "matrix_p1_threshold": 200,
+
+    # ── 多设备同步(拉取端开关;推送始终开) ──
+    # 打开后本机定期从云端拉回其他电脑「已审核发布」的图与标签。
+    "cloud_pull_enabled": False,
 }
 
 
