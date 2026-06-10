@@ -1,6 +1,6 @@
 {
   "name": "@lintu/electron",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "main": "dist/main.cjs",
   "type": "module",

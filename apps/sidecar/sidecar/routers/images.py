@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -500,6 +501,76 @@ async def stream_image_file(image_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ── Download original ──
+
+
+@router.get("/{image_id}/svg")
+async def export_svg(image_id: str, db: AsyncSession = Depends(get_db)):
+    """位图转矢量(SVG)导出 — vtracer 彩色矢量化,结果缓存到 derived/svg/。
+
+    适合 logo / 插画 / 海报元素;照片类会得到色块化的矢量风格(矢量本质)。
+    源文件不在本地时从 CDN 取一份临时副本再转。
+    """
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+
+    from sidecar.config import DERIVED_DIR
+    out_dir = DERIVED_DIR / "svg" / (image_id[:2] or "_")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{image_id}.svg"
+
+    if not out_path.exists():
+        source = Path(effective_file_path(img))
+        tmp_dl: Path | None = None
+        if not source.exists():
+            # 本地无文件(多设备拉回的图)→ 从 OSS 取临时副本
+            if not getattr(img, "cdn_path", None):
+                raise HTTPException(404, "Source file not found (且无云端副本)")
+            from sidecar.engines.oss_sync import get_storage
+            storage = get_storage()
+            tmp_dl = out_dir / f"{image_id}.src.tmp"
+            try:
+                storage.download(img.cdn_path, str(tmp_dl))
+                source = tmp_dl
+            except Exception as e:
+                raise HTTPException(502, f"云端取图失败: {e}")
+        tmp_png = out_dir / f"{image_id}.in.png"
+        try:
+            import vtracer
+
+            def _convert():
+                # vtracer 的 Rust 层打不开含中文/全角字符的路径,且对 HEIC 等
+                # 格式支持有限 —— 先用 PIL 标准化成 ASCII 路径的 PNG 再喂它。
+                # 顺便限长边 1600:矢量化耗时与 SVG 体积都随像素暴涨,1600 足够。
+                from PIL import Image as PILImage
+                with PILImage.open(source) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((1600, 1600))
+                    im.save(tmp_png, "PNG")
+                vtracer.convert_image_to_svg_py(str(tmp_png), str(out_path), colormode="color")
+
+            # CPU 密集 Rust 调用,丢线程池避免卡 event loop
+            await asyncio.to_thread(_convert)
+        except HTTPException:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:   # pyo3 panic 是 BaseException,普通 except 抓不到
+            out_path.unlink(missing_ok=True)
+            logger.exception("SVG 转换失败 %s", image_id)
+            raise HTTPException(500, f"矢量化失败: {str(e)[:200]}")
+        finally:
+            tmp_png.unlink(missing_ok=True)
+            if tmp_dl is not None:
+                tmp_dl.unlink(missing_ok=True)
+
+    stem = Path(img.file_name or image_id).stem
+    return FileResponse(
+        out_path,
+        media_type="image/svg+xml",
+        filename=f"{stem}.svg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get("/{image_id}/download")

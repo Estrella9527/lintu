@@ -16,6 +16,7 @@ import {
 } from '@/atoms/canvas'
 import { api, apiFetchRaw } from '@/lib/api'
 import { generateOnCanvas, type GenerationCandidate } from '@/lib/canvasGenerate'
+import { deliverGenerationError, deliverGenerationResult } from '@/lib/canvasDelivery'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -187,6 +188,9 @@ export function PromptBar() {
       status: 'pending',
       label: `${effectiveMode === 'text2img' ? '文生图' : '图生图'} · ${prompt.trim().slice(0, 28)}${prompt.trim().length > 28 ? '…' : ''}`,
       requestType: effectiveMode,
+      // 对账上下文:重启/切页后用 prompt+时间窗 去历史找回结果(必达保证)
+      prompt: prompt.trim(),
+      created_at: Date.now(),
       x: centerX - effW / 2 + stagger,
       y: centerY - effH / 2 + stagger,
       width: effW,
@@ -220,13 +224,8 @@ export function PromptBar() {
       })
       setBusy(false)
       if (!res.ok) {
-        // placeholder 转 error,保留可见
-        setObjects((prev) => prev.map((o) =>
-          o.id === placeholderId
-            ? { ...(o as CanvasPlaceholderObject), status: 'error' as const, errorMessage: res.error.message }
-            : o,
-        ))
-        toast.error(`生成失败:${res.error.message.slice(0, 120)}`)
+        // 必达投递(错误):占位在 → 转 error;用户切走 → 仅提示,存档占位由对账器收尾
+        deliverGenerationError(projectId, placeholderId, res.error.message)
         return
       }
       const first = res.candidates[0]
@@ -235,28 +234,9 @@ export function PromptBar() {
         toast.error('未返回任何候选图')
         return
       }
-      // 用第一张候选替换 placeholder,以 placeholder 中心点为锚定居中
-      // (模型可能返回比 target 略小/略大的尺寸,以中心为基准重新算 x/y 避免视觉跳动)
-      setObjects((prev) => prev.map((o) => {
-        if (o.id !== placeholderId) return o
-        const cx = o.x + o.width / 2
-        const cy = o.y + o.height / 2
-        const nw = first.w || o.width
-        const nh = first.h || o.height
-        return {
-          type: 'image',
-          id: placeholderId,  // 复用 id,选中状态延续
-          image_id: first.image_id,
-          src: api.images.fileUrl(first.image_id),
-          x: cx - nw / 2,
-          y: cy - nh / 2,
-          width: nw,
-          height: nh,
-          rotation: 0,
-          selected: false,
-          sourceObjectIds: (o as CanvasPlaceholderObject).sourceObjectIds,  // 延续关联线
-        } as CanvasImageObject
-      }))
+      // 必达投递(结果):原地替换 / 占位被删则加回画布 / 已切项目则写回发起项目存档。
+      // 6.10 反馈 P0:此前切走再回来,结果被静默丢弃,只能去历史里翻。
+      deliverGenerationResult(projectId, placeholder, first)
       setLastCost(res.total_cost_usd)
       // 多张候选:打开 picker 让用户选别的
       if (res.candidates.length > 1) {
@@ -384,8 +364,10 @@ export function PromptBar() {
                     key={p.id}
                     selected={modelId === p.id}
                     onClick={() => setModelId(p.id)}
-                    title={p.name}
-                    hint={p.model || p.kind}
+                    title={(p.model || '').toLowerCase().includes('seedream') ? `${p.name} · 文字强` : p.name}
+                    hint={(p.model || '').toLowerCase().includes('seedream')
+                      ? `${p.model} — 海报/标题等带文字的图推荐`
+                      : (p.model || p.kind)}
                   />
                 ))}
                 {providerList.length === 0 && (

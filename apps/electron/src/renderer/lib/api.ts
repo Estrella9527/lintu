@@ -391,6 +391,9 @@ class APIClient {
       withTokenParam(`http://localhost:7879/api/images/${id}/file`),
     downloadUrl: (id: string) =>
       withTokenParam(`http://localhost:7879/api/images/${id}/download`),
+    /** 位图转矢量(SVG)导出 — 服务端 vtracer 转换并缓存 */
+    svgUrl: (id: string) =>
+      withTokenParam(`http://localhost:7879/api/images/${id}/svg`),
 
     // 上下架(单张 / 批量)— OSS 图库与匹配候选池共用
     setListing: (imageIds: string[], isListed: boolean) =>

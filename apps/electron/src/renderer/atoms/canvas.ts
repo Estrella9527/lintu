@@ -39,6 +39,10 @@ export interface CanvasPlaceholderObject {
   requestType: 'text2img' | 'img2img' | 'outpaint' | 'inpaint' | 'matting' | 'eraser' | 'upscale' | 'text-zh' | 'edit'
   /** 失败时的错误信息 — 渲染在 placeholder 内 */
   errorMessage?: string
+  /** 发起时的提示词 — 重启/切页后按 prompt+时间窗 去历史对账找回结果 */
+  prompt?: string
+  /** 发起时刻(epoch ms) — 对账时间窗与超龄判定用 */
+  created_at?: number
   x: number
   y: number
   width: number

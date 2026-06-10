@@ -182,6 +182,26 @@ def _is_seedream(model: str) -> bool:
     return "seedream" in (model or "").lower()
 
 
+def _normalize_images_api_size(value: str) -> str:
+    """gpt-image / dall-e 系列只接受固定档位,任意 WxH(如 2048x1152 的 16:9)
+    会被 relay 拒绝或静默回退成方图。按宽高比映射到最近的官方档:
+      方(0.8~1.25)→ 2048x2048(质量优先);横 → 1536x1024;竖 → 1024x1536。
+    非 WxH 形式(auto 等)原样放行。Seedream 支持任意尺寸,不走这里。"""
+    if not value or "x" not in value.lower():
+        return value
+    try:
+        w_s, h_s = value.lower().split("x", 1)
+        w, h = int(w_s.strip()), int(h_s.strip())
+    except ValueError:
+        return value
+    if w <= 0 or h <= 0:
+        return value
+    ratio = w / h
+    if 0.8 <= ratio <= 1.25:
+        return "2048x2048"
+    return "1536x1024" if ratio > 1.25 else "1024x1536"
+
+
 def _normalize_seedream_size(value: str) -> str:
     """Map common output-size strings to Seedream-accepted forms.
 
@@ -395,6 +415,9 @@ class OpenAICompatProvider(ImageProvider):
             or config_size
             or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
         )
+        # gpt-image / dall-e 只接受固定档位 — 任意比例映射到最近档(横/竖/方)
+        if any(p in (self.model or "").lower() for p in ("gpt-image", "dall-e")):
+            size = _normalize_images_api_size(size)
         payload = {"model": self.model, "prompt": prompt, "n": 1, "size": size}
         if not _is_images_api_model(self.model) or "dall-e" in self.model.lower():
             payload["response_format"] = "b64_json"
@@ -470,6 +493,9 @@ class OpenAICompatProvider(ImageProvider):
             or config_size
             or ("2048x2048" if _is_images_api_model(self.model) else "1024x1024")
         )
+        # gpt-image / dall-e 只接受固定档位 — 任意比例映射到最近档(横/竖/方)
+        if any(p in (self.model or "").lower() for p in ("gpt-image", "dall-e")):
+            size = _normalize_images_api_size(size)
         files: dict = {
             "image": (f"seed.{ext}", img_bytes, mime),
         }

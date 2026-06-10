@@ -17,7 +17,9 @@ import {
   selectedObjectIdAtom,
   type CanvasImageObject,
   type CanvasObject,
+  type CanvasPlaceholderObject,
 } from '@/atoms/canvas'
+import { reconcilePendingPlaceholders } from '@/lib/canvasDelivery'
 import { useImageDropPaste } from '@/hooks/useImageDropPaste'
 import { useUploadImages } from '@/hooks/useUploadImages'
 import { useCanvasHistory } from '@/hooks/useCanvasHistory'
@@ -80,6 +82,23 @@ export function CanvasStage() {
   const { push, undo, redo, canUndo, canRedo } = useCanvasHistory()
   // PR-16:画布持久化 — 切项目自动恢复,防抖回写
   const { lastSavedAt, clearCanvas } = useCanvasPersistence()
+
+  // 生成必达对账:画布上有 pending 占位时,每 20s 拿 prompt+时间窗 去生成
+  // 历史里找结果自动替换(覆盖 重启/切页打断回调 的场景);超龄转 error。
+  const hasPending = objects.some((o) =>
+    (o as any).type === 'placeholder' && (o as CanvasPlaceholderObject).status === 'pending')
+  useEffect(() => {
+    if (!hasPending || !projectId) return
+    let stopped = false
+    const tick = async () => {
+      if (stopped) return
+      const stillPending = await reconcilePendingPlaceholders(projectId)
+      if (!stillPending) stopped = true
+    }
+    tick()  // 进入画布立即对账一次(重启场景首轮即恢复)
+    const timer = setInterval(tick, 20_000)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [hasPending, projectId])
 
   // ── 1. 响应容器尺寸变化(window resize / 右面板折叠)─────────────────
   useEffect(() => {

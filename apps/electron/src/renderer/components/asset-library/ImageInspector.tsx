@@ -6,7 +6,7 @@ import { api, apiFetchRaw } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { Cpu, Download, Eye, FolderOpen, GitFork, Rocket, Sparkles, Trash2 } from 'lucide-react'
+import { Cpu, Download, Eye, FolderOpen, GitFork, PenTool, Rocket, Sparkles, Trash2 } from 'lucide-react'
 import { ThumbnailImage } from './ThumbnailImage'
 import { activeModuleAtom, assetLibraryNavRequestAtom } from '@/atoms/navigation'
 import { batchSeedQueueAtom } from '@/atoms/workshop'
@@ -61,6 +61,12 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
     const saved = await window.electronAPI.downloadFile(url, img.file_name)
     if (saved) toast.success(`已保存到 ${saved}`)
   }
+  const handleExportSvg = async () => {
+    toast.message('正在矢量化…', { description: '首次转换需要几秒;适合 logo/插画,照片会呈色块矢量风' })
+    const stem = (img.file_name || img.id).replace(/\.[^.]+$/, '')
+    const saved = await window.electronAPI.downloadFile(api.images.svgUrl(img.id), `${stem}.svg`)
+    if (saved) toast.success(`SVG 已导出到 ${saved}`)
+  }
   const handleOpenFile = () => {
     if (img.file_path) window.electronAPI.openFile(img.file_path)
   }
@@ -110,9 +116,13 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
         </div>
 
         {/* Action row */}
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-4 gap-1">
           <Button variant="outline" size="sm" className="h-7 text-[11px] px-1" onClick={handleDownload}>
             <Download size={11} className="mr-1" /> 下载
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 text-[11px] px-1" onClick={handleExportSvg}
+            title="位图转矢量(SVG);适合 logo/插画/海报元素">
+            <PenTool size={11} className="mr-1" /> SVG
           </Button>
           <Button variant="outline" size="sm" className="h-7 text-[11px] px-1" onClick={handleOpenFile}>
             <FolderOpen size={11} className="mr-1" /> 原文件

@@ -24,10 +24,11 @@ dependencies = [
     # PostgreSQL drivers — only required in cloud (LINTU_MODE=server) but
     # always installed because the wheels are tiny and lets us swap DB at
     # runtime via LINTU_DB_URL without a separate build.
-    "asyncpg>=0.30",                 # async runtime
-    "psycopg[binary]>=3.2",          # sync, used by Alembic migrations
+    "asyncpg>=0.30", # async runtime
+    "psycopg[binary]>=3.2", # sync, used by Alembic migrations
     # User system Phase 1
-    "alibabacloud-dysmsapi20170525>=3.0",  # 阿里云 SMS（手机号验证码登录）
+    "alibabacloud-dysmsapi20170525>=3.0", # 阿里云 SMS（手机号验证码登录）
+    "vtracer>=0.6.15",
 ]
 
 [project.scripts]

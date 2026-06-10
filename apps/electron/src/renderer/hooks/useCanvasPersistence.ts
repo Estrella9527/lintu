@@ -61,15 +61,11 @@ export function useCanvasPersistence(): UseCanvasPersistenceReturn {
     loadedForProjectRef.current = projectId
     const snap = snapshots[projectId]
     if (snap) {
-      // 还原 objects:image 重新生成带 token 的 src;placeholder 如果还是 pending,
-      // 转成 error(任务已被 app 重启打断,不可能完成),让用户看见状态并自行删除/重试
+      // 还原 objects:image 重新生成带 token 的 src;placeholder 保持 pending —
+      // 后端是同步生成、结果必落历史,CanvasStage 的对账器会按 prompt+时间窗
+      // 自动找回结果替换(覆盖重启/切页打断的场景);超龄才由对账器转 error。
       setObjects((snap.objects || []).map((o) => {
-        if ((o as any).type === 'placeholder') {
-          const p = o as any
-          return p.status === 'pending'
-            ? { ...p, status: 'error', errorMessage: '任务被 app 重启打断,无法继续' }
-            : p
-        }
+        if ((o as any).type === 'placeholder') return o
         return { ...o, src: api.images.fileUrl((o as any).image_id) }
       }))
       setViewport(snap.viewport || { scale: 1, x: 0, y: 0 })

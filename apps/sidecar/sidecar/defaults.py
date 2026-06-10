@@ -108,6 +108,11 @@ DEFAULTS = {
     # ── 多设备同步(拉取端开关;推送始终开) ──
     # 打开后本机定期从云端拉回其他电脑「已审核发布」的图与标签。
     "cloud_pull_enabled": False,
+
+    # ── 按操作路由 ──
+    # 「中文文字」操作默认走文字渲染强的供应商(Seedream/即梦同源)。
+    # 名字对应 设置→AI 服务商 里的 relay 名;不存在时自动退回默认链。
+    "text_render_provider": "relay:ark-image",
 }
 
 

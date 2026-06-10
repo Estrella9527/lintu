@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Copy, Download, FolderPlus } from 'lucide-react'
+import { Copy, Download, FolderPlus, PenTool } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api } from '@/lib/api'
@@ -73,6 +73,24 @@ export function CanvasImageMenu({
     }
   }
 
+  const exportSvg = async () => {
+    onClose()
+    try {
+      let stem = menu.imageId
+      try {
+        const rec = await api.images.get(menu.imageId)
+        if (rec?.file_name) stem = rec.file_name.replace(/\.[^.]+$/, '')
+      } catch { /* 默认名兜底 */ }
+      toast.message('正在矢量化…', { description: '首次转换需要几秒,完成后弹出保存框' })
+      const saved = await window.electronAPI.downloadFile(
+        api.images.svgUrl(menu.imageId), `${stem}.svg`,
+      )
+      if (saved) toast.success('SVG 已导出', { description: saved })
+    } catch (e) {
+      toast.error(`导出失败:${(e as Error).message}`)
+    }
+  }
+
   const addToLibrary = async () => {
     onClose()
     try {
@@ -96,7 +114,7 @@ export function CanvasImageMenu({
       // 不让菜单超出视口右/下缘
       style={{
         left: Math.min(menu.x, window.innerWidth - 168),
-        top: Math.min(menu.y, window.innerHeight - 132),
+        top: Math.min(menu.y, window.innerHeight - 170),
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -105,6 +123,9 @@ export function CanvasImageMenu({
       </button>
       <button className={itemCls} onClick={saveOriginal}>
         <Download size={13} className="text-foreground/55" /> 保存原图
+      </button>
+      <button className={itemCls} onClick={exportSvg} title="位图转矢量;适合 logo/插画/海报元素,照片会变色块风格">
+        <PenTool size={13} className="text-foreground/55" /> 导出 SVG(矢量)
       </button>
       <div className="my-1 h-px bg-foreground/8" />
       <button className={itemCls} onClick={addToLibrary}>

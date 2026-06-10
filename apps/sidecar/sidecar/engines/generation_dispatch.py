@@ -83,7 +83,9 @@ _TYPE_PREFIXES: dict[str, str] = {
     ),
     "text-zh": (
         "Add the following Chinese text as a tasteful overlay on the image: "
-        '"{prompt}". Choose a placement, size and color that fits the scene.'
+        '"{prompt}". Render every character accurately with correct strokes — '
+        "no garbled, missing or invented glyphs. Use clean, high-quality "
+        "typography; choose a placement, size and color that fits the scene."
     ),
     "edit": (
         # Ask AI — pure NL instruction, no prefix needed beyond the user's words
@@ -367,11 +369,20 @@ async def dispatch(
     if style_prefix:
         final_prompt = style_prefix + final_prompt
 
+    # 「中文文字」按能力路由:用户没手选模型时,默认走文字渲染强的供应商
+    # (Seedream 系,即梦同源;6.10 反馈:默认 gpt-image 文字效果差)。
+    # _pick_provider_chain 会把它置链首、默认链兜底,挂了自动降级。
+    if gtype == "text-zh" and not model_id:
+        from sidecar.defaults import get_setting
+        model_id = (get_setting("text_render_provider") or "").strip() or None
+
     providers = _pick_provider_chain(model_id)
 
     extra: dict = dict(provider_kwargs)
-    # text2img 直接走 size;outpaint 走 compose 路径(透明 canvas 替代原图)
-    if gtype == "text2img" and target_w and target_h:
+    # text2img / img2img / edit / text-zh 都把用户选的输出比例传给模型 —— 此前
+    # 只有 text2img 传,图生图被丢到全局默认 2048x2048,用户选什么比例都出方图
+    # (6.10 反馈 P0)。outpaint 走 compose 路径单独算;inpaint/eraser 在下面按原图。
+    if gtype in ("text2img", "img2img", "edit", "text-zh") and target_w and target_h:
         extra["size"] = f"{target_w}x{target_h}"
     # inpaint / eraser:默认按被涂抹的原图尺寸出图(前端传原图 W/H),
     # 不再退到模型默认的 2048/1024(用户反馈:局部重绘应保持原图尺寸)。

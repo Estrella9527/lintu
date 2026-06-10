@@ -49,6 +49,7 @@ COLLECT_PACKAGES = [
     "jieba",          # has dict.txt + idf.txt data files
     "imagehash",
     "PIL",            # Pillow — many image format plugins
+    "vtracer",        # 位图转 SVG(Rust 扩展,单 .so;collect 保险起见)
     "fitz",           # pymupdf
     "openpyxl",
     "docx",           # python-docx
