@@ -754,3 +754,58 @@ async def sync_changes(
 async def sync_health():
     """Liveness endpoint for the local sync_worker to confirm cloud is up."""
     return {"status": "ok", "ts": datetime.utcnow().isoformat()}
+
+
+# ── 轻量查询(桌面端 OSS 图库联查"云端是否已发布") ──────────────────────
+
+
+class ImagesBriefBody(BaseModel):
+    """按 id 或 cdn_path 批量查云端图的简要信息。两个列表取并集匹配。"""
+    ids: list[str] = []
+    cdn_paths: list[str] = []
+
+
+@router.post("/images-brief", dependencies=[Depends(require_sync_token)])
+async def images_brief(body: ImagesBriefBody, db: AsyncSession = Depends(get_db)):
+    """桌面端 OSS 图库用:这些对象对应的图,云端(组织已发布资产)有没有记录。
+    轻量返回(无 embedding / 无 tags 明细,只有 tag_count);详情走 image-brief/{id}。"""
+    if not body.ids and not body.cdn_paths:
+        return {"items": []}
+    conds = []
+    if body.ids:
+        conds.append(Image.id.in_(body.ids))
+    if body.cdn_paths:
+        conds.append(Image.cdn_path.in_(body.cdn_paths))
+    rows = (await db.execute(select(Image).where(or_(*conds)))).scalars().all()
+    ids = [r.id for r in rows]
+    from sqlalchemy import func
+    counts: dict[str, int] = {}
+    if ids:
+        counts = dict((await db.execute(
+            select(Tag.image_id, func.count()).where(Tag.image_id.in_(ids)).group_by(Tag.image_id)
+        )).all())
+    return {"items": [{
+        "id": r.id, "cdn_path": r.cdn_path, "file_name": r.file_name,
+        "review_status": r.review_status, "is_listed": bool(r.is_listed),
+        "in_library": bool(r.in_library) if r.in_library is not None else None,
+        "description": r.description, "tag_count": counts.get(r.id, 0),
+        "width": r.width, "height": r.height,
+    } for r in rows]}
+
+
+@router.get("/image-brief/{image_id}", dependencies=[Depends(require_sync_token)])
+async def image_brief(image_id: str, db: AsyncSession = Depends(get_db)):
+    """单张云端图完整信息(含标签明细),桌面端 OSS 图库详情面板用。"""
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    tags = (await db.execute(select(Tag).where(Tag.image_id == image_id))).scalars().all()
+    return {
+        "id": img.id, "cdn_path": img.cdn_path, "file_name": img.file_name,
+        "width": img.width, "height": img.height,
+        "review_status": img.review_status, "is_listed": bool(img.is_listed),
+        "description": img.description, "tag_status": img.tag_status,
+        "tagged_at": _iso(img.tagged_at), "updated_at": _iso(img.updated_at),
+        "tags": [{"dimension": t.dimension, "value": t.value,
+                  "source": t.source, "confidence": t.confidence} for t in tags],
+    }

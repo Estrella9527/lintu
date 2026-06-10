@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  Check, CloudDownload, Eye, EyeOff, Loader2, Minus, Plus, RefreshCw,
+  Check, Cloud, CloudDownload, Eye, EyeOff, Loader2, Minus, Plus, RefreshCw,
 } from 'lucide-react'
 
 import { api, type OssObjectItem } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { InfoHint } from '@/components/shared/InfoHint'
 import { OssFolderTree } from './OssFolderTree'
 import { ImageInspector } from './ImageInspector'
 import type { ImageRecord } from '@/lib/types'
@@ -14,7 +15,19 @@ import type { ImageRecord } from '@/lib/types'
 const PAGE = 120
 const RH_MIN = 110, RH_MAX = 260, RH_STEP = 18
 
-type OnlyFilter = 'all' | 'orphan' | 'in_library'
+type OnlyFilter = 'all' | 'orphan' | 'cloud' | 'in_library'
+
+/** "X 分钟前" 形式的相对时间(scanned_at 是 UTC naive ISO) */
+function relTime(iso?: string | null): string {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso + 'Z').getTime()
+  const min = Math.max(0, Math.floor(ms / 60000))
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
+}
 
 /**
  * 资产库 → OSS 图库 Tab。把 bucket 全量图(库内 + 库外)按目录浏览,对齐本地
@@ -29,10 +42,21 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [active, setActive] = useState<OssObjectItem | null>(null)
 
+  // 默认走后端缓存(秒开);「重新扫描」走 refresh=true 真扫并刷新缓存
   const scan = useQuery({
     queryKey: ['oss-scan'],
     queryFn: () => api.ossLibrary.scan(),
-    staleTime: 30_000,
+    staleTime: 60_000,
+  })
+
+  const rescan = useMutation({
+    mutationFn: () => api.ossLibrary.scan(true),
+    onSuccess: (d) => {
+      queryClient.setQueryData(['oss-scan'], d)
+      queryClient.invalidateQueries({ queryKey: ['oss-objects'] })
+      toast.success('已重新扫描 OSS 仓')
+    },
+    onError: (e: any) => toast.error(`扫描失败:${String(e?.message || e).slice(0, 120)}`),
   })
 
   const objectsQ = useInfiniteQuery({
@@ -85,8 +109,8 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
     () => items.filter((it) => selected.has(it.object_key)),
     [items, selected],
   )
-  const selInLib = selectedItems.filter((i) => i.in_library && i.image_id)
-  const selOrphan = selectedItems.filter((i) => !i.in_library)
+  const selInLib = selectedItems.filter((i) => i.status === 'local' && i.image_id)
+  const selOrphan = selectedItems.filter((i) => i.status === 'orphan')
 
   const toggleSelect = (key: string) => setSelected((prev) => {
     const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n
@@ -116,12 +140,20 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
           )}
         </div>
         <div>
-          <h3 className="text-[11px] font-medium text-foreground/50 mb-2 px-1.5">按状态</h3>
+          <div className="flex items-center gap-1 mb-2 px-1.5">
+            <h3 className="text-[11px] font-medium text-foreground/50">按状态</h3>
+            <InfoHint text={
+              '已入库(本机):这台电脑的灵图在管理,信息最全,可审核/上架/编辑。\n' +
+              '云端已发布:其他电脑发布的,标签等信息直接显示远端数据;要在本机参与匹配,开 设置→通用→多设备同步。\n' +
+              '未纳管:仓里只有文件,任何电脑都没导入过 — 「导入」后走打标→审核→上架。'
+            } />
+          </div>
           <div className="space-y-0.5">
             {([
               ['all', '全部', data?.total_objects],
-              ['orphan', '库外（可导入）', data?.orphans],
-              ['in_library', '已入库', data?.in_library],
+              ['orphan', '未纳管（可导入）', data?.orphans],
+              ['cloud', '云端已发布', data?.cloud],
+              ['in_library', '已入库（本机）', data?.in_library],
             ] as [OnlyFilter, string, number | undefined][]).map(([f, label, n]) => (
               <button key={f} onClick={() => { setOnly(f); setSelected(new Set()) }}
                 className={cn('w-full flex items-center gap-1 px-1.5 py-1 rounded text-left text-[12px] transition-colors',
@@ -148,12 +180,17 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
               onClick={() => importAll.mutate()}
               title={!projectId ? '请先选择项目' : ''}>
               {importAll.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : <CloudDownload size={12} className="mr-1" />}
-              导入全部库外（{(data?.orphans ?? 0).toLocaleString()}）
+              导入全部未纳管（{(data?.orphans ?? 0).toLocaleString()}）
             </Button>
-            <button onClick={refreshAll} disabled={scan.isFetching}
+            <button onClick={() => rescan.mutate()} disabled={rescan.isPending}
               className="flex items-center gap-1 px-2 py-1 text-[12px] rounded text-foreground/65 hover:bg-foreground/[0.05] disabled:opacity-50">
-              <RefreshCw size={12} className={cn(scan.isFetching && 'animate-spin')} /> 重新扫描
+              <RefreshCw size={12} className={cn(rescan.isPending && 'animate-spin')} /> 重新扫描
             </button>
+            {data?.scanned_at && (
+              <span className="text-[11px] text-foreground/35">
+                {rescan.isPending ? '扫描中…' : `上次扫描 ${relTime(data.scanned_at)}`}
+              </span>
+            )}
 
             {/* 行高缩放 */}
             <div className="ml-auto flex items-center gap-1.5 text-foreground/45">
@@ -213,15 +250,96 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
         </div>
       </div>
 
-      {/* 右：详情 */}
-      {active?.in_library && active.image_id ? (
+      {/* 右：详情 — 本机(完整可编辑) / 云端(远端只读信息) / 未纳管(导入入口) */}
+      {active?.status === 'local' && active.image_id ? (
         <ImageInspector image={{ id: active.image_id } as ImageRecord} />
+      ) : active?.status === 'cloud' && active.image_id ? (
+        <CloudImageInspector item={active} />
       ) : (
         <OssOrphanInspector item={active} projectId={projectId}
           onImport={() => active && projectId && importKeys.mutate([active.object_key])}
           importing={importKeys.isPending} />
       )}
     </div>
+  )
+}
+
+// ── 云端已发布图详情 — 标签等信息直接展示远端数据,不需要拉到本地 ──────
+function CloudImageInspector({ item }: { item: OssObjectItem }) {
+  const detail = useQuery({
+    queryKey: ['oss-cloud-image', item.image_id],
+    queryFn: () => api.ossLibrary.cloudImage(item.image_id!),
+    enabled: !!item.image_id,
+    staleTime: 60_000,
+  })
+  const d = detail.data
+  const name = d?.file_name || item.cloud_file_name || item.object_key.split('/').pop() || ''
+
+  // 标签按维度分组展示
+  const tagGroups = useMemo(() => {
+    const g: Record<string, string[]> = {}
+    for (const t of d?.tags ?? []) {
+      (g[t.dimension] ||= []).push(t.value)
+    }
+    return Object.entries(g)
+  }, [d])
+
+  return (
+    <aside className="w-[280px] shrink-0 border-l border-foreground/5 overflow-y-auto">
+      <div className="p-3.5 space-y-3.5">
+        <div className="rounded-md overflow-hidden bg-foreground/[0.04]">
+          {item.preview_url && <img src={item.preview_url} alt={name} className="w-full aspect-[4/3] object-cover" />}
+        </div>
+        <div>
+          <h3 className="text-[13px] font-medium text-foreground/85 break-all leading-tight">{name}</h3>
+          <p className="text-[11px] text-sky-600 dark:text-sky-400 mt-1 flex items-center gap-1">
+            <Cloud size={11} /> 云端已发布(其他电脑维护)
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-1">
+          <Tag tone={d?.review_status === 'approved' || item.review_status === 'approved' ? 'ok' : 'muted'}>
+            {(d?.review_status || item.review_status) === 'approved' ? '已审核' : '待审核'}
+          </Tag>
+          <Tag tone={(d?.is_listed ?? item.is_listed) ? 'accent' : 'muted'}>
+            {(d?.is_listed ?? item.is_listed) ? '已上架' : '未上架'}
+          </Tag>
+          {d?.width && d?.height && <Tag tone="muted">{d.width}×{d.height}</Tag>}
+        </div>
+
+        {detail.isLoading ? (
+          <div className="space-y-1.5">
+            {[1, 2, 3].map((i) => <div key={i} className="h-5 rounded bg-foreground/[0.04] animate-pulse" />)}
+          </div>
+        ) : detail.isError ? (
+          <p className="text-[11px] text-foreground/40">远端信息获取失败(检查网络后重试)</p>
+        ) : <>
+          {d?.description && (
+            <p className="text-[11.5px] text-foreground/65 leading-relaxed">{d.description}</p>
+          )}
+          {tagGroups.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-[11px] font-medium text-foreground/50">标签({d?.tags.length}）</h4>
+              {tagGroups.map(([dim, values]) => (
+                <div key={dim} className="flex flex-wrap gap-1">
+                  {values.map((v) => (
+                    <span key={v} className="text-[10.5px] px-1.5 py-0.5 rounded bg-foreground/[0.05] text-foreground/70">
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </>}
+
+        <div className="text-[11px] text-foreground/45 leading-relaxed border-t border-foreground/5 pt-2.5">
+          这张图的信息由其他电脑维护,以上为远端实时数据。
+          要在本机参与匹配/编辑,打开 设置 → 通用 → <b>多设备同步</b> 即自动同步到本机。
+        </div>
+        <p className="text-[10px] text-foreground/35 break-all leading-snug">对象 key：{item.object_key}</p>
+      </div>
+    </aside>
   )
 }
 
@@ -250,26 +368,32 @@ function OssCell({
           selected ? 'bg-accent border-accent text-white' : 'border-white/70 bg-black/20 opacity-0 group-hover:opacity-100')}>
         {selected && <Check size={10} strokeWidth={3} />}
       </button>
-      {/* 状态角标 */}
+      {/* 状态角标:未纳管(橙) / 云端已发布(蓝+审核态) / 本机(审核+上架) */}
       <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5 items-end">
-        {!item.in_library ? (
-          <Tag tone="warn">库外</Tag>
-        ) : <>
+        {item.status === 'orphan' ? (
+          <Tag tone="warn">未纳管</Tag>
+        ) : item.status === 'cloud' ? <>
+          <Tag tone="info">云端</Tag>
+          {typeof item.cloud_tag_count === 'number' && item.cloud_tag_count > 0 && (
+            <Tag tone="muted">{item.cloud_tag_count} 标签</Tag>
+          )}
+          <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
+        </> : <>
           <Tag tone={item.review_status === 'approved' ? 'ok' : item.review_status === 'rejected' ? 'bad' : 'muted'}>
             {item.review_status === 'approved' ? '已审' : item.review_status === 'rejected' ? '拒' : '待审'}
           </Tag>
           <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
         </>}
       </div>
-      {/* hover 动作 */}
+      {/* hover 动作:未纳管→导入;本机→上下架;云端→无(去详情看远端信息) */}
       <div className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-        {!item.in_library ? (
+        {item.status === 'orphan' ? (
           <ActionBtn onClick={onImport} disabled={busy}><CloudDownload size={10} /> 导入</ActionBtn>
-        ) : (
+        ) : item.status === 'local' ? (
           <ActionBtn onClick={() => onListing(!item.is_listed)} disabled={busy}>
             {item.is_listed ? <><EyeOff size={10} /> 下架</> : <><Eye size={10} /> 上架</>}
           </ActionBtn>
-        )}
+        ) : null}
       </div>
     </div>
   )
@@ -294,9 +418,9 @@ function OssOrphanInspector({ item, projectId, onImport, importing }: {
         </div>
         <div>
           <h3 className="text-[13px] font-medium text-foreground/85 break-all leading-tight">{name}</h3>
-          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">库外对象（未进灵图库）</p>
+          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">未纳管（任何电脑都没导入过）</p>
         </div>
-        {!item.in_library && (
+        {item.status === 'orphan' && (
           <Button block onClick={onImport} disabled={!projectId || importing}>
             {importing ? <Loader2 size={12} className="animate-spin mr-1.5" /> : <CloudDownload size={12} className="mr-1.5" />}
             导入到灵图库（待审核）
@@ -335,10 +459,10 @@ function ActionBtn({ children, onClick, disabled }: { children: React.ReactNode;
   )
 }
 
-function Tag({ children, tone }: { children: React.ReactNode; tone: 'ok' | 'bad' | 'warn' | 'accent' | 'muted' }) {
+function Tag({ children, tone }: { children: React.ReactNode; tone: 'ok' | 'bad' | 'warn' | 'accent' | 'info' | 'muted' }) {
   const map: Record<string, string> = {
     ok: 'bg-emerald-500/85', bad: 'bg-rose-500/85', warn: 'bg-amber-500/90',
-    accent: 'bg-accent/85', muted: 'bg-foreground/55',
+    accent: 'bg-accent/85', info: 'bg-sky-500/85', muted: 'bg-foreground/55',
   }
   return <span className={cn('text-[9px] px-1 rounded text-white', map[tone])}>{children}</span>
 }

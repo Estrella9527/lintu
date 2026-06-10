@@ -15,24 +15,42 @@ const API_BASE = 'http://127.0.0.1:7879/api'
 // ── OSS 图库 ───────────────────────────────────────────────────────────────
 export interface OssObjectItem {
   object_key: string
+  /** local=本机已入库 cloud=云端已发布(别端) orphan=未纳管 */
+  status: 'local' | 'cloud' | 'orphan'
   in_library: boolean
   image_id?: string
   review_status?: string
   is_listed?: boolean
   source_type?: string
   preview_url?: string
+  cloud_file_name?: string
+  cloud_tag_count?: number
 }
-export interface OssDirNode { folder: string; count: number; in_library: number; orphans: number }
+export interface OssDirNode { folder: string; count: number; in_library: number; cloud: number; orphans: number }
 export interface OssScanResult {
   configured: boolean
   total_objects: number
   in_library: number
+  cloud: number
   orphans: number
   dirs: OssDirNode[]
   items: OssObjectItem[]
   items_capped?: boolean
+  scanned_at?: string | null
+  cache_hit?: boolean
 }
 export interface OssObjectsResult { configured: boolean; items: OssObjectItem[]; total: number }
+export interface CloudImageDetail {
+  id: string
+  cdn_path?: string | null
+  file_name?: string
+  width?: number | null
+  height?: number | null
+  review_status?: string
+  is_listed?: boolean
+  description?: string | null
+  tags: Array<{ dimension: string; value: string; source?: string; confidence?: number | null }>
+}
 
 // ── Image list query shape (shared by list + listIds) ──────────────────────
 //
@@ -391,7 +409,12 @@ class APIClient {
 
   // ── OSS 图库(bucket 全量视图 + 反向导入)──
   ossLibrary = {
-    scan: () => this.request<OssScanResult>('/oss-library/scan'),
+    /** refresh=true 重列 bucket + 重新云端联查;默认走缓存秒回 */
+    scan: (refresh = false) =>
+      this.request<OssScanResult>(`/oss-library/scan${refresh ? '?refresh=true' : ''}`),
+    /** 云端已发布图的完整信息(含标签),sidecar 代查 */
+    cloudImage: (imageId: string) =>
+      this.request<CloudImageDetail>(`/oss-library/cloud-image/${imageId}`),
     objects: (params: { prefix?: string | null; only?: string; offset?: number; limit?: number }) => {
       const q = new URLSearchParams()
       if (params.prefix !== undefined && params.prefix !== null) q.set('prefix', params.prefix)

@@ -23,10 +23,13 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from PIL import Image as PILImage
 from sqlalchemy import select
 
-from sidecar.config import WORKSPACE_DIR
+from sidecar.config import (
+    DATA_DIR, LINTU_CLOUD_SYNC_URL, LINTU_INTERNAL_SYNC_TOKEN, WORKSPACE_DIR,
+)
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
 from sidecar.engines.oss_sync import get_storage
@@ -40,6 +43,75 @@ _THUMB_RE = re.compile(r"_(300|800)\.jpg$", re.IGNORECASE)
 _OWNED_RE = re.compile(r"^i/([A-Za-z0-9_-]+)\.([A-Za-z0-9]+)$")
 
 _IMPORT_DIR = WORKSPACE_DIR / "oss_import"
+
+# 扫描结果缓存:打开 OSS 图库秒出上次结果,不必每次全列 bucket(LIST 翻页 +
+# 云端联查要数秒)。「重新扫描」或缓存超龄时后台刷新。
+_CACHE_FILE = DATA_DIR / "oss_library_cache.json"
+
+
+def _read_cache() -> dict | None:
+    try:
+        if _CACHE_FILE.exists():
+            d = json.loads(_CACHE_FILE.read_text())
+            if isinstance(d.get("keys"), list):
+                return d
+    except Exception:
+        logger.warning("oss_library: 读缓存失败,将重扫", exc_info=True)
+    return None
+
+
+def _write_cache(keys: list[str], cloud_map: dict) -> None:
+    try:
+        _CACHE_FILE.write_text(json.dumps({
+            "scanned_at": datetime.utcnow().isoformat(),
+            "keys": keys,
+            "cloud": cloud_map,
+        }, ensure_ascii=False))
+    except Exception:
+        logger.warning("oss_library: 写缓存失败", exc_info=True)
+
+
+async def _query_cloud_briefs(keys: list[str]) -> dict[str, dict]:
+    """问云端:这些对象 key 对应的图,组织里是否已有别的电脑发布过信息。
+
+    返回 {object_key: brief};brief 含 id/file_name/review_status/is_listed/
+    tag_count/description。匹配按 (cdn_path == key) 或 (key 解析出的 id)。
+    未配置同步凭据(用户版)或云端不可达 → 空 map,不报错。
+    """
+    if not keys or not LINTU_CLOUD_SYNC_URL or not LINTU_INTERNAL_SYNC_TOKEN:
+        return {}
+    parsed_ids = [oid for oid in (_owned_image_id(k) for k in keys) if oid]
+    url = f"{LINTU_CLOUD_SYNC_URL.rstrip('/')}/internal/sync/images-brief"
+    headers = {"Authorization": f"Bearer {LINTU_INTERNAL_SYNC_TOKEN}"}
+    out: dict[str, dict] = {}
+    by_id: dict[str, dict] = {}
+    by_cdn: dict[str, dict] = {}
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(10, read=60)) as client:
+            CHUNK = 800
+            for i in range(0, max(len(keys), len(parsed_ids)), CHUNK):
+                body = {"ids": parsed_ids[i:i + CHUNK], "cdn_paths": keys[i:i + CHUNK]}
+                r = await client.post(url, json=body)
+                if r.status_code >= 400:
+                    logger.warning("oss_library: 云端联查 %s — %s", r.status_code, r.text[:120])
+                    return {}
+                for it in (r.json().get("items") or []):
+                    if it.get("id"):
+                        by_id[it["id"]] = it
+                    if it.get("cdn_path"):
+                        by_cdn[it["cdn_path"]] = it
+        for k in keys:
+            brief = by_cdn.get(k)
+            if brief is None:
+                oid = _owned_image_id(k)
+                if oid:
+                    brief = by_id.get(oid)
+            if brief is not None:
+                out[k] = brief
+    except Exception as e:
+        logger.warning("oss_library: 云端联查失败(降级为不显示云端信息): %s", str(e)[:120])
+        return {}
+    return out
 
 
 def _is_thumb(key: str) -> bool:
@@ -62,11 +134,31 @@ def _dir_of(key: str) -> str:
 _PREVIEW_CAP = 500  # items 明细 + preview_url 上限,避免一次回传/签名上千条
 
 
-async def _load_context():
-    """拉 bucket 全量原图 key + 库内 cdn/owned 映射。scan / list_objects 共用。
-    返回 (storage, keys, by_cdn, owned_ids)。"""
+async def _load_context(refresh: bool = False):
+    """取 bucket 原图 key 列表 + 本机库映射 + 云端发布信息。scan / list_objects 共用。
+
+    缓存策略(用户反馈"每次打开都要同步很久"):
+      - keys(OSS LIST)和云端联查结果走本地缓存文件 —— 打开秒出;
+      - 本机库映射(by_cdn/owned_ids)每次现查本地 DB(便宜,导入/上架立即反映);
+      - refresh=True(「重新扫描」)→ 重列 bucket + 重新云端联查 + 重写缓存。
+    返回 (storage, keys, by_cdn, owned_ids, cloud_map, scanned_at, cache_hit)。
+    """
     storage = get_storage()
-    keys = [k for k in storage.list_keys(_IMG_PREFIX) if not _is_thumb(k)]
+    cache = None if refresh else _read_cache()
+    if cache is not None:
+        keys: list[str] = cache["keys"]
+        cloud_map: dict[str, dict] = cache.get("cloud") or {}
+        scanned_at: str | None = cache.get("scanned_at")
+        cache_hit = True
+    else:
+        keys = [k for k in storage.list_keys(_IMG_PREFIX) if not _is_thumb(k)]
+        # 云端联查放在"非本机"的 key 上意义最大,但本机映射还没取;
+        # 直接全量问(云端按 id/cdn_path 命中,几千个 id 一次 IN 查询很快)。
+        cloud_map = await _query_cloud_briefs(keys)
+        scanned_at = datetime.utcnow().isoformat()
+        _write_cache(keys, cloud_map)
+        cache_hit = False
+
     async with async_session() as db:
         rows = await db.execute(
             select(Image.id, Image.cdn_path, Image.review_status, Image.is_listed,
@@ -78,69 +170,92 @@ async def _load_context():
             owned_ids.add(iid)
             if cdn:
                 by_cdn[cdn] = (iid, rev, listed, src)
-    return storage, keys, by_cdn, owned_ids
+    return storage, keys, by_cdn, owned_ids, cloud_map, scanned_at, cache_hit
 
 
-def _classify(key: str, by_cdn: dict, owned_ids: set) -> dict:
-    """把单个 object key 判成 库内/库外 + 带上审核/上架态。不含 preview_url。"""
+def _classify(key: str, by_cdn: dict, owned_ids: set, cloud_map: dict) -> dict:
+    """单个对象 key 三态判定:
+      local  已入库(本机灵图在管理,信息最全)
+      cloud  云端已发布(别的电脑发布的,远端有完整信息,本机无文件)
+      orphan 未纳管(纯 OSS 文件,任何电脑都没导入过)
+    in_library 字段保留 = (status=='local'),兼容旧前端。"""
     rec = by_cdn.get(key)
     if rec is not None:
         iid, rev, listed, src = rec
-        return {"object_key": key, "in_library": True, "image_id": iid,
+        return {"object_key": key, "status": "local", "in_library": True, "image_id": iid,
                 "review_status": rev, "is_listed": bool(listed), "source_type": src}
     oid = _owned_image_id(key)
     if oid and oid in owned_ids:
-        return {"object_key": key, "in_library": True, "image_id": oid}
-    return {"object_key": key, "in_library": False}
+        return {"object_key": key, "status": "local", "in_library": True, "image_id": oid}
+    brief = cloud_map.get(key)
+    if brief is not None:
+        return {"object_key": key, "status": "cloud", "in_library": False,
+                "image_id": brief.get("id"),
+                "review_status": brief.get("review_status"),
+                "is_listed": bool(brief.get("is_listed")),
+                "cloud_file_name": brief.get("file_name"),
+                "cloud_tag_count": brief.get("tag_count")}
+    return {"object_key": key, "status": "orphan", "in_library": False}
 
 
-async def scan_bucket(preview: bool = True) -> dict:
+async def scan_bucket(preview: bool = True, refresh: bool = False) -> dict:
     """扫描 bucket:返回汇总 + 目录树(dirs)+ 预览明细(items, 最多 _PREVIEW_CAP)。
 
-    dirs: [{ folder, count, in_library, orphans }] —— 供资产库 OSS 图库左侧
-    目录树(按 object key 前缀分组)。
+    dirs: [{ folder, count, in_library, cloud, orphans }];orphans 现在指
+    「未纳管」(本机没有、云端也没发布过)。scanned_at/cache_hit 供前端展示
+    "上次扫描 X 前"。
     """
     storage = get_storage()
     if not storage.is_read_configured():
         return {"configured": False, "total_objects": 0, "in_library": 0,
-                "orphans": 0, "items": [], "dirs": []}
+                "cloud": 0, "orphans": 0, "items": [], "dirs": [],
+                "scanned_at": None, "cache_hit": False}
 
-    _s, keys, by_cdn, owned_ids = await _load_context()
+    _s, keys, by_cdn, owned_ids, cloud_map, scanned_at, cache_hit = await _load_context(refresh)
 
-    in_library = 0
-    # 目录聚合:folder → [total, in_library]
+    n_local = n_cloud = 0
+    # 目录聚合:folder → [total, local, cloud]
     dir_agg: dict[str, list[int]] = {}
     for key in keys:
-        info = _classify(key, by_cdn, owned_ids)
-        is_in = info["in_library"]
-        if is_in:
-            in_library += 1
-        d = dir_agg.setdefault(_dir_of(key), [0, 0])
+        info = _classify(key, by_cdn, owned_ids, cloud_map)
+        st = info["status"]
+        if st == "local":
+            n_local += 1
+        elif st == "cloud":
+            n_cloud += 1
+        d = dir_agg.setdefault(_dir_of(key), [0, 0, 0])
         d[0] += 1
-        if is_in:
+        if st == "local":
             d[1] += 1
-    orphans = len(keys) - in_library
+        elif st == "cloud":
+            d[2] += 1
+    orphans = len(keys) - n_local - n_cloud
     dirs = [
-        {"folder": folder, "count": tot, "in_library": inlib, "orphans": tot - inlib}
-        for folder, (tot, inlib) in sorted(dir_agg.items())
+        {"folder": folder, "count": tot, "in_library": loc, "cloud": cld,
+         "orphans": tot - loc - cld}
+        for folder, (tot, loc, cld) in sorted(dir_agg.items())
     ]
 
     items: list[dict] = []
     if preview:
-        # 优先展示库外对象(运营更关心要导入哪些),其次已入库的
-        classified = [(_classify(k, by_cdn, owned_ids)) for k in keys]
-        classified.sort(key=lambda it: it["in_library"])  # False(库外) 在前
+        # 优先展示未纳管(运营更关心要导入哪些),其次云端,最后本机已入库
+        order = {"orphan": 0, "cloud": 1, "local": 2}
+        classified = [(_classify(k, by_cdn, owned_ids, cloud_map)) for k in keys]
+        classified.sort(key=lambda it: order[it["status"]])
         for info in classified[:_PREVIEW_CAP]:
             items.append({**info, "preview_url": storage.public_url(info["object_key"])})
 
     return {
         "configured": True,
         "total_objects": len(keys),
-        "in_library": in_library,
+        "in_library": n_local,
+        "cloud": n_cloud,
         "orphans": orphans,
         "dirs": dirs,
         "items": items,
-        "items_capped": orphans + in_library > _PREVIEW_CAP,
+        "items_capped": len(keys) > _PREVIEW_CAP,
+        "scanned_at": scanned_at,
+        "cache_hit": cache_hit,
     }
 
 
@@ -149,31 +264,53 @@ async def list_objects(prefix: str | None = None, only: str = "all",
     """按目录前缀 + 过滤分页列对象(资产库 OSS 图库网格用)。
 
     prefix: None=全部目录;""=根目录;"i"/"uploads/2024"=该目录(精确,不含子目录)。
-    only:   'all' | 'orphan'(库外) | 'in_library'(已入库)。
-    返回 { items:[...含 preview_url], total }。
+    only:   'all' | 'orphan'(未纳管) | 'cloud'(云端已发布) | 'in_library'(本机已入库)。
+    返回 { items:[...含 preview_url], total }。走缓存 keys,不重列 bucket。
     """
     storage = get_storage()
     if not storage.is_read_configured():
         return {"configured": False, "items": [], "total": 0}
 
-    _s, keys, by_cdn, owned_ids = await _load_context()
+    _s, keys, by_cdn, owned_ids, cloud_map, _sa, _ch = await _load_context()
 
     # 目录过滤(精确匹配该目录,子目录算它自己的目录,符合资产库"文件夹"直观)
     if prefix is not None:
         keys = [k for k in keys if _dir_of(k) == prefix]
 
-    classified = [_classify(k, by_cdn, owned_ids) for k in keys]
+    classified = [_classify(k, by_cdn, owned_ids, cloud_map) for k in keys]
     if only == "orphan":
-        classified = [c for c in classified if not c["in_library"]]
+        classified = [c for c in classified if c["status"] == "orphan"]
+    elif only == "cloud":
+        classified = [c for c in classified if c["status"] == "cloud"]
     elif only == "in_library":
-        classified = [c for c in classified if c["in_library"]]
+        classified = [c for c in classified if c["status"] == "local"]
 
-    # 库外在前,稳定排序便于运营批量处理
-    classified.sort(key=lambda it: (it["in_library"], it["object_key"]))
+    # 未纳管在前(运营优先处理),云端次之,稳定排序
+    order = {"orphan": 0, "cloud": 1, "local": 2}
+    classified.sort(key=lambda it: (order[it["status"]], it["object_key"]))
     total = len(classified)
     page = classified[offset:offset + limit]
     items = [{**info, "preview_url": storage.public_url(info["object_key"])} for info in page]
     return {"configured": True, "items": items, "total": total}
+
+
+async def cloud_image_detail(image_id: str) -> dict | None:
+    """单张云端已发布图的完整信息(含标签),给详情面板用。本机代云端查,
+    渲染层不接触同步凭据。云端不可达/没配凭据 → None。"""
+    if not LINTU_CLOUD_SYNC_URL or not LINTU_INTERNAL_SYNC_TOKEN:
+        return None
+    url = f"{LINTU_CLOUD_SYNC_URL.rstrip('/')}/internal/sync/image-brief/{image_id}"
+    headers = {"Authorization": f"Bearer {LINTU_INTERNAL_SYNC_TOKEN}"}
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(10, read=30)) as client:
+            r = await client.get(url)
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        logger.warning("oss_library: 云端详情查询失败 %s: %s", image_id, str(e)[:120])
+        return None
 
 
 async def import_orphans(project_id: str, object_keys: list[str] | None = None) -> dict:
@@ -186,8 +323,14 @@ async def import_orphans(project_id: str, object_keys: list[str] | None = None) 
     if not storage.is_read_configured():
         return {"imported": 0, "skipped": 0, "failed": 0, "image_ids": [], "error": "OSS 未配置"}
 
-    scan = await scan_bucket()
-    orphan_keys = [it["object_key"] for it in scan["items"] if not it["in_library"]]
+    # 直接全量分类(不走 scan 的预览明细 — 那个有 500 条上限,会漏导)。
+    # 「导入全部」只导真正未纳管的(orphan);云端已发布的图是组织资产,
+    # 重复导入会生成第二条记录 — 想在本机用它,开「多设备同步」即可。
+    _s, keys, by_cdn, owned_ids, cloud_map, _sa, _ch = await _load_context()
+    orphan_keys = [
+        k for k in keys
+        if _classify(k, by_cdn, owned_ids, cloud_map)["status"] == "orphan"
+    ]
     if object_keys:
         want = set(object_keys)
         orphan_keys = [k for k in orphan_keys if k in want]
