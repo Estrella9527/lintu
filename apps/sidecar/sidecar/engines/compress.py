@@ -1,35 +1,18 @@
-"""图片批量压缩 engine — JPEG q=80 progressive + optimize + 4:2:0,原地覆盖 + .orig 备份。
+"""图片批量压缩 engine — JPEG q=80 progressive + optimize + 4:2:0,写派生副本,**永不改源文件**。
+
+2026-06-10 重构(用户反馈「不要把原图改成缩略图和 orig」):
+  - 旧行为:原地覆盖源文件 + `.orig` 备份 —— 会动用户的原图,已废弃。
+  - 新行为:压缩版写到 `workspace/derived/compress/{id[:2]}/{id}.jpg`,路径记到
+    `Image.compressed_file_path`;源文件 `file_path` 一个字节都不动。
+  - OSS 同步优先上传压缩版(省 CDN 流量);本地显示/导出始终用原图。
 
 并发:
-  - task 之间并发由 TaskScheduler 控制(默认 cpu_semaphore=3,可调
-    LINTU_CPU_CONCURRENCY env)
-  - task **内部**也并发 — 用 asyncio.to_thread + Semaphore 同时处理 N 张图,
-    N 默认 4(可调 LINTU_COMPRESS_PARALLEL)。Pillow 是 single-thread 但 IO 段
-    能并行,4 并发实测显著拉高吞吐
-  - enqueue OSS 步骤遇到 SQLite database locked 自动 retry 3 次(指数退避),
-    避免并发写冲突丢图入队
+  - task 之间并发由 TaskScheduler 控制(默认 cpu_semaphore=3,可调 LINTU_CPU_CONCURRENCY)
+  - task **内部**也并发 — asyncio.to_thread + Semaphore,N 默认 4(可调 LINTU_COMPRESS_PARALLEL)
+  - enqueue OSS 遇到 SQLite locked 自动 retry 3 次(指数退避)
 
-
-设计:
-  - 原图保留为 `<原路径>.orig`(可手动 rm 释放空间;或后期加"清理 .orig" 入口)
-  - 原路径替换为压缩后的 JPEG(progressive + optimize,Web 加载更快)
-  - 保持原宽高(不缩放)
-  - 写完更新 images.file_size_kb;width / height / phash / embedding 都不变
-  - 失败回滚:如果压缩或写出失败,把 .orig 移回原路径
-  - **自动跟进 OSS**:每张图压缩成功后自动入 oss_sync_jobs(force=true),
-    覆盖 CDN 上的大图。客户端拉到的就是压缩版,流量也省。
-    如果 OSS 未配置或入队失败,只 warn 不 fail(压缩本身成功)。
-
-不重复压缩:遇到已经压过(同路径有 .orig 兄弟文件)的图,默认跳过。
-传 force=true 时再压一遍(把 .orig 当原图源,二次压缩)。
-
-输出方式 = 决策 c(用户选定 2026-05-22):
-  · 节省空间(JPEG q=85 通常 40-50% 压缩比)
-  · 可恢复(只要 .orig 还在)
-  · 后续 OSS 重传走 force=true 覆盖现有 CDN 副本
-
-注意:这个 engine 改写本地文件,**不可逆**(.orig 删了就回不去)。前端
-BatchActionBar 已加 confirm 弹窗。
+不重复压缩:派生副本已存在则跳过;force=true 时重新生成覆盖。
+原图宽高/file_size_kb 不变(它们描述的是原图,原图没被动过)。
 """
 
 import asyncio
@@ -41,8 +24,10 @@ from pathlib import Path
 from PIL import Image as PILImage
 from sqlalchemy import select, update
 
+from sidecar.config import DERIVED_DIR
 from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
+from sidecar.engines.image_utils import effective_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -54,44 +39,47 @@ except ImportError:
     pass
 
 
+def _compress_derived_path(image_id: str) -> Path:
+    """压缩派生副本路径:workspace/derived/compress/{id[:2]}/{id}.jpg。
+    跟 orient 的 derived 布局一致(按 id 前两位分桶,避免单目录文件爆炸)。"""
+    subdir = DERIVED_DIR / "compress" / (image_id[:2] or "_")
+    subdir.mkdir(parents=True, exist_ok=True)
+    return subdir / f"{image_id}.jpg"
+
+
 def _compress_one(
-    src_path: Path,
+    read_path: Path,
+    dest_path: Path,
     *,
     quality: int = 80,
     max_long_side: int = 2400,
     force: bool = False,
 ) -> dict:
-    """单图压缩。返回 {ok, skipped, before_kb, after_kb, error?}。
+    """单图压缩:从 read_path(原图/旋转派生)读,压缩版写到 dest_path。
+    **绝不改 read_path** —— 源文件永远保留。返回 {ok, skipped, before_kb, after_kb, error?}。
 
     参数:
-      quality        JPEG 质量(1-100)。默认 80 — 在"目视无明显损失 + 大幅
-                     减小文件"之间的最佳平衡点。一线影像分享平台(微博/
-                     抖音/小红书)默认压到 75-82 之间,所以 80 不会被觉察。
-      max_long_side  最长边像素上限。默认 2400 — 覆盖手机全屏(2778)和
-                     PC 4K 显示(单图 2400 完全够)。原图 6000+ 像素的
-                     无人机航拍其实是浪费,2400 等比缩后客户看不出差别但
-                     文件能省到 1/4-1/8。
-                     传 0 / 负数 / 大于原长边 = 不缩放。
-      force          已有 .orig 时是否重压
+      read_path      读取源(effective_file_path:旋转派生或原图),只读不写
+      dest_path      压缩副本写到这里(workspace/derived/compress/...)
+      quality        JPEG 质量(1-100),默认 80(目视无损 + 大幅减小)
+      max_long_side  最长边像素上限,默认 2400;0/负 = 不缩放
+      force          dest 已存在时是否重新生成覆盖
     """
-    orig_path = src_path.with_suffix(src_path.suffix + ".orig")
+    if not read_path.exists():
+        return {"ok": False, "skipped": True, "error": f"file missing: {read_path}"}
 
-    if not src_path.exists():
-        return {"ok": False, "skipped": True, "error": f"file missing: {src_path}"}
-
-    # 如果 .orig 已存在,说明之前压过。除非 force,否则跳过避免二次劣化。
-    if orig_path.exists() and not force:
+    # 派生副本已存在且非 force → 跳过(本地已有压缩版)。
+    if dest_path.exists() and not force:
         return {
             "ok": True, "skipped": True,
-            "reason": "already_compressed (.orig exists)",
-            "before_kb": int(src_path.stat().st_size / 1024),
+            "reason": "already_compressed (derived exists)",
+            "before_kb": int(read_path.stat().st_size / 1024),
+            "after_kb": int(dest_path.stat().st_size / 1024),
         }
 
     try:
-        before_kb = int(src_path.stat().st_size / 1024)
+        before_kb = int(read_path.stat().st_size / 1024)
 
-        # 读图(原图或 .orig)。force 模式下从 .orig 重读,避免连续压。
-        read_path = orig_path if (force and orig_path.exists()) else src_path
         with PILImage.open(read_path) as img:
             # 修复 EXIF 朝向(否则缩放后照片可能侧躺)
             try:
@@ -105,9 +93,7 @@ def _compress_one(
             orig_w, orig_h = img.size
             if max_long_side and max_long_side > 0 and max(orig_w, orig_h) > max_long_side:
                 ratio = max_long_side / max(orig_w, orig_h)
-                new_w = int(orig_w * ratio)
-                new_h = int(orig_h * ratio)
-                img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+                img = img.resize((int(orig_w * ratio), int(orig_h * ratio)), PILImage.Resampling.LANCZOS)
                 resized = True
 
             # 强制转 RGB:JPEG 不支持 RGBA / P。透明背景变白。
@@ -118,32 +104,22 @@ def _compress_one(
             elif img.mode != "RGB":
                 img = img.convert("RGB")
 
-            # 先写到临时文件,成功后再 swap,避免压一半失败损坏原图
-            tmp_path = src_path.with_suffix(src_path.suffix + ".compressing.tmp")
+            # 先写临时文件,成功后原子改名到 dest,避免压一半留下半截文件
+            tmp_path = dest_path.with_suffix(".compressing.tmp")
             try:
                 img.save(
                     tmp_path, "JPEG",
-                    quality=quality,
-                    optimize=True,
-                    progressive=True,
-                    subsampling=2,   # 4:2:0 色度子采样,人眼对色差不敏感,可省 ~15%
+                    quality=quality, optimize=True, progressive=True,
+                    subsampling=2,   # 4:2:0 色度子采样
                 )
             except Exception:
                 tmp_path.unlink(missing_ok=True)
                 raise
+            new_w, new_h = img.size
 
-        # 备份原文件(只在第一次压时备份,force 重压不重复备份)
-        if not orig_path.exists():
-            src_path.replace(orig_path)
-        else:
-            # force 模式:删原压缩版,准备覆盖
-            src_path.unlink(missing_ok=True)
+        tmp_path.replace(dest_path)   # 原子落地;源文件 read_path 从未被动过
 
-        # 把 tmp 改名到原路径
-        tmp_path.replace(src_path)
-
-        after_kb = int(src_path.stat().st_size / 1024)
-        new_w, new_h = img.size
+        after_kb = int(dest_path.stat().st_size / 1024)
         return {
             "ok": True, "skipped": False,
             "before_kb": before_kb, "after_kb": after_kb,
@@ -152,14 +128,9 @@ def _compress_one(
             "resized": resized,
             "orig_dim": f"{orig_w}x{orig_h}",
             "new_dim": f"{new_w}x{new_h}",
+            "dest": str(dest_path),
         }
     except Exception as e:
-        # 回滚:如果发生异常,而原文件被 replace 走了,把 .orig 还原回去
-        if not src_path.exists() and orig_path.exists():
-            try:
-                orig_path.replace(src_path)
-            except Exception:
-                logger.exception("rollback failed for %s", src_path)
         return {"ok": False, "skipped": False, "error": str(e)[:200]}
 
 
@@ -197,17 +168,19 @@ async def run_compress(task: Task, progress_cb):
     async def _process_one(img: Image, sem: asyncio.Semaphore) -> dict:
         """单图协程:Pillow 部分丢 to_thread,IO/db 在 event loop。"""
         async with sem:
-            src = Path(img.file_path)
+            read_src = Path(effective_file_path(img))   # 原图 / 旋转派生,只读
+            dest = _compress_derived_path(img.id)
             # Pillow 跑在 thread pool — 多个 _compress_one 真正并行
             try:
                 r = await asyncio.to_thread(
-                    _compress_one, src,
+                    _compress_one, read_src, dest,
                     quality=quality, max_long_side=max_long_side, force=force,
                 )
             except Exception as e:
                 logger.exception("compress crashed for %s", img.id)
                 return {"img_id": img.id, "ok": False, "error": str(e)[:200]}
             r["img_id"] = img.id
+            r["dest"] = str(dest)
             return r
 
     async with async_session() as db:
@@ -238,20 +211,22 @@ async def run_compress(task: Task, progress_cb):
             if r["ok"] and not r.get("skipped"):
                 ok_n += 1
                 saved_kb_total += r.get("saved_kb", 0)
-                updates = {"file_size_kb": r["after_kb"]}
-                if r.get("resized") and "x" in (r.get("new_dim") or ""):
-                    nw, nh = r["new_dim"].split("x")
-                    updates["width"] = int(nw)
-                    updates["height"] = int(nh)
+                # 只记压缩派生路径;原图的 file_size_kb / width / height 不动
+                #(它们描述原图,而原图没被改)。
                 await db.execute(
-                    update(Image).where(Image.id == r["img_id"]).values(**updates)
+                    update(Image).where(Image.id == r["img_id"])
+                    .values(compressed_file_path=r.get("dest"))
                 )
                 compressed_ids.append(r["img_id"])
             elif r["ok"] and r.get("skipped"):
                 skipped_n += 1
-                # skipped = 之前压过(.orig 存在)。本地已经是压缩版,但 OSS
-                # 上可能没有(上次 enqueue 失败 / OSS 被清空 / 等)。补一次
-                # 入队 — enqueue 内部判断 done jobs 已存在会跳过,不浪费。
+                # skipped = 派生副本已存在。补记 compressed_file_path(老数据可能没记)
+                # + 补一次 OSS 入队(上次可能失败 / OSS 被清空)。
+                await db.execute(
+                    update(Image)
+                    .where(Image.id == r["img_id"], Image.compressed_file_path.is_(None))
+                    .values(compressed_file_path=r.get("dest"))
+                )
                 compressed_ids.append(r["img_id"])
             else:
                 failed_n += 1

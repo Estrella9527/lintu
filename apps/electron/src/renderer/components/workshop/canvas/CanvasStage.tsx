@@ -29,6 +29,7 @@ import { FolderOpen } from 'lucide-react'
 import type { ImageRecord } from '@/lib/types'
 
 import { CanvasImage } from './CanvasImage'
+import { CanvasImageMenu, type CanvasImageMenuState } from './CanvasImageMenu'
 import { CanvasPlaceholder } from './CanvasPlaceholder'
 import { CanvasLinks } from './CanvasLinks'
 import { CanvasToolbar } from './CanvasToolbar'
@@ -238,6 +239,8 @@ export function CanvasStage() {
 
   // 「从资产库选择」 — 复用 SeedPickerDialog
   const [showPicker, setShowPicker] = useState(false)
+  // 图片右键菜单(复制 / 保存原图 / 加入资产库)
+  const [ctxMenu, setCtxMenu] = useState<CanvasImageMenuState | null>(null)
 
   // ── PR-9 画笔模式(inpaint / eraser) ───────────────────────────────────
   const [maskMode, setMaskMode] = useAtom(maskModeAtom)
@@ -307,6 +310,9 @@ export function CanvasStage() {
         input_image_id: maskObj.image_id,
         mask: maskB64,
         prompt: maskMode.type === 'inpaint' ? prompt : undefined,
+        // 默认按原图尺寸出图,而不是模型默认尺寸(用户反馈)
+        target_w: maskObj.width,
+        target_h: maskObj.height,
         count: 2,
       })
       if (!res.ok) {
@@ -581,6 +587,10 @@ export function CanvasStage() {
                   onSelect={() => { if (!maskMode) setSelectedId(obj.id) }}
                   onChange={(next) => updateObject(next)}
                   onCommit={push}
+                  onContextMenu={(e) => {
+                    if (maskMode || outpaintMode) return
+                    setCtxMenu({ x: e.evt.clientX, y: e.evt.clientY, imageId: obj.image_id })
+                  }}
                 />
               )
             })}
@@ -672,6 +682,9 @@ export function CanvasStage() {
           setMaskMode(null)  // 选完候选自动退出画笔模式
         }}
       />
+
+      {/* 图片右键菜单(复制 / 保存原图 / 加入资产库) */}
+      {ctxMenu && <CanvasImageMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
 
       <SeedPickerDialog
         open={showPicker}

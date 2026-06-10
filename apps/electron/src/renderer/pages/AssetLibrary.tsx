@@ -171,7 +171,9 @@ export default function AssetLibrary() {
     projectId,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['images', projectId] })
-      queryClient.invalidateQueries({ queryKey: ['folders', projectId] })
+      // FolderTree 的 queryKey 是 ['image-folders', ...],之前误写成 'folders' →
+      // 上传后文件夹数字不立刻刷新。修正 key,让数字实时更新。
+      queryClient.invalidateQueries({ queryKey: ['image-folders', projectId] })
       queryClient.invalidateQueries({ queryKey: ['oss-status'] })
     },
   })
@@ -274,6 +276,7 @@ export default function AssetLibrary() {
                       projectId={projectId}
                       selected={selectedFolder}
                       onSelect={(p) => { setSelectedFolder(p); handleClearSelection() }}
+                      inLibrary={true}
                     />
                   </aside>
                 )}

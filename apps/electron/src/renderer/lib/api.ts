@@ -295,9 +295,10 @@ class APIClient {
       )
     },
 
-    listFolders: (projectId: string, sourceType?: string) => {
+    listFolders: (projectId: string, sourceType?: string, inLibrary?: boolean) => {
       const qs = new URLSearchParams({ project_id: projectId })
       if (sourceType) qs.set('source_type', sourceType)
+      if (inLibrary !== undefined) qs.set('in_library', String(inLibrary))
       return this.request<Array<{ folder: string; count: number }>>(
         `/images/folders?${qs.toString()}`,
       )

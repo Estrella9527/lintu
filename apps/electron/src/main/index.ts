@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { dirname, join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, watch as fsWatch, type FSWatcher } from 'fs'
@@ -461,6 +461,23 @@ ipcMain.handle('download-file', async (_event, url: string, filename: string) =>
   } catch (e) {
     console.error('[download]', e)
     return null
+  }
+})
+
+ipcMain.handle('clipboard-write-image', async (_event, url: string) => {
+  // 画布右键「复制图片」:拉取图片字节写入系统剪贴板,外部应用(微信/
+  // Figma/备忘录)可直接 Cmd+V 粘贴位图。
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return false
+    const buffer = Buffer.from(await res.arrayBuffer())
+    const img = nativeImage.createFromBuffer(buffer)
+    if (img.isEmpty()) return false
+    clipboard.writeImage(img)
+    return true
+  } catch (e) {
+    console.error('[clipboard-write-image]', e)
+    return false
   }
 })
 

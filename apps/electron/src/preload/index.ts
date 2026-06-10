@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileToPath: (url: string, absolutePath: string) =>
     ipcRenderer.invoke('save-file-to-path', url, absolutePath) as Promise<string | null>,
   openFile: (path: string) => ipcRenderer.invoke('open-file', path) as Promise<void>,
+  /** 把 URL 指向的图片写入系统剪贴板(位图),外部应用可直接 Cmd+V 粘贴。 */
+  clipboardWriteImage: (url: string) =>
+    ipcRenderer.invoke('clipboard-write-image', url) as Promise<boolean>,
   /** Subscribe to dev-mode sidecar restart lifecycle. Returns an unsubscribe. */
   onSidecarLifecycle: (cb: (event: 'restarting' | 'ready', payload: any) => void) => {
     const r = (_e: any, p: any) => cb('restarting', p)

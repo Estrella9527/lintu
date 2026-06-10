@@ -205,12 +205,16 @@ async def list_image_ids(
 async def list_folders(
     project_id: str,
     source_type: Optional[str] = None,
+    in_library: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Return every distinct relative_dir with its image count.
 
     The frontend expands this flat list into a tree. Empty relative_dir is
     reported as the root (label: "/", value: "").
+
+    in_library 过滤要和资产库网格(list_images)保持一致,否则文件夹数字会把
+    "未入库的画布草稿/生成图"也算进去,和网格显示的张数对不上。
     """
     q = (
         select(Image.relative_dir, func.count(Image.id).label("count"))
@@ -219,6 +223,8 @@ async def list_folders(
     )
     if source_type:
         q = q.where(Image.source_type == source_type)
+    if in_library is not None:
+        q = q.where(Image.in_library == in_library)
     rows = await db.execute(q)
     return [
         {"folder": (r[0] or ""), "count": r[1]}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { useAtomValue } from 'jotai'
 import { Check, Search, Sparkles } from 'lucide-react'
@@ -57,11 +57,13 @@ export function SeedPickerDialog({
   // Re-seed selection state every time the dialog opens — this preserves
   // "edit existing selection" semantics for SeedSelector while letting the
   // canvas use it for "add new images" (it passes [] initialSelected).
-  useState(() => {
+  // 必须用 useEffect:useState 初始化器只跑一次,第二次打开不会重置选择。
+  useEffect(() => {
     if (open) {
       setSelected(new Map(initialSelected.map((it) => [it.id, it])))
     }
-  })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const { data, fetchNextPage, hasNextPage, isLoading, isFetchingNextPage } = useInfiniteQuery({
     queryKey: ['seed-picker', projectId, folder, search, sourceType],
@@ -75,7 +77,8 @@ export function SeedPickerDialog({
         source_type: sourceType !== 'all' ? sourceType : undefined,
         ...(folder === '' ? { folder: '' } : folder ? { folder_prefix: folder } : {}),
         status: 'passed',
-        in_library: true,  // 只从「已入库」的图里挑,画布草稿不在此列
+        // 画布选图 = 从「我全部的图」挑一张放进画布,含上传/生成的草稿
+        //(不加 in_library 过滤,否则草稿选不到 — 用户反馈「选不了」)
       })
     },
     getNextPageParam: (lastPage, pages) =>

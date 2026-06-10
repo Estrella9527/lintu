@@ -60,6 +60,15 @@ async def lifespan(app: FastAPI):
     from sidecar.providers import sms_aliyun
     sms_aliyun.preflight()
 
+    # 一次性自愈:旧版压缩任务曾原地覆盖源文件(原图存为 .orig)。v0.3.1 起
+    # 压缩只写派生副本;这里把历史 .orig 自动还原回原图。幂等 — 每图一次
+    # stat,没有 .orig 时近零开销;还原后修正 DB 里被改过的尺寸。
+    from sidecar.engines.restore_orig import restore_orig_backups
+    try:
+        await restore_orig_backups()
+    except Exception:
+        logging.getLogger(__name__).exception("restore .orig backups failed (non-fatal)")
+
     # Register engine handlers (imported lazily to avoid circular deps)
     from sidecar.engines.quality_check import run_quality_check
     from sidecar.engines.dedup import run_dedup

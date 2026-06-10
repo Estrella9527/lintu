@@ -150,9 +150,23 @@ export function ContextBar({
                      bg-background/98 backdrop-blur-md
                      pl-1.5 pr-2 py-1.5
                      shadow-[0_4px_16px_rgba(0,0,0,0.06)]
-                     max-w-[calc(100vw-40px)] overflow-x-auto"
+                     max-w-[calc(100vw-40px)]"
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
+          // 双指滚动 / 滚轮经过工具栏时,把事件转发给画布 —— 否则平移/缩放手势会
+          // 在碰到工具栏边缘的瞬间被吃掉而中断(用户反馈)。转发后画布手势连续。
+          onWheel={(e) => {
+            const content = document.querySelector('.konvajs-content') as HTMLElement | null
+            if (!content) return
+            e.preventDefault()
+            content.dispatchEvent(new WheelEvent('wheel', {
+              deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+              clientX: e.clientX, clientY: e.clientY,
+              ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+              shiftKey: e.shiftKey, altKey: e.altKey,
+              bubbles: true, cancelable: true,
+            }))
+          }}
         >
           {/* Ask AI 主入口 — 立体粉紫渐变(参考图 Kree8 风格) */}
           <button

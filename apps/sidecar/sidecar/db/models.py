@@ -128,6 +128,13 @@ class Image(Base):
     # never overwritten. Consumers must read via effective_file_path().
     rotated_file_path = Column(String)
 
+    # Compressed derivative for OSS/CDN upload. Compress writes a smaller JPEG
+    # to workspace/derived/compress/{id}.jpg and records its path here; the
+    # original `file_path` is NEVER overwritten (originals stay pristine). OSS
+    # sync uploads this when present to save bandwidth; local display/export
+    # always reads the original via effective_file_path().
+    compressed_file_path = Column(String)
+
     # Public CDN object key (relative to oss_cdn_base). Populated by
     # OssSyncWorker after a successful upload; openapi_v1 prefers this over
     # the local /file endpoint when present. NULL = not yet uploaded.

@@ -1,6 +1,6 @@
 import { useAtomValue } from 'jotai'
 
-import { canvasParamsAtom } from '@/atoms/canvas'
+import { canvasParamsAtom, maskModeAtom, outpaintModeAtom } from '@/atoms/canvas'
 import { workshopBatchDialogAtom } from '@/atoms/workshop'
 import { CanvasStage } from '@/components/workshop/canvas/CanvasStage'
 import { PromptBar } from '@/components/workshop/canvas/PromptBar'
@@ -16,8 +16,13 @@ import { workshopModeAtom } from '@/atoms/workshop'
  */
 export function CanvasMode() {
   const params = useAtomValue(canvasParamsAtom)
+  const maskMode = useAtomValue(maskModeAtom)
+  const outpaintMode = useAtomValue(outpaintModeAtom)
   const [, setMode] = useAtom(workshopModeAtom)
   const setShowBatch = useSetAtom(workshopBatchDialogAtom)
+  // 扩图 / 局部重绘是专注子任务,它们的操作条也在底部居中 —— 此时必须隐藏
+  // PromptBar,否则 PromptBar 会盖住扩图的「生成/取消」按钮(用户反馈"点了没反应")。
+  const focusedTool = !!maskMode || !!outpaintMode
 
   // 序列化当前画布参数为「存为策略」时的 canvas_snapshot
   const snapshot: Record<string, unknown> = {
@@ -37,16 +42,16 @@ export function CanvasMode() {
       <div className="absolute inset-0">
         <CanvasStage />
       </div>
-      {/* 底部居中固定宽的图文输入框(悬浮) */}
-      <PromptBar />
+      {/* 底部居中固定宽的图文输入框(悬浮)。扩图/重绘进行时隐藏,给其操作条让位 */}
+      {!focusedTool && <PromptBar />}
       {/* 历史记录:默认收起为右上角按钮,展开为右侧悬浮抽屉(悬浮在画布上) */}
-      <HistoryPanel
+      {!focusedTool && <HistoryPanel
         canvasSnapshot={snapshot}
         onTransferToBatch={() => {
           setMode('batch')
           setShowBatch(true)
         }}
-      />
+      />}
     </div>
   )
 }

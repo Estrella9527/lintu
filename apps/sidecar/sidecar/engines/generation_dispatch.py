@@ -373,6 +373,10 @@ async def dispatch(
     # text2img 直接走 size;outpaint 走 compose 路径(透明 canvas 替代原图)
     if gtype == "text2img" and target_w and target_h:
         extra["size"] = f"{target_w}x{target_h}"
+    # inpaint / eraser:默认按被涂抹的原图尺寸出图(前端传原图 W/H),
+    # 不再退到模型默认的 2048/1024(用户反馈:局部重绘应保持原图尺寸)。
+    if gtype in ("inpaint", "eraser") and target_w and target_h:
+        extra["size"] = f"{target_w}x{target_h}"
     if gtype == "outpaint" and input_image_path:
         # 在 dispatch 层把原图 compose 进透明画布,provider 看到的"原图"已经
         # 是目标尺寸 + 透明边的 PNG;模型自动 inpaint 透明区

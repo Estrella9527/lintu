@@ -42,6 +42,7 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
     onSuccess: () => {
       toast.success('图片已删除')
       queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['image-folders'] })
     },
   })
 

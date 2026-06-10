@@ -79,6 +79,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
       toast.success(`已删除 ${data.deleted} 张图片`)
       onClear()
       queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['image-folders'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
     onError: () => toast.error('删除失败'),
@@ -118,6 +119,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
       toast.success(`已对 ${ids.length} 张图片提交「${label}」任务，可在任务中心查看进度`)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['image-folders'] })
       onClear()
     },
     onError: (e: Error) => toast.error(`提交失败：${e.message}`),
@@ -190,6 +192,7 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
       toast.success('状态已更新')
       onClear()
       queryClient.invalidateQueries({ queryKey: ['images'] })
+      queryClient.invalidateQueries({ queryKey: ['image-folders'] })
     },
   })
 

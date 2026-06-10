@@ -12,6 +12,8 @@ interface CanvasImageProps {
   onChange: (next: CanvasImageObject) => void
   /** Called once after move / resize finishes so history hook can snapshot */
   onCommit: () => void
+  /** 右键 → 弹出复制/保存菜单(屏幕坐标由 CanvasStage 处理) */
+  onContextMenu?: (e: Konva.KonvaEventObject<PointerEvent>) => void
 }
 
 /**
@@ -24,7 +26,7 @@ interface CanvasImageProps {
  *   - 选中描边颜色用 lintu accent (从 CSS var 读)
  */
 export function CanvasImage({
-  obj, isSelected, onSelect, onChange, onCommit,
+  obj, isSelected, onSelect, onChange, onCommit, onContextMenu,
 }: CanvasImageProps) {
   const imageNodeRef = useRef<Konva.Image>(null)
   const transformerRef = useRef<Konva.Transformer>(null)
@@ -79,6 +81,11 @@ export function CanvasImage({
         draggable
         onMouseDown={onSelect}
         onTap={onSelect}
+        onContextMenu={(e) => {
+          e.evt.preventDefault()
+          onSelect()
+          onContextMenu?.(e)
+        }}
         onDragEnd={(e) => {
           onChange({ ...obj, x: e.target.x(), y: e.target.y() })
           onCommit()

@@ -347,7 +347,10 @@ async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
         )
         already = {r[0] for r in existing.all()}
 
-        original_path = effective_file_path(img)
+        # 优先上传压缩派生版(省 CDN 流量);没压缩过就传原图/旋转派生。
+        # 本地显示/导出仍走 effective_file_path(原图),不受影响。
+        compressed = getattr(img, "compressed_file_path", None)
+        original_path = compressed if (compressed and Path(compressed).exists()) else effective_file_path(img)
         original_ext = Path(original_path).suffix.lstrip(".").lower() or "jpg"
 
         plans: list[tuple[str, str, str, str]] = []  # (asset_kind, key, local, ctype)

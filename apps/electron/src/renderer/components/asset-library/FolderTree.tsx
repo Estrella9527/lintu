@@ -18,6 +18,8 @@ interface FolderTreeProps {
   projectId: string
   selected: string | null            // null = 全部；"" = 根；"xxx" = specific folder
   onSelect: (path: string | null) => void
+  /** 与网格一致的资产库成员过滤;true=只数已入库,保证文件夹数字和网格张数对得上 */
+  inLibrary?: boolean
 }
 
 /** Build a folder tree from the flat [{folder, count}] list. */
@@ -70,10 +72,10 @@ function buildTree(rows: { folder: string; count: number }[]): FolderNode {
   return root
 }
 
-export function FolderTree({ projectId, selected, onSelect }: FolderTreeProps) {
+export function FolderTree({ projectId, selected, onSelect, inLibrary }: FolderTreeProps) {
   const { data, isLoading } = useQuery({
-    queryKey: ['image-folders', projectId],
-    queryFn: () => api.images.listFolders(projectId),
+    queryKey: ['image-folders', projectId, inLibrary],
+    queryFn: () => api.images.listFolders(projectId, undefined, inLibrary),
     refetchInterval: 10_000,
     enabled: !!projectId,
   })
