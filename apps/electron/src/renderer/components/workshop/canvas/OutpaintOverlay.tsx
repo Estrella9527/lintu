@@ -77,23 +77,28 @@ export function OutpaintOverlay({
     startTarget: { x: number; y: number; w: number; h: number }
   } | null>(null)
 
-  // 应用预设比例:让长边 ≥ 原图长边,按比例补另一边;align 居中
+  // 应用预设比例:严格保持所选比例,整体放大到恰好能包含原图;align 居中。
+  // (旧实现对宽高分别 max(原图边) 钳制,方图选 16:9 会被顶回原尺寸 = 没反应)
   const applyPreset = (rw: number, rh: number) => {
-    const baseLong = Math.max(sourceBounds.width, sourceBounds.height, 1024)
-    let tw: number, th: number
-    if (rw >= rh) {
-      tw = baseLong
-      th = Math.round(baseLong * rh / rw)
-    } else {
-      th = baseLong
-      tw = Math.round(baseLong * rw / rh)
+    const r = rw / rh
+    const sw = sourceBounds.width
+    const sh = sourceBounds.height
+    // 先按"宽够包含原图"算,高不够再以高为准 — 两边都 ≥ 原图且比例精确
+    let tw = Math.max(sw, sh * r)
+    let th = tw / r
+    if (th < sh) {
+      th = sh
+      tw = th * r
     }
-    tw = Math.max(tw, sourceBounds.width)
-    th = Math.max(th, sourceBounds.height)
+    tw = Math.round(tw)
+    th = Math.round(th)
+    // 8192 上限(与拖拽手柄一致)
+    if (tw > 8192) { tw = 8192; th = Math.round(tw / r) }
+    if (th > 8192) { th = 8192; tw = Math.round(th * r) }
     // 居中放原图
     setTarget({
-      x: sourceBounds.x + (sourceBounds.width  - tw) / 2,
-      y: sourceBounds.y + (sourceBounds.height - th) / 2,
+      x: sourceBounds.x + (sw - tw) / 2,
+      y: sourceBounds.y + (sh - th) / 2,
       w: tw, h: th,
     })
   }

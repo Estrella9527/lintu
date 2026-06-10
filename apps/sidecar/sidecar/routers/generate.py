@@ -39,7 +39,7 @@ from sidecar.engines.generation_dispatch import (
     dispatch,
 )
 from sidecar.engines.aigc_label import embed_aigc_label_png
-from sidecar.engines.image_utils import compute_perceptual_hashes
+from sidecar.engines.image_utils import compute_perceptual_hashes, effective_file_path
 from sidecar.engines.oss_sync import enqueue_image_sync
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,29 @@ async def generate(
         if src.project_id != project.id:
             raise HTTPException(403, {"code": "cross_project",
                                       "message": "不能引用其他项目的图"})
-        input_path = src.file_path
+        input_path = effective_file_path(src)
+        # 本地文件丢失(目录被移动/系统清理 /tmp 等)→ 有云端副本就拉临时文件
+        # 兜底;没有则给人话报错,不再让 PIL 在 compose 里崩出 Errno 2。
+        if not Path(input_path).exists():
+            if src.cdn_path:
+                import tempfile
+                from sidecar.engines.oss_sync import get_storage
+                ext = Path(src.cdn_path).suffix or ".png"
+                tmp = Path(tempfile.gettempdir()) / f"lintu_gen_src_{src.id}{ext}"
+                try:
+                    if not tmp.exists():
+                        get_storage().download(src.cdn_path, str(tmp))
+                    input_path = str(tmp)
+                except Exception as e:
+                    raise HTTPException(404, {
+                        "code": "input_file_missing",
+                        "message": f"这张图的原始文件已丢失,从云端取回也失败({str(e)[:80]})。请换一张图。",
+                    })
+            else:
+                raise HTTPException(404, {
+                    "code": "input_file_missing",
+                    "message": "这张图的原始文件已丢失(可能被移动或清理),云端也没有副本,无法基于它生成。请换一张图重试。",
+                })
         parent_id = src.id
 
     # Phase 1: ignore mask / style_archive_id / strength / consistency / speed
