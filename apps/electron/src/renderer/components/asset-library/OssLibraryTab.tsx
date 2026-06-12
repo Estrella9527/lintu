@@ -522,6 +522,12 @@ function OssOrphanInspector({ item, projectId, onImport, onDelete, importing }: 
         <div className="text-[11px] text-foreground/45 leading-relaxed">
           导入后默认「待审核 + 未上架」，自动派发向量与打标；到「审核」通过并上架后才进入 UGC 匹配候选池。
         </div>
+        <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.05] px-2.5 py-2 text-[11px] text-foreground/55 leading-relaxed">
+          <b className="text-amber-700 dark:text-amber-400">为什么没有打标信息?</b><br />
+          这张图<b>任何电脑都没导入过</b>,本机和云端都没有它的标签。
+          如果同事已在别的电脑打标:请确认那台电脑上这张图走完了<b>审核通过</b>(=发布到云端),
+          本机最多 10 分钟后自动显示,或点上方「重新扫描」立即刷新。
+        </div>
         <div className="pt-2 border-t border-foreground/5">
           <p className="text-[10px] text-foreground/35 break-all leading-snug">对象 key：{item.object_key}</p>
         </div>

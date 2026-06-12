@@ -150,6 +150,22 @@ async def _load_context(refresh: bool = False):
         cloud_map: dict[str, dict] = cache.get("cloud") or {}
         scanned_at: str | None = cache.get("scanned_at")
         cache_hit = True
+        # 云端联查结果短 TTL(10 分钟):bucket 文件列表变化慢可以久缓存,
+        # 但"其他电脑刚发布的打标信息"必须及时可见 —— 超龄就重新联查
+        # (只走云端查询 1~2 秒,不重列 bucket),否则对方发布了这边还得
+        # 手动重扫才看得到。
+        try:
+            age_ok = scanned_at and (
+                datetime.utcnow() - datetime.fromisoformat(scanned_at)
+            ).total_seconds() < 600
+        except Exception:
+            age_ok = False
+        if not age_ok and LINTU_CLOUD_SYNC_URL and LINTU_INTERNAL_SYNC_TOKEN:
+            fresh = await _query_cloud_briefs(keys)
+            if fresh or cloud_map:   # 全空→全空不必写
+                cloud_map = fresh
+                _write_cache(keys, cloud_map)
+                scanned_at = datetime.utcnow().isoformat()
     else:
         keys = [k for k in storage.list_keys(_IMG_PREFIX) if not _is_thumb(k)]
         # 云端联查放在"非本机"的 key 上意义最大,但本机映射还没取;
