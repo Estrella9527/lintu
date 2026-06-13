@@ -63,6 +63,7 @@ def _image_payload(img: Image) -> dict:
 
     return {
         "id": img.id,
+        "project_id": img.project_id,
         "file_name": img.file_name,
         "width": img.width,
         "height": img.height,
@@ -72,11 +73,34 @@ def _image_payload(img: Image) -> dict:
         "thumbnail_url": thumbnail_url,
         "original_url": original_url,
         "cdn_synced": bool(cdn_path),
+        # UGC 素材同步需要的状态 + 时间(口径:候选池 = approved AND is_listed)
+        "review_status": img.review_status,
+        "is_listed": bool(img.is_listed) if img.is_listed is not None else None,
+        "updated_at": img.updated_at.isoformat() if img.updated_at else None,
+        "created_at": img.created_at.isoformat() if img.created_at else None,
         "usage_count": int(getattr(img, "usage_count", 0) or 0),
         "last_used_at": (
             img.last_used_at.isoformat() if getattr(img, "last_used_at", None) else None
         ),
     }
+
+
+async def _tags_for(db: AsyncSession, image_ids: list[str]) -> dict[str, list[str]]:
+    """批量取每图标签值(UGC 要 tags: string[] 扁平形式)。一次查询,避免 N+1。"""
+    if not image_ids:
+        return {}
+    rows = (await db.execute(
+        select(Tag.image_id, Tag.value).where(Tag.image_id.in_(image_ids))
+    )).all()
+    out: dict[str, list[str]] = {}
+    for iid, val in rows:
+        if val:
+            out.setdefault(iid, []).append(val)
+    return out
+
+
+def _with_tags(payload: dict, tags_by: dict[str, list[str]]) -> dict:
+    return {**payload, "tags": tags_by.get(payload["id"], [])}
 
 
 @router.get("/images", dependencies=[Depends(require_scope("images:read"))])
@@ -87,10 +111,19 @@ async def list_images(
     season: Optional[List[str]] = Query(None),
     folder: Optional[str] = None,
     folder_prefix: Optional[str] = None,
+    ids: Optional[List[str]] = Query(None, description="按 id 批量取(对账补偿用);传了则忽略其它过滤"),
     offset: int = 0,
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=500),
     db: AsyncSession = Depends(get_db),
 ):
+    # ids 模式:对账补偿,直接按 id 取(不限 quality/kept,UGC 自己判状态)
+    if ids:
+        rows = await db.execute(select(Image).where(Image.id.in_(ids[:500])))
+        items = rows.scalars().all()
+        tags_by = await _tags_for(db, [i.id for i in items])
+        return {"total": len(items), "offset": 0, "limit": len(items),
+                "items": [_with_tags(_image_payload(i), tags_by) for i in items]}
+
     query = select(Image).where(Image.quality_status == "passed", Image.is_kept == True)  # noqa: E712
     if project_id:
         query = query.where(Image.project_id == project_id)
@@ -111,7 +144,80 @@ async def list_images(
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = await db.execute(query.order_by(Image.created_at.desc()).offset(offset).limit(limit))
     items = rows.scalars().all()
-    return {"total": total, "offset": offset, "limit": limit, "items": [_image_payload(i) for i in items]}
+    tags_by = await _tags_for(db, [i.id for i in items])
+    return {"total": total, "offset": offset, "limit": limit,
+            "items": [_with_tags(_image_payload(i), tags_by) for i in items]}
+
+
+@router.get("/images/changes", dependencies=[Depends(require_scope("images:read"))])
+async def images_changes(
+    project_id: str = Query(..., description="项目(景区)ID,UGC 按景区分别同步"),
+    since: Optional[str] = Query(None, description='游标,首拉留空;之后传上次的 next_cursor'),
+    limit: int = Query(200, ge=1, le=500),
+    include_deleted: bool = Query(True, description="是否返回墓碑 deleted_ids"),
+    db: AsyncSession = Depends(get_db),
+):
+    """【UGC 素材增量同步】返回 since 之后该项目变化的素材(新增/更新)+ 删除墓碑。
+
+    复合游标 (updated_at, id) 分页,UGC 循环拉到 has_more=false,记 next_cursor 供下次。
+    字段为 UGC 所需的裁剪版(无 embedding/phash 等内部字段)+ 绝对 CDN URL。
+    与桌面端「审核通过=发布上云」口径一致:云端只含已发布素材,review_status 多为
+    approved;下架走字段更新,删除/拒审走 deleted_ids。
+    """
+    from datetime import datetime
+    from sqlalchemy import and_, or_
+    from sidecar.db.models import SyncTombstone
+
+    def _parse(s: Optional[str]) -> tuple[datetime, str]:
+        if not s:
+            return (datetime.min, "")
+        ts, _, eid = s.partition("|")
+        try:
+            return (datetime.fromisoformat(ts), eid)
+        except ValueError:
+            return (datetime.min, "")
+
+    since_ts, since_id = _parse(since)
+    rows = (await db.execute(
+        select(Image)
+        .where(Image.project_id == project_id)
+        .where(or_(Image.updated_at > since_ts,
+                   and_(Image.updated_at == since_ts, Image.id > since_id)))
+        .order_by(Image.updated_at.asc(), Image.id.asc())
+        .limit(limit)
+    )).scalars().all()
+    tags_by = await _tags_for(db, [r.id for r in rows])
+    items = [_with_tags(_image_payload(r), tags_by) for r in rows]
+
+    has_more = len(rows) == limit
+    if has_more:
+        last = rows[-1]
+        next_cursor = f"{last.updated_at.isoformat()}|{last.id}"
+    else:
+        next_cursor = since or ""
+
+    deleted_ids: list[str] = []
+    if include_deleted:
+        # 墓碑无 project 维度(行已删),按时间窗返回 image 删除;UGC 按 id upsert/移除,
+        # 跨项目 id 在其库里命不中、无副作用。已抽干 images 后才纳入删除游标推进。
+        tomb_after = since_ts if not has_more else datetime.min
+        if not has_more:
+            tombs = (await db.execute(
+                select(SyncTombstone.entity_id)
+                .where(SyncTombstone.entity_type == "image")
+                .where(SyncTombstone.deleted_at > since_ts)
+            )).all()
+            deleted_ids = [t[0] for t in tombs]
+            # 删除变更已消费 → 游标推到 now,下次只取更新的
+            next_cursor = f"{datetime.utcnow().isoformat()}|~"
+        _ = tomb_after
+
+    return {
+        "items": items,
+        "deleted_ids": deleted_ids,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+    }
 
 
 @router.get("/images/{image_id}", dependencies=[Depends(require_scope("images:read"))])

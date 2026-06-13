@@ -119,6 +119,17 @@ async def decide(body: DecideBody, db: AsyncSession = Depends(get_db)):
     if not body.image_ids:
         return {"ok": True, "updated": 0}
 
+    # 拒审前先记下哪些"原本是已发布(approved)"的图 —— 它们可能已在云端,
+    # 改判 rejected 后必须从云端撤下(进墓碑),否则 UGC 永远收不到移除信号。
+    prev_approved: list[str] = []
+    if body.decision == "rejected":
+        prev_approved = [
+            r[0] for r in (await db.execute(
+                select(Image.id).where(Image.id.in_(body.image_ids))
+                .where(Image.review_status == "approved")
+            )).all()
+        ]
+
     result = await db.execute(
         update(Image)
         .where(Image.id.in_(body.image_ids))
@@ -127,14 +138,18 @@ async def decide(body: DecideBody, db: AsyncSession = Depends(get_db)):
     await db.commit()
     updated = result.rowcount or 0
 
-    if body.decision == "approved":
-        # Best-effort cloud sync trigger. Ignored if cloud sync isn't
-        # configured (LINTU_CLOUD_SYNC_URL unset).
-        try:
+    try:
+        if body.decision == "approved":
+            # 通过 → 推云端(~30s 内到达;已推过的幂等无副作用)
             from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
             for iid in body.image_ids:
                 await enqueue_image_upsert(iid)
-        except Exception:
-            pass
+        elif prev_approved:
+            # 已发布图被拒审 → 推删除,云端写墓碑,UGC 经 deleted_ids 移出候选池
+            from sidecar.scheduler.cloud_sync_worker import enqueue_image_delete
+            for iid in prev_approved:
+                await enqueue_image_delete(iid)
+    except Exception:
+        pass
 
     return {"ok": True, "updated": updated, "decision": body.decision}
