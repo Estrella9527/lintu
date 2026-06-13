@@ -51,12 +51,15 @@ def _image_payload(img: Image) -> dict:
 
     storage = get_storage()
     cdn_path = getattr(img, "cdn_path", None)
-    if cdn_path and storage.is_read_configured():
-        # Original URL straight from CDN
-        original_url = storage.public_url(cdn_path)
-        # Thumb URLs follow the {id}_{size}.jpg convention from oss_sync
-        thumb_300_key = object_key_for(img.id, "thumb_300", "jpg")
-        thumbnail_url = storage.public_url(thumb_300_key)
+    if storage.is_read_configured():
+        # 缩略图 key 由 id 直接推导(i/{id}_300.jpg),无需 cdn_path —— 故只要
+        # OSS 可读就给绝对 URL(此前漏判:无 cdn_path 时缩略图也退化成相对路径)。
+        thumbnail_url = storage.public_url(object_key_for(img.id, "thumb_300", "jpg"))
+        if cdn_path:
+            original_url = storage.public_url(cdn_path)
+        else:
+            ext = (Path(img.file_name).suffix.lstrip(".").lower() or "jpg") if img.file_name else "jpg"
+            original_url = storage.public_url(object_key_for(img.id, "original", ext))
     else:
         original_url = f"/open-api/v1/images/{img.id}/file"
         thumbnail_url = f"/open-api/v1/images/{img.id}/file?size=300"
