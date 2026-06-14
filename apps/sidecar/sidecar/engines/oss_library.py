@@ -481,9 +481,11 @@ async def import_orphans(project_id: str, object_keys: list[str] | None = None) 
                     width=w, height=h,
                     file_size_kb=local.stat().st_size // 1024,
                     quality_status="passed",      # OSS 直传图视为已过质检
-                    review_status="pending",       # 待审核
-                    is_listed=False,               # 未上架,需运营操作
-                    tag_status="pending",
+                    # 【新规则】上传到 OSS = UGC 可用。导入即「审核通过 + 上架」,
+                    # 去掉人工卡审核、卡上传两道闸。运营如需剔除个别图,再手动下架。
+                    review_status="approved",      # 导入即视为已发布
+                    is_listed=True,                # 直接上架,进 UGC 候选池
+                    tag_status="pending",          # 标签后台补,不阻塞可用
                     source_type="oss_import",
                     cdn_path=key,                  # 已在 bucket,直接复用其 key 作 CDN
                     relative_dir="oss_import",
@@ -507,6 +509,16 @@ async def import_orphans(project_id: str, object_keys: list[str] | None = None) 
                     total=len(imported_ids),
                 ))
             await db.commit()
+
+    # 推送到云端 DB:导入图已是 approved+listed、文件已在 OSS(cdn_path 已设),
+    # 必须入队云端 upsert,UGC 才能看到。无需 OSS 上传(文件本就在桶里)。
+    if imported_ids:
+        try:
+            from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+            for iid in imported_ids:
+                await enqueue_image_upsert(iid)
+        except Exception:
+            logger.warning("导入图云端同步入队失败(可后续对账补推)", exc_info=True)
 
     return {"imported": len(imported_ids), "skipped": 0, "failed": failed, "image_ids": imported_ids}
 
