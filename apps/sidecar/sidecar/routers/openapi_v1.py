@@ -43,6 +43,19 @@ async def health():
 # ── Images ──────────────────────────────────────────────────────────────────
 
 
+# OSS 实时缩略:对原图按宽 400 在线缩(原图必在 OSS),不依赖单独上传的
+# i/{id}_300.jpg 文件。反向导入(OSS 直传)的真实照片没有 _300 派生,旧逻辑
+# 直接拼 _300 key 会 404,导致 UGC 资产网格 / 缩略图全裂。
+_OSS_THUMB_SUFFIX = "x-oss-process=image/resize,w_400/quality,q_80"
+
+
+def _thumb_from_original(original_url: str) -> str:
+    if not original_url or original_url.startswith("/"):
+        return original_url  # 本地流式回退由调用方单独给 /file?size=300
+    sep = "&" if "?" in original_url else "?"
+    return f"{original_url}{sep}{_OSS_THUMB_SUFFIX}"
+
+
 def _image_payload(img: Image) -> dict:
     """Build the public payload. URLs prefer CDN when the image has been
     synced (Image.cdn_path is set); otherwise we fall back to streaming
@@ -52,14 +65,13 @@ def _image_payload(img: Image) -> dict:
     storage = get_storage()
     cdn_path = getattr(img, "cdn_path", None)
     if storage.is_read_configured():
-        # 缩略图 key 由 id 直接推导(i/{id}_300.jpg),无需 cdn_path —— 故只要
-        # OSS 可读就给绝对 URL(此前漏判:无 cdn_path 时缩略图也退化成相对路径)。
-        thumbnail_url = storage.public_url(object_key_for(img.id, "thumb_300", "jpg"))
         if cdn_path:
             original_url = storage.public_url(cdn_path)
         else:
             ext = (Path(img.file_name).suffix.lstrip(".").lower() or "jpg") if img.file_name else "jpg"
             original_url = storage.public_url(object_key_for(img.id, "original", ext))
+        # 缩略图对原图实时缩,不依赖单独的 _300 文件(反向导入图没 _300 会 404)
+        thumbnail_url = _thumb_from_original(original_url)
     else:
         original_url = f"/open-api/v1/images/{img.id}/file"
         thumbnail_url = f"/open-api/v1/images/{img.id}/file?size=300"
@@ -508,8 +520,7 @@ def _public_url_for_match(image_id: str, cdn_path: str | None) -> tuple[str, str
     storage = get_storage()
     if cdn_path and storage.is_read_configured():
         original = storage.public_url(cdn_path)
-        thumb = storage.public_url(object_key_for(image_id, "thumb_300", "jpg"))
-        return original, thumb
+        return original, _thumb_from_original(original)
     return (
         f"/open-api/v1/images/{image_id}/file",
         f"/open-api/v1/images/{image_id}/file?size=300",
