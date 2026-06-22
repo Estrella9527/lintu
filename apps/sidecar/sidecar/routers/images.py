@@ -105,6 +105,11 @@ def _apply_image_filters(
         query = query.where(Image.parent_id == parent_id)
     if in_library is not None:
         query = query.where(Image.in_library == in_library)
+    # 「全部图片」根视图(未选文件夹、未筛来源)默认隐藏 AI 生成草稿 —— 它们只在
+    # 「AI生成」文件夹(folder/folder_prefix 命中)或显式 source_type=generated 时出现,
+    # 避免 AI 草稿和真实照片在「全部图片」里混淆。
+    if folder is None and not folder_prefix and not source_type:
+        query = query.where(Image.source_type != "generated")
     return query
 
 
