@@ -1,7 +1,10 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
@@ -434,6 +437,8 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
         </DropdownMenuContent>
       </DropdownMenu>
 
+      <BatchTagButton ids={ids} onDone={onClear} />
+
       <Button variant="outline" size="sm" className="h-7 text-[12px] whitespace-nowrap shrink-0" onClick={handleDownload}>
         <Download size={12} className="mr-1" /> 下载
       </Button>
@@ -472,5 +477,83 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
         <X size={12} className="mr-1" /> 取消选择
       </Button>
     </div>
+  )
+}
+
+type DimSchema = { label?: string; multi?: boolean; values?: string[] }
+
+/** 批量人工打标:收集 维度→取值(受控,仅标签体系内),一次性应用到选中图。 */
+function BatchTagButton({ ids, onDone }: { ids: string[]; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [picked, setPicked] = useState<Record<string, string[]>>({})
+  const { data: schema } = useQuery<Record<string, DimSchema>>({
+    queryKey: ['tag-schema'],
+    queryFn: () => apiFetchRaw('/tag-schema').then((r) => r.json()),
+    staleTime: 5 * 60 * 1000,
+  })
+  const apply = useMutation({
+    mutationFn: () => api.images.batchTag(ids, picked, 'add'),
+    onSuccess: (d) => {
+      toast.success(`已给 ${d.updated} 张图打标`)
+      setPicked({})
+      onDone()
+      qc.invalidateQueries({ queryKey: ['images'] })
+      qc.invalidateQueries({ queryKey: ['image-folders'] })
+    },
+    onError: (e: any) => toast.error(e?.message || '批量打标失败'),
+  })
+  const toggle = (dim: string, v: string) =>
+    setPicked((p) => {
+      const cur = p[dim] || []
+      return { ...p, [dim]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] }
+    })
+  const count = Object.values(picked).reduce((n, a) => n + a.length, 0)
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-7 text-[12px] whitespace-nowrap shrink-0">
+          <TagIcon size={12} className="mr-1" /> 批量打标
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[360px] max-h-[460px] p-0 overflow-hidden flex flex-col" align="start">
+        <div className="px-3 py-2 border-b border-foreground/8 text-[11px] font-medium text-foreground/70">
+          给选中 {ids.length} 张打人工标签 <span className="text-foreground/40 font-normal">· 仅标签体系内取值</span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-2.5">
+          {schema && Object.entries(schema).map(([dim, ds]) => (
+            <div key={dim}>
+              <div className="text-[10px] text-foreground/45 mb-1">{ds.label || dim}{ds.multi ? '' : ' · 单选'}</div>
+              <div className="flex flex-wrap gap-1">
+                {(ds.values || []).map((v) => {
+                  const on = (picked[dim] || []).includes(v)
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => toggle(dim, v)}
+                      className={cn(
+                        'rounded px-1.5 py-0.5 text-[10px] border',
+                        on ? 'bg-accent/15 text-accent border-accent/40'
+                          : 'border-foreground/10 hover:border-accent/30 hover:text-accent',
+                      )}
+                    >
+                      {v}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="px-3 py-2 border-t border-foreground/8 flex items-center justify-between">
+          <span className="text-[10px] text-foreground/45">已选 {count} 个标签值</span>
+          <Button size="sm" className="h-7 text-[11px]" disabled={count === 0 || apply.isPending}
+            onClick={() => apply.mutate()}>
+            应用到 {ids.length} 张
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
