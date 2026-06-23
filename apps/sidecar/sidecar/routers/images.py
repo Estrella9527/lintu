@@ -328,6 +328,46 @@ class UpdateTagsBody(BaseModel):
     tags: dict  # {dimension: [values]} or {dimension: value}
 
 
+class AddTagBody(BaseModel):
+    dimension: str
+    value: str
+
+
+async def _refresh_tag_state(db: AsyncSession, image_id: str) -> None:
+    """改标后统一收口:重算 text_search_blob(文搜召回)+ 维护 tag_status +
+    入云端同步队列。所有人工增/删/改标签端点都走这里,避免文搜失真/多设备不同步。
+    会 commit 当前事务(含调用方挂起的 Tag 增删)。"""
+    from sidecar.engines.tagger import build_text_search_blob
+    img = await db.get(Image, image_id)
+    if not img:
+        return
+    rows = (await db.execute(
+        select(Tag.value, Tag.source).where(Tag.image_id == image_id)
+    )).all()
+    values = [v for v, _ in rows]
+    has_manual = any(s == "manual" for _, s in rows)
+    img.text_search_blob = build_text_search_blob(img.file_name, img.description, values)
+    if has_manual:
+        img.tag_status = "manual"
+    elif rows:
+        img.tag_status = "tagged"
+    await db.commit()
+    try:
+        from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+        await enqueue_image_upsert(image_id)
+    except Exception as e:
+        logger.debug("cloud sync enqueue (tags) failed for %s: %s", image_id, e)
+
+
+async def _image_tags_payload(db: AsyncSession, image_id: str) -> dict:
+    rows = (await db.execute(select(Tag).where(Tag.image_id == image_id))).scalars().all()
+    return {"ok": True, "tags": [
+        {"id": t.id, "dimension": t.dimension, "value": t.value,
+         "source": t.source, "confidence": t.confidence}
+        for t in rows
+    ]}
+
+
 class ImagePatchBody(BaseModel):
     """Lightweight PATCH for single-image field updates.
 
@@ -440,34 +480,116 @@ async def batch_set_listing(body: ListingBody, db: AsyncSession = Depends(get_db
     return {"ok": True, "updated": len(rows), "is_listed": body.is_listed}
 
 
+def _validate_tag(schema: dict, dimension: str, value: str) -> dict:
+    """校验 维度+取值 在标签体系内,返回该维 schema;不合法抛 400(受控取值)。"""
+    dim_schema = schema.get(dimension)
+    if not dim_schema:
+        raise HTTPException(400, f"未知标签维度: {dimension}")
+    if value not in (dim_schema.get("values") or []):
+        raise HTTPException(400, f"取值不在「{dim_schema.get('label', dimension)}」体系内: {value}")
+    return dim_schema
+
+
 @router.put("/{image_id}/tags")
-async def update_tags(
-    image_id: str,
-    body: UpdateTagsBody,
-    db: AsyncSession = Depends(get_db),
-):
+async def update_tags(image_id: str, body: UpdateTagsBody, db: AsyncSession = Depends(get_db)):
+    """按维度替换:只替换 body 里出现的维度(删旧插新,source=manual),不碰未提及的
+    维度(保留其它 AI/人工标签)。受控校验。修复旧的"清空所有 AI 标签"误删问题。"""
     img = await db.get(Image, image_id)
     if not img:
         raise HTTPException(404, "Image not found")
-
-    # Delete existing AI tags, keep manual ones
-    existing = await db.execute(
-        select(Tag).where(Tag.image_id == image_id, Tag.source == "ai")
-    )
-    for tag in existing.scalars().all():
-        await db.delete(tag)
-
-    # Insert new tags
+    from sidecar.routers.tag_schema import _read_schema
+    schema = _read_schema()
     for dimension, value in body.tags.items():
-        if isinstance(value, list):
-            for v in value:
-                db.add(Tag(image_id=image_id, dimension=dimension, value=v, source="manual"))
-        elif isinstance(value, str):
-            db.add(Tag(image_id=image_id, dimension=dimension, value=value, source="manual"))
+        values = value if isinstance(value, list) else [value]
+        for v in values:
+            _validate_tag(schema, dimension, v)
+        existing = (await db.execute(
+            select(Tag).where(Tag.image_id == image_id).where(Tag.dimension == dimension)
+        )).scalars().all()
+        for t in existing:
+            await db.delete(t)
+        for v in values:
+            db.add(Tag(image_id=image_id, dimension=dimension, value=v, source="manual", confidence=1.0))
+    await _refresh_tag_state(db, image_id)
+    return await _image_tags_payload(db, image_id)
 
-    img.tag_status = "manual"
-    await db.commit()
-    return {"ok": True}
+
+@router.post("/{image_id}/tags")
+async def add_tag(image_id: str, body: AddTagBody, db: AsyncSession = Depends(get_db)):
+    """加一条人工标签(source=manual)。单选维先删本维旧值(replace),多选维去重追加。
+    受控:取值必须在标签体系内。不动其它维度/AI 标签 → 适合纠正/补一个标签。"""
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    from sidecar.routers.tag_schema import _read_schema
+    dim_schema = _validate_tag(_read_schema(), body.dimension, body.value)
+    existing = (await db.execute(
+        select(Tag).where(Tag.image_id == image_id).where(Tag.dimension == body.dimension)
+    )).scalars().all()
+    if bool(dim_schema.get("multi")):
+        if any(t.value == body.value for t in existing):
+            return await _image_tags_payload(db, image_id)  # 幂等:已有同值
+    else:
+        for t in existing:  # 单选维:替换
+            await db.delete(t)
+    db.add(Tag(image_id=image_id, dimension=body.dimension, value=body.value,
+               source="manual", confidence=1.0))
+    await _refresh_tag_state(db, image_id)
+    return await _image_tags_payload(db, image_id)
+
+
+@router.delete("/{image_id}/tags/{tag_id}")
+async def delete_tag(image_id: str, tag_id: str, db: AsyncSession = Depends(get_db)):
+    """删一条标签(AI 或人工皆可,用于纠正 AI 错标)。"""
+    tag = await db.get(Tag, tag_id)
+    if not tag or tag.image_id != image_id:
+        raise HTTPException(404, "Tag not found")
+    await db.delete(tag)
+    await _refresh_tag_state(db, image_id)
+    return await _image_tags_payload(db, image_id)
+
+
+class BatchTagsBody(BaseModel):
+    image_ids: list[str]
+    tags: dict            # {dimension: [values] | value}
+    mode: str = "add"     # "add" 追加(单选维仍替换该维) | "replace_dim" 按维度删旧插新
+
+
+@router.post("/batch/tags")
+async def batch_tags(body: BatchTagsBody, db: AsyncSession = Depends(get_db)):
+    """批量给选中图打人工标签(source=manual)。受控校验;每图收口(刷新文搜+入云端同步)。"""
+    if not body.image_ids or not body.tags:
+        return {"ok": True, "updated": 0}
+    from sidecar.routers.tag_schema import _read_schema
+    schema = _read_schema()
+    norm: dict[str, list[str]] = {}
+    for dimension, value in body.tags.items():
+        values = value if isinstance(value, list) else [value]
+        for v in values:
+            _validate_tag(schema, dimension, v)
+        norm[dimension] = values
+    updated = 0
+    for iid in body.image_ids:
+        img = await db.get(Image, iid)
+        if not img:
+            continue
+        for dimension, values in norm.items():
+            multi = bool(schema[dimension].get("multi"))
+            existing = (await db.execute(
+                select(Tag).where(Tag.image_id == iid).where(Tag.dimension == dimension)
+            )).scalars().all()
+            if body.mode == "replace_dim" or not multi:
+                for t in existing:
+                    await db.delete(t)
+                existing = []
+            have = {t.value for t in existing}
+            for v in values:
+                if v not in have:
+                    db.add(Tag(image_id=iid, dimension=dimension, value=v,
+                               source="manual", confidence=1.0))
+        await _refresh_tag_state(db, iid)
+        updated += 1
+    return {"ok": True, "updated": updated}
 
 
 # ── Full-resolution streaming (for lightbox / inline <img src>) ──

@@ -16,6 +16,21 @@ from sidecar.routers.tag_schema import _read_schema
 logger = logging.getLogger(__name__)
 
 
+def build_text_search_blob(file_name: str | None, description: str | None, tag_values: list[str]) -> str:
+    """拼接文搜召回用文本(文件名词干 + 描述 + 标签值)。AI 打标与人工改标共用,
+    确保任何改标后 text_search_blob 同步刷新,文搜召回不失真。"""
+    from pathlib import Path as _Path
+    stem = _Path(file_name or "").stem.replace("_", " ")
+    parts: list[str] = []
+    if stem:
+        parts.append(stem)
+    if description and description.strip():
+        parts.append(description.strip())
+    if tag_values:
+        parts.append(", ".join(tag_values))
+    return "\n".join(parts)
+
+
 def _build_prompt_from_schema() -> str:  # noqa: C901
     """Build the tagger prompt dynamically from the current schema.
 
@@ -191,9 +206,15 @@ async def run_tagging(task: Task, progress_cb):
                         tags_data = result["tags"]
 
                         async with async_session() as inner_db:
-                            tag_values: list[str] = []
+                            # 尊重人工标签:某维若已有 manual 标签,跳过该维的 AI 值,不覆盖人工
+                            manual_rows = (await inner_db.execute(
+                                select(Tag.dimension, Tag.value)
+                                .where(Tag.image_id == img.id).where(Tag.source == "manual")
+                            )).all()
+                            manual_dims = {d for d, _ in manual_rows}
+                            tag_values: list[str] = [v for _, v in manual_rows]  # blob 含已有人工值
                             for dimension, value in tags_data.items():
-                                if dimension == "description":
+                                if dimension == "description" or dimension in manual_dims:
                                     continue
                                 if isinstance(value, list):
                                     for v in value:
@@ -204,16 +225,8 @@ async def run_tagging(task: Task, progress_cb):
                                     tag_values.append(value)
 
                             description = tags_data.get("description")
-                            # Refresh text_search_blob so future text→image matches
-                            # see the new tags & description without waiting for the
-                            # backfill script.
-                            from pathlib import Path as _Path
-                            stem = _Path(img.file_name or "").stem.replace("_", " ")
-                            blob_parts: list[str] = []
-                            if stem: blob_parts.append(stem)
-                            if description and description.strip(): blob_parts.append(description.strip())
-                            if tag_values: blob_parts.append(", ".join(tag_values))
-                            text_search_blob = "\n".join(blob_parts)
+                            # 刷新 text_search_blob,文搜立即看到新标签+描述(AI/人工共用拼接)
+                            text_search_blob = build_text_search_blob(img.file_name, description, tag_values)
 
                             await inner_db.execute(
                                 update(Image).where(Image.id == img.id).values(

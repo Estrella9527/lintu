@@ -180,13 +180,17 @@ Index("idx_images_project_status", Image.project_id, Image.quality_status, Image
 
 class Tag(Base):
     __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("image_id", "dimension", "value", name="uq_tag_image_dim_val"),
+    )
 
     id = Column(String, primary_key=True, default=_uid)
     image_id = Column(String, ForeignKey("images.id"), nullable=False)
     dimension = Column(String, nullable=False, index=True)
     value = Column(String, nullable=False, index=True)
     confidence = Column(Float)
-    source = Column(String, default="ai")
+    source = Column(String, default="ai")          # "ai" | "manual"
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     image = relationship("Image", back_populates="tags")
 

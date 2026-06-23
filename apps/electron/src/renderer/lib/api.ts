@@ -1,6 +1,7 @@
 import type {
   TaskRecord,
   ImageRecord,
+  TagRecord,
   DashboardStats,
   CoverageMatrix,
   TaskProgressEvent,
@@ -380,9 +381,29 @@ class APIClient {
     get: (id: string) => this.request<ImageRecord>(`/images/${id}`),
 
     updateTags: (id: string, tags: Record<string, string[]>) =>
-      this.request(`/images/${id}/tags`, {
+      this.request<{ ok: boolean; tags: TagRecord[] }>(`/images/${id}/tags`, {
         method: 'PUT',
         body: JSON.stringify({ tags }),
+      }),
+
+    /** 加一条人工标签(非破坏式:不动其它维度/AI 标签)。返回该图最新标签。 */
+    addTag: (id: string, dimension: string, value: string) =>
+      this.request<{ ok: boolean; tags: TagRecord[] }>(`/images/${id}/tags`, {
+        method: 'POST',
+        body: JSON.stringify({ dimension, value }),
+      }),
+
+    /** 删一条标签(AI 或人工皆可,用于纠正 AI 错标)。返回该图最新标签。 */
+    removeTag: (id: string, tagId: string) =>
+      this.request<{ ok: boolean; tags: TagRecord[] }>(`/images/${id}/tags/${tagId}`, {
+        method: 'DELETE',
+      }),
+
+    /** 批量给多图打同组人工标签。 */
+    batchTag: (imageIds: string[], tags: Record<string, string[]>, mode: 'add' | 'replace_dim' = 'add') =>
+      this.request<{ ok: boolean; updated: number }>(`/images/batch/tags`, {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds, tags, mode }),
       }),
 
     thumbnailUrl: (id: string, size: 128 | 300 | 800 = 300) =>

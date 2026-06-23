@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Cpu, Download, Eye, FolderOpen, GitFork, PenTool, Rocket, Sparkles, Trash2 } from 'lucide-react'
 import { ThumbnailImage } from './ThumbnailImage'
+import { TagEditor } from './TagEditor'
 import { activeModuleAtom, assetLibraryNavRequestAtom } from '@/atoms/navigation'
 import { batchSeedQueueAtom } from '@/atoms/workshop'
-import type { ImageRecord, TagRecord } from '@/lib/types'
+import type { ImageRecord } from '@/lib/types'
 
 interface ImageInspectorProps {
   image: ImageRecord | null
@@ -205,26 +206,19 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
           </>
         )}
 
-        {/* Tags */}
-        {detail?.tags && detail.tags.length > 0 && (
-          <>
-            <Separator />
-            <Section title="标签">
-              <div className="col-span-2 space-y-1.5">
-                {Object.entries(groupTagsByDimension(detail.tags)).map(([dim, vals]) => (
-                  <div key={dim} className="flex items-start gap-2">
-                    <span className="text-[10px] text-foreground/40 w-12 shrink-0 pt-0.5">{dim}</span>
-                    <div className="flex flex-wrap gap-1">
-                      {vals.map((v) => (
-                        <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0">{v}</Badge>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Section>
-          </>
-        )}
+        {/* Tags — 可编辑(人工打标:AI/人工可分、可删、受控加标签)*/}
+        <Separator />
+        <Section title={
+          <span className="flex items-center gap-1.5">
+            标签
+            <span className="text-[9px] font-normal text-foreground/35">
+              {(img as any).tag_status === 'manual' ? '已人工'
+                : (img as any).tag_status === 'tagged' ? 'AI 已标' : '待打标'}
+            </span>
+          </span>
+        }>
+          <TagEditor imageId={img.id} tags={detail?.tags ?? []} />
+        </Section>
 
         {/* AI description */}
         {img.description && (
@@ -274,8 +268,3 @@ function formatLatency(ms?: number | null): string {
   return `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`
 }
 
-function groupTagsByDimension(tags: TagRecord[]): Record<string, string[]> {
-  const groups: Record<string, string[]> = {}
-  for (const t of tags) (groups[t.dimension] ??= []).push(t.value)
-  return groups
-}
