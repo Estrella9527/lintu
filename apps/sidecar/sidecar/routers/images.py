@@ -55,6 +55,7 @@ def _apply_image_filters(
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
     in_library: Optional[bool] = None,
+    tag_status: Optional[str] = None,
 ):
     """Shared filter pipeline so list_images and list_image_ids stay in sync.
 
@@ -105,6 +106,9 @@ def _apply_image_filters(
         query = query.where(Image.parent_id == parent_id)
     if in_library is not None:
         query = query.where(Image.in_library == in_library)
+    # 人工审标队列:按打标状态过滤(pending=待打标 / tagged=AI已标 / manual=已人工)
+    if tag_status:
+        query = query.where(Image.tag_status == tag_status)
     # 「全部图片」根视图(未选文件夹、未筛来源)默认隐藏 AI 生成草稿 —— 它们只在
     # 「AI生成」文件夹(folder/folder_prefix 命中)或显式 source_type=generated 时出现,
     # 避免 AI 草稿和真实照片在「全部图片」里混淆。
@@ -138,6 +142,7 @@ async def list_images(
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
     in_library: Optional[bool] = None,
+    tag_status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     base = select(Image).where(Image.project_id == project_id)
@@ -147,7 +152,7 @@ async def list_images(
         usage=usage, style=style, mood=mood, palette=palette, theme=theme,
         composition=composition, source_type=source_type,
         folder=folder, folder_prefix=folder_prefix, prompt_id=prompt_id,
-        parent_id=parent_id, in_library=in_library,
+        parent_id=parent_id, in_library=in_library, tag_status=tag_status,
     )
     total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
     result = await db.execute(
@@ -180,6 +185,7 @@ async def list_image_ids(
     prompt_id: Optional[str] = None,
     parent_id: Optional[str] = None,
     in_library: Optional[bool] = None,
+    tag_status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Return every image id matching the same filters used by list_images.
@@ -194,7 +200,7 @@ async def list_image_ids(
         usage=usage, style=style, mood=mood, palette=palette, theme=theme,
         composition=composition, source_type=source_type,
         folder=folder, folder_prefix=folder_prefix, prompt_id=prompt_id,
-        parent_id=parent_id, in_library=in_library,
+        parent_id=parent_id, in_library=in_library, tag_status=tag_status,
     )
     rows = await db.execute(query.order_by(Image.created_at.desc()))
     ids = [r[0] for r in rows.all()]
@@ -212,6 +218,7 @@ async def list_folders(
     project_id: str,
     source_type: Optional[str] = None,
     in_library: Optional[bool] = None,
+    tag_status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Return every distinct relative_dir with its image count.

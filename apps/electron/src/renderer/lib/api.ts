@@ -88,6 +88,8 @@ export interface ImageListParams {
   parent_id?: string
   // 资产库成员过滤:true=只看已入库;false=只看画布草稿;不传=全部
   in_library?: boolean
+  // 人工审标:按打标状态过滤 pending=待打标 / tagged=AI已标 / manual=已人工
+  tag_status?: string
 }
 
 const TAG_DIMENSION_KEYS = [
@@ -112,6 +114,7 @@ function buildImageQuery(params: ImageListParams): URLSearchParams {
   if (params.prompt_id) qs.set('prompt_id', params.prompt_id)
   if (params.parent_id) qs.set('parent_id', params.parent_id)
   if (params.in_library !== undefined) qs.set('in_library', String(params.in_library))
+  if (params.tag_status) qs.set('tag_status', params.tag_status)
   return qs
 }
 

@@ -33,6 +33,8 @@ interface ImageGridProps {
   parentId?: string
   /** 资产库成员过滤:true=只看已入库(资产库正式视图);不传=全部 */
   inLibrary?: boolean
+  /** 打标状态过滤:pending=待打标 / tagged=AI已标 / manual=已人工(人工审标队列) */
+  tagStatus?: string
   selectedIds: Set<string>
   onToggleSelect: (id: string) => void
   onSelectAll?: (ids: string[]) => void
@@ -46,7 +48,7 @@ interface ImageGridProps {
 }
 
 export function ImageGrid({
-  projectId, search, status, sourceType, folder, tagFilters, promptId, parentId, inLibrary,
+  projectId, search, status, sourceType, folder, tagFilters, promptId, parentId, inLibrary, tagStatus,
   selectedIds, onToggleSelect, onSelectAll, onClickImage, onDoubleClickImage, activeId,
 }: ImageGridProps) {
   const selectionMode = selectedIds.size > 0
@@ -63,6 +65,7 @@ export function ImageGrid({
     prompt_id: promptId || undefined,
     parent_id: parentId || undefined,
     ...(inLibrary !== undefined ? { in_library: inLibrary } : {}),
+    tag_status: tagStatus && tagStatus !== 'all' ? tagStatus : undefined,
     ...(folder === ''
       ? { folder: '' }
       : folder
@@ -72,7 +75,7 @@ export function ImageGrid({
 
   // Stable cache key for tagFilters/promptId — JSON.stringify keeps things
   // simple without introducing a deep-equal hook.
-  const filterKey = JSON.stringify({ tagFilters, promptId, parentId })
+  const filterKey = JSON.stringify({ tagFilters, promptId, parentId, tagStatus })
 
   const { data, fetchNextPage, hasNextPage, isLoading } = useInfiniteQuery({
     queryKey: ['images', projectId, search, status, sourceType, folder, filterKey],

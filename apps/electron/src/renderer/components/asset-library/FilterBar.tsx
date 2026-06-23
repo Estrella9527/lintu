@@ -37,6 +37,15 @@ const SOURCE_OPTIONS = [
   { value: 'marketing', label: '营销素材' },
 ]
 
+// 打标状态 —— 人工审标队列入口:筛「待打标」= 待审标列表(那 818 张未分类),
+// 「已人工」= 人工已确认。pending/tagged/manual 对应 Image.tag_status。
+const TAG_STATUS_OPTIONS = [
+  { value: 'all', label: '全部标注' },
+  { value: 'pending', label: '待打标' },
+  { value: 'tagged', label: 'AI 已标' },
+  { value: 'manual', label: '已人工' },
+]
+
 // Tag dimensions exposed in the popover. Order matters — user scans top→bottom
 // looking for the dimension they want. We put "soft tags" (visual style /
 // mood / theme) near the top because that's the new high-value path users
@@ -75,6 +84,7 @@ export interface FilterState {
   search: string
   status: string
   source: string
+  tagStatus: string         // all | pending | tagged | manual —— 人工审标筛选
   tags: TagFilterMap
   prompt_id: string         // empty = no prompt filter
   prompt_label: string      // human-readable label for display
@@ -88,7 +98,7 @@ export const EMPTY_TAG_FILTERS: TagFilterMap = {
 }
 
 export const EMPTY_FILTER: FilterState = {
-  search: '', status: 'all', source: 'all',
+  search: '', status: 'all', source: 'all', tagStatus: 'all',
   tags: EMPTY_TAG_FILTERS,
   prompt_id: '', prompt_label: '',
   parent_id: '', parent_label: '',
@@ -103,6 +113,7 @@ export function FilterBar({ filter, onChange }: FilterBarProps) {
   const totalTagCount = Object.values(filter.tags).reduce((s, vs) => s + vs.length, 0)
   const hasFilters =
     filter.search || filter.status !== 'all' || filter.source !== 'all'
+    || filter.tagStatus !== 'all'
     || totalTagCount > 0 || !!filter.prompt_id || !!filter.parent_id
 
   return (
@@ -135,6 +146,17 @@ export function FilterBar({ filter, onChange }: FilterBarProps) {
           </SelectTrigger>
           <SelectContent>
             {SOURCE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={filter.tagStatus} onValueChange={(v) => onChange({ ...filter, tagStatus: v })}>
+          <SelectTrigger className="w-28 h-8 text-[13px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TAG_STATUS_OPTIONS.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
             ))}
           </SelectContent>

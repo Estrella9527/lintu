@@ -311,6 +311,7 @@ export default function AssetLibrary() {
                       tagFilters={activeTab === 'all' ? filter.tags : undefined}
                       promptId={activeTab === 'all' ? (filter.prompt_id || undefined) : undefined}
                       parentId={activeTab === 'all' ? (filter.parent_id || undefined) : undefined}
+                      tagStatus={activeTab === 'all' ? (filter.tagStatus !== 'all' ? filter.tagStatus : undefined) : undefined}
                       // 「全部图片」只展示已入库的图;AI 工坊生成图/画布草稿不在此显示,
                       // 直到运营「加入资产库」。回收站不加此过滤(按淘汰态聚合)。
                       inLibrary={activeTab === 'all' ? true : undefined}
