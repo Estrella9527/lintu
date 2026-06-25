@@ -180,6 +180,10 @@ export default function AssetLibrary() {
   const { isDragging } = useImageDropPaste({
     dropRef: dropZoneRef,
     enabled: uploadEnabled,
+    // 【止血P0-5】关掉资产库整页的全局(document 级)粘贴监听 —— 之前焦点停在
+    // 资产库时随手 Ctrl+V 一张剪贴板图就会静默上传 + 上云,极易误触。保留显式
+    // 上传按钮和拖入(deliberate 动作),只砍掉隐蔽的全局粘贴。
+    enablePaste: false,
     onFiles: (files) => { void upload(files) },
   })
 

@@ -676,6 +676,11 @@ class BatchScheduler:
                 # approve before they're eligible for matching / cloud sync.
                 # See routers/image_review.py for the queue endpoints.
                 review_status="pending",
+                # 【止血P0-1】对齐 /api/generate 的事故修复:AI 生成图默认不上架、
+                # 不入资产库,绝不自动上 OSS。运营在「审核」通过 + 显式上架后才发布。
+                # 下方 enqueue_image_sync 经上云门禁对未上架图自动 no-op(双保险)。
+                is_listed=False,
+                in_library=False,
             )
             db.add(new_image)
             await db.flush()

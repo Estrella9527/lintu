@@ -104,6 +104,10 @@ async def run_scan(task: Task, progress_cb):
                     quality_status="pending",
                     tag_status="pending",
                     source_type="original",
+                    # 【止血P0-2】扫描只把图收进本地资产库,默认不上架 → 不自动上 OSS。
+                    # 走「先打标再上传」SOP:运营审/标后显式上架才推云端。下方 enqueue
+                    # 对未上架图经上云门禁自动 no-op(双保险)。
+                    is_listed=False,
                     relative_dir=rel_dir,
                     phash=json.dumps(phash_dict) if phash_dict else None,
                 )

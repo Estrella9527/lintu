@@ -394,14 +394,23 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onClick={() => ossSyncMutation.mutate({ force: false })}
+            onClick={() => {
+              if (confirm(
+                `把选中的 ${selectedCount.toLocaleString()} 张图片同步到 OSS（阿里云）？\n\n`
+                + `• 只有「已上架」的图会真正上传到云端，未上架的自动跳过\n`
+                + `• 仅入队尚未同步过的图片\n\n`
+                + `注意:若你用了「选中全部 N 张」，这会一次推送很多图，请确认数量。`
+              )) {
+                ossSyncMutation.mutate({ force: false })
+              }
+            }}
             disabled={ossSyncMutation.isPending}
             className="text-[12.5px] gap-2"
           >
             <Cloud size={13} className="text-foreground/55" />
             <div className="flex-1">
               <div>同步到 OSS</div>
-              <div className="text-[10px] text-foreground/40">仅入队未同步过的图片</div>
+              <div className="text-[10px] text-foreground/40">仅已上架且未同步过的图片</div>
             </div>
           </DropdownMenuItem>
           <DropdownMenuItem

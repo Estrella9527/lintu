@@ -330,6 +330,14 @@ async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
         if not img:
             return 0
 
+        # 【上云总门禁 · P0-3】只有已上架(is_listed=True)的图才允许推上 OSS。
+        # 未上架的图——AI 草稿、扫描待标、画布暂存、误拖误粘、批量误选——一律不
+        # 入队、不上传,从根上堵住"误操作误上传"。上架(批量上架 / 手动推送选区前
+        # 先上架)是把图送上 OSS 的唯一前置条件。force 重传同样受此门禁约束。
+        if not img.is_listed:
+            logger.info("enqueue_image_sync 跳过 %s:未上架(is_listed=False),不上 OSS", image_id)
+            return 0
+
         if force:
             # 删之前的 done/failed/skipped,留 pending/running 不动
             # (worker 正在跑的别打断)
