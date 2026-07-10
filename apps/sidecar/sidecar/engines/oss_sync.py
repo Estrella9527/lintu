@@ -330,12 +330,22 @@ async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
         if not img:
             return 0
 
-        # 【上云总门禁 · P0-3】只有已上架(is_listed=True)的图才允许推上 OSS。
-        # 未上架的图——AI 草稿、扫描待标、画布暂存、误拖误粘、批量误选——一律不
-        # 入队、不上传,从根上堵住"误操作误上传"。上架(批量上架 / 手动推送选区前
-        # 先上架)是把图送上 OSS 的唯一前置条件。force 重传同样受此门禁约束。
-        if not img.is_listed:
-            logger.info("enqueue_image_sync 跳过 %s:未上架(is_listed=False),不上 OSS", image_id)
+        # 【上云门禁① · 审核】只有「审核通过(review_status='approved')」的图才允许上 OSS。
+        # 含义:审核通过 = 图进正式素材库 = 可上 OSS(供 UGC 后台同步/选择)。与「上架
+        # (is_listed)」解耦——上架只决定 UGC 匹配调用。所有来源默认本地态(local),导入/
+        # 生成/编辑都不入队,只有手动「上传」→ 审核通过才上。force 重传同样受此约束。
+        if img.review_status != "approved":
+            logger.info("enqueue_image_sync 跳过 %s:未审核通过(review_status=%s),不上 OSS",
+                        image_id, img.review_status)
+            return 0
+
+        # 【上云门禁② · 打标】必填维度(标签体系 required=True,如场景/季节/天气/视角/
+        # 人物)每个都至少有一个标签才允许上 OSS。缺标签的图挡在门外,避免污染 UGC 匹配。
+        from sidecar.engines.tag_completeness import missing_required_dims
+        missing = await missing_required_dims(db, image_id)
+        if missing:
+            logger.info("enqueue_image_sync 跳过 %s:必填维度未打全,缺 %s,不上 OSS",
+                        image_id, missing)
             return 0
 
         if force:

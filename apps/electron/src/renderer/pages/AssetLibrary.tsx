@@ -177,12 +177,12 @@ export default function AssetLibrary() {
       queryClient.invalidateQueries({ queryKey: ['oss-status'] })
     },
   })
+  // 治理策略:拖入/选文件 = 导入到【本地资产库】(本地态),不进审批、不碰 OSS。
+  // 送审 + 上云是另一个动作:选中图 → 批量工具栏「上传」(见 BatchActionBar)。
   const { isDragging } = useImageDropPaste({
     dropRef: dropZoneRef,
     enabled: uploadEnabled,
-    // 【止血P0-5】关掉资产库整页的全局(document 级)粘贴监听 —— 之前焦点停在
-    // 资产库时随手 Ctrl+V 一张剪贴板图就会静默上传 + 上云,极易误触。保留显式
-    // 上传按钮和拖入(deliberate 动作),只砍掉隐蔽的全局粘贴。
+    // 【止血P0-5】关掉资产库整页的全局(document 级)粘贴监听,只保留显式导入按钮 + 拖入。
     enablePaste: false,
     onFiles: (files) => { void upload(files) },
   })
@@ -258,7 +258,7 @@ export default function AssetLibrary() {
                 {uploading
                   ? <Loader2 size={13} className="animate-spin" />
                   : <Upload size={13} strokeWidth={1.5} />}
-                <span>上传图片</span>
+                <span>导入图片</span>
               </button>
             </div>
           )}

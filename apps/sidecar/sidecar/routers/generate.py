@@ -173,11 +173,10 @@ async def _persist_candidate(
         quality_status="passed",
         tag_status="pending",
         source_type="generated",
-        # 生成图默认只是「画布草稿」:不进资产库、不推 OSS、不审核通过、不上架。
-        # 【事故根因修复】Image 模型默认 review_status='approved' + is_listed=True,
-        # 若不显式覆盖,AI 生成图会自动进 UGC 候选池 → 污染图库。这里强制压成
-        # 待审 + 未上架,AI 草稿永不自动进池;运营在「审核」里挑选后才发布。
-        review_status="pending",
+        # 生成图默认只是「画布草稿」:本地态,不进资产库、不进审批、不碰 OSS。
+        # 运营满意后手动「加入资产库」再「上传」才进审批流。review_status='local'
+        # 保证 AI 草稿永不自动进池/上云。
+        review_status="local",
         is_listed=False,
         in_library=False,
         relative_dir=f"uploads/generated/{today}",

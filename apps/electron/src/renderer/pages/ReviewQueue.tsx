@@ -23,8 +23,28 @@ interface ReviewItem {
   parent_id: string | null
   review_status: ReviewStatus
   reviewed_at: string | null
+  source_type?: string | null
+  source_channel?: string | null
+  upload_batch_id?: string | null
+  missing_dims?: string[]
+  tags_complete?: boolean
   generation_metadata: Record<string, unknown> | null
   created_at: string | null
+}
+
+// 必填维度键 → 中文,给"标签未齐"提示用
+const DIM_LABEL: Record<string, string> = {
+  scene: '场景', season: '季节', weather: '天气', angle: '视角', people: '人物',
+}
+
+interface BatchItem {
+  id: string
+  batch_no: string
+  source_channel: string
+  uploaded_by_name: string | null
+  note: string | null
+  total: number
+  counts: Record<string, number>
 }
 
 interface QueueResponse {
@@ -84,8 +104,36 @@ export default function ReviewQueue() {
       setSelected(new Set())
       queryClient.invalidateQueries({ queryKey: ['review-queue'] })
       queryClient.invalidateQueries({ queryKey: ['review-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['review-batches'] })
     },
     onError: (e: any) => toast.error(`操作失败：${e?.message ?? e}`),
+  })
+
+  // 上传批次(整批审核用)。只在「待审核」Tab 拉。
+  const batchesQuery = useQuery<{ items: BatchItem[] }>({
+    queryKey: ['review-batches', projectId],
+    queryFn: () =>
+      apiFetchRaw(`/image-review/batches${projectId ? `?project_id=${projectId}` : ''}`).then((r) => r.json()),
+    enabled: !!projectId && status === 'pending',
+    refetchInterval: 30_000,
+  })
+
+  const batchDecide = useMutation({
+    mutationFn: async ({ batchId, decision }: { batchId: string; decision: ReviewStatus }) => {
+      const res = await apiFetchRaw(`/image-review/batch-decide`, {
+        method: 'POST',
+        body: JSON.stringify({ upload_batch_id: batchId, decision }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json() as Promise<{ ok: boolean; updated: number }>
+    },
+    onSuccess: (result, { decision }) => {
+      toast.success(`整批已${decision === 'approved' ? '通过' : '退回'}（${result.updated} 张）`)
+      queryClient.invalidateQueries({ queryKey: ['review-queue'] })
+      queryClient.invalidateQueries({ queryKey: ['review-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['review-batches'] })
+    },
+    onError: (e: any) => toast.error(`整批操作失败：${e?.message ?? e}`),
   })
 
   const items = queueQuery.data?.items ?? []
@@ -116,6 +164,20 @@ export default function ReviewQueue() {
     if (decision === 'rejected' && ids.length > 1) {
       const ok = window.confirm(`确定拒绝选中的 ${ids.length} 张图片？拒绝后将移出审核队列，不可批量撤销。`)
       if (!ok) return
+    }
+    // 审核-打标配合:通过时若有图必填标签没打齐,提示"通过后暂不会上 OSS,
+    // 补齐标签会自动补传"。不硬拦(允许先通过后补标),但要让运营心里有数。
+    if (decision === 'approved') {
+      const idset = new Set(ids)
+      const incomplete = items.filter((it) => idset.has(it.id) && it.tags_complete === false).length
+      if (incomplete > 0) {
+        const ok = window.confirm(
+          `选中的 ${ids.length} 张里有 ${incomplete} 张必填标签未打齐。\n\n` +
+          `通过后这 ${incomplete} 张暂时不会上 OSS/交给 UGC；等你把标签补齐,系统会自动补传。\n\n` +
+          `仍要通过吗？(建议先打标再通过)`
+        )
+        if (!ok) return
+      }
     }
     decide.mutate({ ids, decision })
   }
@@ -237,7 +299,22 @@ export default function ReviewQueue() {
                 <span className="text-[11.5px] text-foreground/40">
                   共 {total} 张待审核
                 </span>
+                {items.filter((it) => it.tags_complete === false).length > 0 && (
+                  <span className="text-[11.5px] text-warning">
+                    本页 {items.filter((it) => it.tags_complete === false).length} 张标签未齐（通过后需补标签才上 OSS）
+                  </span>
+                )}
               </div>
+            )}
+            {status === 'pending' && (
+              <BatchBar
+                batches={(batchesQuery.data?.items ?? []).filter((b) => (b.counts?.pending ?? 0) > 0)}
+                pending={batchDecide.isPending}
+                onDecide={(batchId, decision) => {
+                  if (decision === 'rejected' && !window.confirm('整批退回该上传批次的待审图？退回后移出候选池。')) return
+                  batchDecide.mutate({ batchId, decision })
+                }}
+              />
             )}
             <ReviewGrid
               items={items}
@@ -253,6 +330,40 @@ export default function ReviewQueue() {
             />
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+function BatchBar({
+  batches, pending, onDecide,
+}: {
+  batches: BatchItem[]
+  pending: boolean
+  onDecide: (batchId: string, decision: ReviewStatus) => void
+}) {
+  if (batches.length === 0) return null
+  return (
+    <div className="mb-4 rounded-lg border border-foreground/8 bg-foreground/[0.015] p-2.5">
+      <div className="text-[11px] text-foreground/50 mb-2">按上传批次整批处理（{batches.length} 个待审批次）</div>
+      <div className="flex flex-wrap gap-2">
+        {batches.map((b) => (
+          <div key={b.id} className="flex items-center gap-2 rounded-md border border-foreground/10 bg-background px-2 py-1.5">
+            <div className="min-w-0">
+              <div className="text-[11.5px] text-foreground/80 tabular-nums">{b.batch_no}</div>
+              <div className="text-[10px] text-foreground/45 truncate max-w-[180px]">
+                {b.source_channel}{b.uploaded_by_name ? ` · ${b.uploaded_by_name}` : ''} · 待审 {b.counts?.pending ?? 0}
+                {b.note ? ` · ${b.note}` : ''}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button size="sm" variant="outline" className="h-6 text-[11px] text-destructive"
+                disabled={pending} onClick={() => onDecide(b.id, 'rejected')}>退回</Button>
+              <Button size="sm" className="h-6 text-[11px]"
+                disabled={pending} onClick={() => onDecide(b.id, 'approved')}>整批通过</Button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -312,9 +423,23 @@ function ReviewGrid({
               <div className="text-[11px] text-foreground/75 truncate" title={it.file_name}>
                 {it.file_name}
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-foreground/45">
+              <div className="flex items-center gap-2 text-[10px] text-foreground/45 flex-wrap">
                 {it.width && it.height && <span>{it.width}×{it.height}</span>}
                 {it.blur_score !== null && <span>blur {Math.round(it.blur_score)}</span>}
+                {it.source_channel && (
+                  <span className="px-1 rounded bg-accent/10 text-accent">{it.source_channel}</span>
+                )}
+                {!it.source_channel && it.source_type === 'generated' && (
+                  <span className="px-1 rounded bg-foreground/10 text-foreground/50">AI</span>
+                )}
+                {it.tags_complete === false && (
+                  <span
+                    className="px-1 rounded bg-warning/15 text-warning"
+                    title={`缺必填标签：${(it.missing_dims || []).map((d) => DIM_LABEL[d] || d).join('、')}`}
+                  >
+                    标签未齐
+                  </span>
+                )}
               </div>
             </div>
           </div>

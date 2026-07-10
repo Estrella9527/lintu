@@ -12,7 +12,6 @@ from sidecar.db.models import Image, Task
 from sidecar.db.session import async_session
 from sidecar.defaults import get_setting
 from sidecar.engines.image_utils import compute_perceptual_hashes
-from sidecar.engines.oss_sync import enqueue_image_sync
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +103,9 @@ async def run_scan(task: Task, progress_cb):
                     quality_status="pending",
                     tag_status="pending",
                     source_type="original",
-                    # 【止血P0-2】扫描只把图收进本地资产库,默认不上架 → 不自动上 OSS。
-                    # 走「先打标再上传」SOP:运营审/标后显式上架才推云端。下方 enqueue
-                    # 对未上架图经上云门禁自动 no-op(双保险)。
+                    # 治理策略:扫描导入 = 纯本地态(local),不进审批、不碰 OSS。
+                    # 只有用户手动点「上传」才进审批流。is_listed=False 不进匹配池。
+                    review_status="local",
                     is_listed=False,
                     relative_dir=rel_dir,
                     phash=json.dumps(phash_dict) if phash_dict else None,
@@ -121,16 +120,9 @@ async def run_scan(task: Task, progress_cb):
 
             if (idx + 1) % 20 == 0 or idx == len(files) - 1:
                 await db.flush()
-                added_ids = [im.id for im in (newly_added if "newly_added" in locals() else [])]
                 await db.commit()
-                # Enqueue OSS sync for the freshly-committed images. No-op when
-                # OSS is disabled. Best-effort: any failure is logged, scan
-                # itself never blocks on the queue.
-                for iid in added_ids:
-                    try:
-                        await enqueue_image_sync(iid)
-                    except Exception as e:
-                        logger.debug("oss enqueue (scan) failed for %s: %s", iid, e)
+                # 治理策略:扫描导入 = 纯本地态,不自动上 OSS。用户手动「上传」经审核 +
+                # 打标门禁后才上云。此处不再入队。
                 newly_added = []
                 await progress_cb(
                     processed=idx + 1,

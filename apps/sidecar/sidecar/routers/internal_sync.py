@@ -84,6 +84,12 @@ class ImageSyncBody(BaseModel):
     review_status: Optional[str] = None
     is_listed: Optional[bool] = None
     in_library: Optional[bool] = None
+    # 来源追溯(治理策略第一期;老客户端不传 → None,不覆盖)
+    uploaded_by: Optional[str] = None
+    source_channel: Optional[str] = None
+    upload_batch_id: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
     # Per-image tags (replaces all existing tags for this image)
     tags: list[dict[str, Any]] = []                 # [{dimension, value, source, confidence}, ...]
 
@@ -308,6 +314,17 @@ async def sync_images(body: BulkImagesBody, db: AsyncSession = Depends(get_db)):
             fields["is_listed"] = it.is_listed
         if it.in_library is not None:
             fields["in_library"] = it.in_library
+        # 来源追溯:同样"不传就不覆盖",避免把已有溯源冲空
+        if it.uploaded_by is not None:
+            fields["uploaded_by"] = it.uploaded_by
+        if it.source_channel is not None:
+            fields["source_channel"] = it.source_channel
+        if it.upload_batch_id is not None:
+            fields["upload_batch_id"] = it.upload_batch_id
+        if it.reviewed_by is not None:
+            fields["reviewed_by"] = it.reviewed_by
+        if it.reviewed_at is not None:
+            fields["reviewed_at"] = _parse_dt(it.reviewed_at)
         if existing:
             for k, v in fields.items():
                 setattr(existing, k, v)

@@ -52,8 +52,10 @@ DEFAULTS = {
     #   "shrink" → progressively downscale until it fits (LOSSY fallback)
     # 0 disables the gate. Default 25MB covers most relay 20MB caps with
     # a small safety margin; set to 0 on relays with no cap.
+    # 默认 "shrink":相机原片普遍 >25MB,硬失败会让运营误以为"生成不了"。
+    # 自动降采样到限内再发(仅作为入参送模型,本地原图不动),保证可生成。
     "upload_max_bytes": 25 * 1024 * 1024,
-    "upload_oversize_policy": "fail",
+    "upload_oversize_policy": "shrink",
 
     # ── Provider role assignment (Phase 2) ──
     # Identifier format: "gemini" or "relay:<relay_name>". Empty string =

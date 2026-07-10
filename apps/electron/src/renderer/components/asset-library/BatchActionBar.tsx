@@ -10,9 +10,11 @@ import {
   DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import {
-  CheckCircle, ChevronDown, Cloud, Copy, Download, Image as ImageIcon,
-  Loader2, RotateCw, Rocket, ShieldCheck, Tag as TagIcon, Trash2, Wand2, X, XCircle,
+  CheckCircle, ChevronDown, Cloud, Copy, Download, FolderInput, FolderPlus,
+  Image as ImageIcon, Loader2, RotateCw, Rocket, ShieldCheck, Tag as TagIcon,
+  Trash2, Upload, Wand2, X, XCircle,
 } from 'lucide-react'
+import { UploadBatchDialog } from './UploadBatchDialog'
 import { activeModuleAtom } from '@/atoms/navigation'
 import { activeProjectIdAtom } from '@/atoms/project'
 import { batchSeedQueueAtom } from '@/atoms/workshop'
@@ -314,8 +316,11 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
         已选 {selectedCount.toLocaleString()} 张
       </span>
 
+      <SubmitUploadButton ids={ids} onDone={onClear} />
+
       <Button
         size="sm"
+        variant="outline"
         className="h-7 text-[12px] whitespace-nowrap shrink-0"
         onClick={sendToWorkshop}
       >
@@ -448,6 +453,8 @@ export function BatchActionBar({ selectedCount, selectedIds, onClear, mode = 'li
 
       <BatchTagButton ids={ids} onDone={onClear} />
 
+      <MoveFolderButton ids={ids} projectId={projectId} onDone={onClear} />
+
       <Button variant="outline" size="sm" className="h-7 text-[12px] whitespace-nowrap shrink-0" onClick={handleDownload}>
         <Download size={12} className="mr-1" /> 下载
       </Button>
@@ -561,6 +568,138 @@ function BatchTagButton({ ids, onDone }: { ids: string[]; onDone: () => void }) 
             onClick={() => apply.mutate()}>
             应用到 {ids.length} 张
           </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** 「上传」动作:把选中的本地态图提交进审批流(登记来源批次 + local→pending)。 */
+function SubmitUploadButton({ ids, onDone }: { ids: string[]; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const submit = useMutation({
+    mutationFn: ({ channel, note }: { channel: string; note: string }) =>
+      api.images.submitForReview(ids, channel, note),
+    onSuccess: (d) => {
+      setOpen(false)
+      if (!d.submitted) {
+        toast.message('没有可上传的图', { description: '选中的图都不在本地态（可能已在审核中或已通过）' })
+        return
+      }
+      toast.success(`已提交 ${d.submitted} 张进审核${d.batch ? `（批次 ${d.batch.batch_no}）` : ''}`)
+      onDone()
+      qc.invalidateQueries({ queryKey: ['images'] })
+      qc.invalidateQueries({ queryKey: ['review-queue'] })
+      qc.invalidateQueries({ queryKey: ['review-counts'] })
+      qc.invalidateQueries({ queryKey: ['review-batches'] })
+    },
+    onError: (e: any) => toast.error(e?.message || '上传失败'),
+  })
+  return (
+    <>
+      <Button
+        size="sm"
+        className="h-7 text-[12px] whitespace-nowrap shrink-0"
+        onClick={() => setOpen(true)}
+        title="把选中的本地图提交进审核流程（审核通过 + 打标齐全后才上 OSS）"
+      >
+        <Upload size={12} className="mr-1" /> 上传
+      </Button>
+      <UploadBatchDialog
+        open={open}
+        fileCount={ids.length}
+        onOpenChange={setOpen}
+        onConfirm={(channel, note) => submit.mutate({ channel, note })}
+        onCancel={() => {}}
+      />
+    </>
+  )
+}
+
+/** 批量移动到文件夹:选已有文件夹,或输入新名字(=新建文件夹并移入)。 */
+function MoveFolderButton({ ids, projectId, onDone }: {
+  ids: string[]; projectId: string | null; onDone: () => void
+}) {
+  const qc = useQueryClient()
+  const [newName, setNewName] = useState('')
+  const { data: folders } = useQuery<{ folder: string; count: number }[]>({
+    queryKey: ['image-folders', projectId, true],
+    queryFn: () => api.images.listFolders(projectId!, undefined, true),
+    enabled: !!projectId,
+  })
+
+  const move = useMutation({
+    mutationFn: (folder: string) => api.images.moveFolder(ids, folder),
+    onSuccess: (d) => {
+      toast.success(d.folder ? `已把 ${d.updated} 张移动到「${d.folder}」` : `已把 ${d.updated} 张移回根目录`)
+      setNewName('')
+      onDone()
+      qc.invalidateQueries({ queryKey: ['images'] })
+      qc.invalidateQueries({ queryKey: ['image-folders'] })
+    },
+    onError: (e: any) => toast.error(e?.message || '移动失败'),
+  })
+
+  // 已有文件夹列表(去掉根),按名称自然排序
+  const existing = (folders || [])
+    .map((f) => f.folder)
+    .filter((f) => f !== '')
+    .sort((a, b) => a.localeCompare(b, 'zh', { numeric: true }))
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-7 text-[12px] whitespace-nowrap shrink-0">
+          <FolderInput size={12} className="mr-1" /> 移动到文件夹
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] max-h-[420px] p-0 overflow-hidden flex flex-col" align="start">
+        <div className="px-3 py-2 border-b border-foreground/8 text-[11px] font-medium text-foreground/70">
+          把选中 {ids.length} 张移动到…
+        </div>
+        {/* 新建文件夹 */}
+        <div className="p-2 border-b border-foreground/8">
+          <div className="flex items-center gap-1.5">
+            <FolderPlus size={13} className="text-foreground/45 shrink-0" />
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) move.mutate(newName.trim()) }}
+              placeholder="新建文件夹名…"
+              className="flex-1 h-7 rounded-md border border-foreground/15 bg-background px-2 text-[12px]"
+            />
+            <Button size="sm" className="h-7 text-[11px]" disabled={!newName.trim() || move.isPending}
+              onClick={() => move.mutate(newName.trim())}>
+              新建并移入
+            </Button>
+          </div>
+        </div>
+        {/* 已有文件夹 */}
+        <div className="flex-1 overflow-y-auto p-1">
+          <button
+            type="button"
+            disabled={move.isPending}
+            onClick={() => move.mutate('')}
+            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-left text-[12px] text-foreground/70 hover:bg-foreground/[0.04]"
+          >
+            <FolderInput size={13} className="text-foreground/40" /> 根目录（未分组）
+          </button>
+          {existing.map((f) => (
+            <button
+              key={f}
+              type="button"
+              disabled={move.isPending}
+              onClick={() => move.mutate(f)}
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-left text-[12px] text-foreground/70 hover:bg-foreground/[0.04]"
+            >
+              <FolderInput size={13} className="text-foreground/40 shrink-0" />
+              <span className="truncate">{f}</span>
+            </button>
+          ))}
+          {existing.length === 0 && (
+            <p className="text-[11px] text-foreground/35 px-2 py-2">还没有其它文件夹，先在上面新建一个。</p>
+          )}
         </div>
       </PopoverContent>
     </Popover>

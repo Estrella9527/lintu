@@ -432,6 +432,35 @@ class APIClient {
         method: 'POST',
         body: JSON.stringify({ image_ids: imageIds, in_library: inLibrary }),
       }),
+
+    // 批量移动到文件夹(逻辑分组,改 relative_dir)。folder="" = 移回根目录。
+    // 新建文件夹 = 直接传一个新名字。
+    moveFolder: (imageIds: string[], folder: string) =>
+      this.request<{ ok: boolean; updated: number; folder: string }>('/images/batch/move-folder', {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds, folder }),
+      }),
+
+    // 重命名文件夹(连子文件夹一起改前缀)。
+    renameFolder: (projectId: string, oldFolder: string, newFolder: string) =>
+      this.request<{ ok: boolean; updated: number; folder: string }>('/images/folder/rename', {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, old_folder: oldFolder, new_folder: newFolder }),
+      }),
+
+    // 任意裁切(归一化 0..1 坐标)。原地覆盖原图(不备份),缩略/OSS 自动刷新。
+    crop: (id: string, rect: { x: number; y: number; width: number; height: number }) =>
+      this.request<{ ok: boolean; width: number; height: number }>(`/images/${id}/crop`, {
+        method: 'POST',
+        body: JSON.stringify(rect),
+      }),
+
+    // 「上传」动作:把选中的本地态图提交进审批流(建批次 + local→pending + 写来源)。
+    submitForReview: (imageIds: string[], sourceChannel: string, note = '') =>
+      this.request<{ ok: boolean; submitted: number; batch?: { id: string; batch_no: string } }>('/images/submit', {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds, source_channel: sourceChannel, note }),
+      }),
   }
 
   // ── OSS 图库(bucket 全量视图 + 反向导入)──

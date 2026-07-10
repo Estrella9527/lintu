@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image as PILImage
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.config import THUMBNAILS_DIR
-from sidecar.db.models import Image, Project, Tag
+from sidecar.db.models import Image, Project, Tag, UploadBatch
 from sidecar.db.session import get_db
 from sidecar.engines.image_utils import compute_perceptual_hashes, effective_file_path
 from sidecar.engines.oss_sync import enqueue_image_sync
@@ -364,6 +364,16 @@ async def _refresh_tag_state(db: AsyncSession, image_id: str) -> None:
         await enqueue_image_upsert(image_id)
     except Exception as e:
         logger.debug("cloud sync enqueue (tags) failed for %s: %s", image_id, e)
+    # 审核/打标配合的自愈闭环:若这张图已审核通过,补齐标签后自动补传 OSS。
+    # 上 OSS 需"审核通过 + 必填维度打全"两个条件都满足;审核通过时若还没打标,
+    # 那一刻 enqueue 被门禁挡住;此处在打标完成时再触发一次,门禁通过即上传。
+    # (谁后满足谁触发,审核/打标先后无所谓,不会漏图。)
+    if img.review_status == "approved":
+        try:
+            from sidecar.engines.oss_sync import enqueue_image_sync
+            await enqueue_image_sync(image_id)
+        except Exception as e:
+            logger.debug("oss enqueue (tag-complete) failed for %s: %s", image_id, e)
 
 
 async def _image_tags_payload(db: AsyncSession, image_id: str) -> dict:
@@ -404,16 +414,11 @@ async def patch_image(
     if body.is_listed is not None:
         img.is_listed = body.is_listed
         img.listed_at = _dt.utcnow() if body.is_listed else None
-    enqueue_oss = body.in_library is True and not img.in_library  # 仅"从未入库→入库"才推
     if body.in_library is not None:
         img.in_library = body.in_library
     await db.commit()
-    if enqueue_oss:
-        try:
-            await enqueue_image_sync(image_id)
-        except Exception as e:
-            logger.debug("oss enqueue (add to library) failed for %s: %s", image_id, e)
-    # 状态变更推云端(多人协作:上下架/入库态跨端流转;pending 会被 push 过滤)
+    # 治理策略:加入资产库 = 只是本地库成员,**不自动上 OSS**。上 OSS 只经「上传→审核」。
+    # 状态变更推云端(多人协作:上下架/入库态跨端流转;非 approved 会被 push 过滤)
     if body.review_status is not None or body.is_listed is not None or body.in_library is not None:
         try:
             from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
@@ -431,23 +436,16 @@ class LibraryBody(BaseModel):
 
 @router.post("/batch/library")
 async def batch_set_library(body: LibraryBody, db: AsyncSession = Depends(get_db)):
-    """批量加入 / 移出资产库。加入(True)时把"原本不在库"的图入队推 OSS。"""
+    """批量加入 / 移出资产库(仅本地库成员标记)。治理策略:加入资产库**不上 OSS**,
+    上 OSS 只经「上传 → 审核」。"""
     if not body.image_ids:
         return {"ok": True, "updated": 0}
     rows = (await db.execute(
         select(Image).where(Image.id.in_(body.image_ids))
     )).scalars().all()
-    to_enqueue: list[str] = []
     for img in rows:
-        if body.in_library and not img.in_library:
-            to_enqueue.append(img.id)
         img.in_library = body.in_library
     await db.commit()
-    for iid in to_enqueue:
-        try:
-            await enqueue_image_sync(iid)
-        except Exception as e:
-            logger.debug("oss enqueue (batch add to library) failed for %s: %s", iid, e)
     # 入库态推云端(跨端流转)
     from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
     for img in rows:
@@ -485,6 +483,155 @@ async def batch_set_listing(body: ListingBody, db: AsyncSession = Depends(get_db
         except Exception as e:
             logger.debug("cloud sync enqueue failed for %s: %s", img.id, e)
     return {"ok": True, "updated": len(rows), "is_listed": body.is_listed}
+
+
+class CropBody(BaseModel):
+    # 归一化裁切框(0..1),相对前端展示图。后端按原图真实像素换算,不受展示分辨率影响。
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@router.post("/{image_id}/crop")
+async def crop_image(image_id: str, body: CropBody, db: AsyncSession = Depends(get_db)):
+    """任意裁切:保留合格部分,原地覆盖原图(用户选定不备份)。
+
+    - 归一化坐标换算到原图真实像素;裁前先按 EXIF 方向摆正,保证与前端所见一致。
+    - 覆盖后重算 宽高/大小/hash/phash;清掉过期的压缩派生;缩略图靠 mtime 自动重生。
+    - 已上架图 force 重推 OSS(覆盖 CDN 原图与缩略),并推云端元数据。
+    """
+    from PIL import ImageOps
+
+    img = await db.get(Image, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    src = Path(img.file_path)
+    if not src.exists():
+        raise HTTPException(404, "原图文件不存在,无法裁切")
+
+    with PILImage.open(src) as im:
+        im = ImageOps.exif_transpose(im)  # 摆正到与浏览器一致的像素空间
+        w, h = im.size
+        left = int(round(max(0.0, min(1.0, body.x)) * w))
+        top = int(round(max(0.0, min(1.0, body.y)) * h))
+        right = int(round(max(0.0, min(1.0, body.x + body.width)) * w))
+        bottom = int(round(max(0.0, min(1.0, body.y + body.height)) * h))
+        if right - left < 2 or bottom - top < 2:
+            raise HTTPException(400, "裁切区域太小")
+        cropped = im.crop((left, top, right, bottom))
+
+        ext = src.suffix.lower()
+        save_kwargs: dict = {}
+        if ext in (".jpg", ".jpeg"):
+            cropped = cropped.convert("RGB")
+            save_kwargs = {"quality": 95, "subsampling": 0, "progressive": True}
+        elif ext == ".webp":
+            save_kwargs = {"quality": 95}
+        cropped.save(src, **save_kwargs)
+
+    new_w, new_h = cropped.size
+    # 重算元数据
+    h_md5 = hashlib.md5()
+    with open(src, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h_md5.update(chunk)
+    img.width = new_w
+    img.height = new_h
+    img.file_size_kb = src.stat().st_size // 1024
+    img.file_hash = h_md5.hexdigest()
+    phash = compute_perceptual_hashes(src)
+    img.phash = json.dumps(phash) if phash else None
+    # 过期的压缩派生(裁切前生成的)删掉,让 OSS/展示回到裁切后的原图
+    if getattr(img, "compressed_file_path", None):
+        try:
+            Path(img.compressed_file_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        img.compressed_file_path = None
+    img.updated_at = datetime.utcnow()
+    await db.commit()
+
+    # 治理策略:裁切 = 本地编辑,**不自动上 OSS、不推云端**。OSS/云端保留上次上传的
+    # 版本;要让裁切后的新版本上云,须重走「上传 → 审核」流程。
+    return {"ok": True, "width": new_w, "height": new_h}
+
+
+def _normalize_folder(name: str) -> str:
+    """规整文件夹名:去首尾空白与斜杠,折叠连续斜杠。"" = 根目录(未分组)。"""
+    parts = [seg.strip() for seg in (name or "").split("/")]
+    return "/".join(seg for seg in parts if seg)
+
+
+class MoveFolderBody(BaseModel):
+    image_ids: list[str]
+    folder: str = ""  # 目标文件夹;"" = 移回根目录(未分组)
+
+
+@router.post("/batch/move-folder")
+async def batch_move_folder(body: MoveFolderBody, db: AsyncSession = Depends(get_db)):
+    """批量把选中图移动到某个文件夹(逻辑分组,改 relative_dir)。
+
+    文件夹本质就是 relative_dir,与扫描/上传沿用同一维度,前端文件夹树直接生效。
+    只动元数据,不动本地原图文件,也不改 OSS key;改完推云端保证跨端一致。
+    "" 目标 = 移回根目录(未分组)。新文件夹名 = 直接传新名字(建文件夹=移入新名字)。
+    """
+    if not body.image_ids:
+        return {"ok": True, "updated": 0}
+    folder = _normalize_folder(body.folder)
+    rows = (await db.execute(
+        select(Image).where(Image.id.in_(body.image_ids))
+    )).scalars().all()
+    for img in rows:
+        img.relative_dir = folder
+    await db.commit()
+    from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+    for img in rows:
+        try:
+            await enqueue_image_upsert(img.id)
+        except Exception as e:
+            logger.debug("cloud sync enqueue (move-folder) failed for %s: %s", img.id, e)
+    return {"ok": True, "updated": len(rows), "folder": folder}
+
+
+class RenameFolderBody(BaseModel):
+    project_id: str
+    old_folder: str
+    new_folder: str
+
+
+@router.post("/folder/rename")
+async def rename_folder(body: RenameFolderBody, db: AsyncSession = Depends(get_db)):
+    """重命名文件夹:把项目内 relative_dir == old(及其子文件夹前缀)改写为 new。
+
+    例:old="悬崖过山车" new="A区" → "悬崖过山车" 和 "悬崖过山车/航拍" 一起改。
+    """
+    old = _normalize_folder(body.old_folder)
+    new = _normalize_folder(body.new_folder)
+    if not old:
+        raise HTTPException(400, "不能重命名根目录")
+    if not new:
+        raise HTTPException(400, "新文件夹名不能为空")
+    if old == new:
+        return {"ok": True, "updated": 0}
+    # 命中本身 + 子文件夹(前缀 old/)
+    rows = (await db.execute(
+        select(Image).where(
+            Image.project_id == body.project_id,
+            (Image.relative_dir == old) | (Image.relative_dir.like(f"{old}/%")),
+        )
+    )).scalars().all()
+    for img in rows:
+        rd = img.relative_dir or ""
+        img.relative_dir = new if rd == old else new + rd[len(old):]
+    await db.commit()
+    from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
+    for img in rows:
+        try:
+            await enqueue_image_upsert(img.id)
+        except Exception as e:
+            logger.debug("cloud sync enqueue (rename-folder) failed for %s: %s", img.id, e)
+    return {"ok": True, "updated": len(rows), "folder": new}
 
 
 def _validate_tag(schema: dict, dimension: str, value: str) -> dict:
@@ -861,29 +1008,90 @@ def _safe_ext(filename: str) -> str:
     return suf
 
 
+class SubmitBody(BaseModel):
+    image_ids: list[str]
+    source_channel: str            # 来源类型必选
+    note: str = ""
+    task_id: str = ""
+
+
+@router.post("/submit")
+async def submit_for_review(body: SubmitBody, request: Request, db: AsyncSession = Depends(get_db)):
+    """「上传」动作:把选中的**本地态**图提交进审批流。
+
+    治理策略的唯一进审批入口。做三件事:①建一个上传批次(来源追溯);②把这批图
+    review_status local→pending(进审核队列);③写来源渠道/上传人/批次到每张图。
+    只处理还在本地态(local)的图,已在审批/已通过的跳过。
+    """
+    channel = (body.source_channel or "").strip()
+    if not channel:
+        raise HTTPException(400, "来源类型必选")
+    if not body.image_ids:
+        return {"ok": True, "submitted": 0}
+
+    rows = (await db.execute(
+        select(Image).where(Image.id.in_(body.image_ids))
+        .where(Image.review_status == "local")
+    )).scalars().all()
+    if not rows:
+        return {"ok": True, "submitted": 0, "note": "选中的图都不在本地态,无需上传"}
+
+    _user = getattr(request.state, "user", None)
+    project_id = rows[0].project_id
+    today = datetime.utcnow().strftime("%Y%m%d")
+    seq = (await db.execute(
+        select(func.count(UploadBatch.id)).where(
+            UploadBatch.project_id == project_id,
+            UploadBatch.batch_no.like(f"{today}-%"),
+        )
+    )).scalar() or 0
+    batch = UploadBatch(
+        project_id=project_id,
+        batch_no=f"{today}-{seq + 1:03d}",
+        source_channel=channel,
+        uploaded_by=getattr(_user, "id", None),
+        uploaded_by_name=(
+            getattr(_user, "name", None)
+            or getattr(_user, "nickname", None)
+            or getattr(_user, "phone", None)
+        ),
+        task_id=body.task_id or None,
+        note=body.note or None,
+        total=len(rows),
+    )
+    db.add(batch)
+    await db.flush()
+    for img in rows:
+        img.review_status = "pending"
+        img.source_channel = channel
+        img.upload_batch_id = batch.id
+        if getattr(_user, "id", None):
+            img.uploaded_by = _user.id
+        img.in_library = True  # 提交上传即视为进资产库
+    await db.commit()
+    return {
+        "ok": True,
+        "submitted": len(rows),
+        "batch": {"id": batch.id, "batch_no": batch.batch_no, "source_channel": channel},
+    }
+
+
 @router.post("/upload")
 async def upload_images(
+    request: Request,
     project_id: str = Form(...),
     files: List[UploadFile] = File(...),
-    # 资产库直接上传 → True(进库 + 推 OSS);AI 工坊画布拖入 → False(只是画布草稿)
+    # 资产库导入 → True(进本地库);AI 工坊画布拖入 → False(只是画布草稿)
     in_library: bool = Form(True),
     db: AsyncSession = Depends(get_db),
 ):
-    """Direct image upload — paste / drag-drop entry from the UI.
+    """导入图片到本地资产库(粘贴 / 拖入 / 选文件)。
 
-    Distinct from the scan path: scan walks a directory the user already owns
-    and registers every file in place; upload accepts file bytes from the
-    browser (clipboard or OS drag) and writes them under
-    `<originals_path>/uploads/<yyyymmdd>/`. We auto-approve quality
-    (`quality_status='passed'`) because the user deliberately uploaded these —
-    no point making them click "approve" in 审核 for every drop. Tagging
-    stays 'pending' so the existing tagger workflow picks them up.
+    治理策略:导入 ≠ 上传。导入只把图落到**本地态(review_status='local')**,
+    纯本地可用可编辑,**不进审批、不碰 OSS/云端**。要送审 + 上云,用户之后在
+    资产库选中图、点「上传」(见 /images/submit)。
 
-    Dedup via md5(file_bytes) ⊆ existing project images. Re-uploading the
-    same file no-ops and returns the existing row, mirroring scan.
-
-    Returns ImageRecord rows plus a `skipped_duplicates` count for the
-    frontend toast.
+    去重:md5(file_bytes) ⊆ 现有项目图;重复直接返回已有行(镜像 scan)。
     """
     if not files:
         raise HTTPException(status_code=400, detail="no files")
@@ -902,6 +1110,10 @@ async def upload_images(
     dest_dir = originals_root / "uploads" / today
     dest_dir.mkdir(parents=True, exist_ok=True)
     rel_dir = f"uploads/{today}"
+
+    # 记录导入人(来源追溯);中间件已把用户放到 request.state.user
+    _user = getattr(request.state, "user", None)
+    uploader_id = getattr(_user, "id", None)
 
     # Dedup against current "live" project images only — exclude rejected
     # (回收站) rows so that "标记淘汰 → 重新粘贴同一张" works as users expect.
@@ -983,6 +1195,10 @@ async def upload_images(
             tag_status="pending",
             source_type="original",
             in_library=in_library,
+            # 导入 = 本地态,不进审批、不碰 OSS。来源渠道/批次在「上传」时才登记。
+            review_status="local",
+            is_listed=False,
+            uploaded_by=uploader_id,
             relative_dir=rel_dir,
         )
         db.add(img)
@@ -991,15 +1207,9 @@ async def upload_images(
 
     if created:
         await db.flush()
-        new_ids_for_sync = [img.id for img in created]
         await db.commit()
-        # 只有「进资产库」的上传才推 OSS;画布草稿(in_library=False)不推。
-        if in_library:
-            for iid in new_ids_for_sync:
-                try:
-                    await enqueue_image_sync(iid)
-                except Exception as e:
-                    logger.debug("oss enqueue (upload) failed for %s: %s", iid, e)
+        # 治理策略:导入只落本地态,此刻【不】建批次、【不】进审批、【不】碰 OSS。
+        # 用户之后在资产库选中图点「上传」(/images/submit)才登记批次并送审。
 
     return {
         "ok": True,
@@ -1038,6 +1248,14 @@ def _image_to_dict(img: Image) -> dict:
         "orient_status": img.orient_status or "none",
         "rotated_file_path": img.rotated_file_path,
         "parent_id": img.parent_id,
+        # 来源追溯(治理策略第一期)
+        "uploaded_by": getattr(img, "uploaded_by", None),
+        "source_channel": getattr(img, "source_channel", None),
+        "upload_batch_id": getattr(img, "upload_batch_id", None),
+        "reviewed_by": getattr(img, "reviewed_by", None),
+        "reviewed_at": (
+            img.reviewed_at.isoformat() if getattr(img, "reviewed_at", None) else None
+        ),
         "generation_metadata": img.generation_metadata,
         "usage_count": int(getattr(img, "usage_count", 0) or 0),
         "last_used_at": (

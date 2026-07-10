@@ -401,6 +401,12 @@ class CloudSyncWorker:
                 "review_status": img.review_status,
                 "is_listed": bool(img.is_listed),
                 "in_library": bool(img.in_library),
+                # 来源追溯(治理策略第一期)— 让云端/UGC 可查来源
+                "uploaded_by": img.uploaded_by,
+                "source_channel": img.source_channel,
+                "upload_batch_id": img.upload_batch_id,
+                "reviewed_by": img.reviewed_by,
+                "reviewed_at": img.reviewed_at.isoformat() if img.reviewed_at else None,
                 "description": img.description,
                 "source_type": img.source_type,
                 "relative_dir": img.relative_dir,

@@ -57,7 +57,10 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
   // 防止用户连点上传时 UI state 被旧批次踩;每次上传开新的 toast id
   const toastIdRef = useRef<string | number | null>(null)
 
-  const upload = useCallback(async (files: File[]): Promise<UploadResult | null> => {
+  const upload = useCallback(async (
+    files: File[],
+    meta?: { sourceChannel?: string; uploadBatchId?: string },
+  ): Promise<UploadResult | null> => {
     if (!projectId) {
       toast.error('请先选择一个项目再上传图片')
       return null
@@ -102,6 +105,9 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
           const form = new FormData()
           form.append('project_id', projectId!)
           form.append('in_library', String(inLibrary))
+          // 来源追溯:资产库上传带来源渠道 + 同一批次 id(各分块共用一个批次)
+          if (meta?.sourceChannel) form.append('source_channel', meta.sourceChannel)
+          if (meta?.uploadBatchId) form.append('upload_batch_id', meta.uploadBatchId)
           for (const f of chunk) {
             // 客户端没法保证文件名唯一(同截图重复粘贴),后端按 hash 命名落盘,
             // 不会真冲突 — 这里把 filename 传过去只是给后端在 UI / log 里有名字。

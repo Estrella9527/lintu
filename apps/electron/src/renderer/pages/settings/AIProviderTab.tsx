@@ -130,9 +130,13 @@ export function AIProviderTab() {
           onImportDone={onSaved}
         />
       </div>
-      <RoleAssignmentSection config={config || {}} onSaved={onSaved} />
+      {/* 必须等 config 真正加载完再挂载这两张卡：它们用 useState 在挂载时一次性
+          读取 config，若此时 config 还是 undefined({})，state 会被锁成空字符串且
+          再不同步——保存时就把 default_image_provider 等清空，导致 provider chain
+          为空、"生成不了"。延迟挂载保证 useState 初始值=真实配置。 */}
+      {config ? <RoleAssignmentSection config={config} onSaved={onSaved} /> : null}
 
-      <TaggerAuditCard config={config || {}} onSaved={onSaved} />
+      {config ? <TaggerAuditCard config={config} onSaved={onSaved} /> : null}
 
       <ArkProviderCard relays={relays} onSaved={onSaved} />
 

@@ -31,6 +31,15 @@ export interface ImageRecord {
   source_type: 'original' | 'generated'
   parent_id: string | null
   relative_dir: string | null
+  // 来源追溯(治理策略第一期)— 老记录可能没有,做可选
+  review_status?: 'local' | 'pending' | 'approved' | 'rejected' | 'skipped'
+  is_listed?: boolean
+  in_library?: boolean
+  uploaded_by?: string | null
+  source_channel?: string | null
+  upload_batch_id?: string | null
+  reviewed_by?: string | null
+  reviewed_at?: string | null
   generation_metadata?: {
     provider?: string | null
     model?: string | null

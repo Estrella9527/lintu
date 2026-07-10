@@ -72,16 +72,18 @@ class Image(Base):
     quality_status = Column(String, default="pending", index=True)
     reject_reason = Column(String)
 
-    # Pre-publish review queue. AI-generated images land here as `pending`;
-    # operator approves or rejects via the 「审核」 module before they're
-    # eligible for matching / cloud sync. Originals default to `approved`
-    # to keep existing flows unchanged.
-    #   pending  — awaiting operator decision
-    #   approved — visible in matching, eligible for cloud sync
-    #   rejected — hidden from matching, NOT pushed to cloud
-    #   skipped  — operator chose to defer; same effect as pending for now
-    review_status = Column(String, default="approved", index=True)
+    # 图片生命周期状态(治理策略:导入≠上传)。默认 `local`:任何来源导入/生成/
+    # 编辑产物都先落"本地态",纯本地可用可编辑,**不进审批队列、不碰 OSS/云端**。
+    # 只有用户手动点「上传」才 local→pending 进审批流。
+    #   local    — 本地资产库,未提交上传(默认);不展示为特殊状态
+    #   pending  — 已点上传,进审批队列待审
+    #   approved — 审核通过;满足打标门禁后上 OSS + 同步云端
+    #   rejected — 退回;移出匹配、不上云
+    #   skipped  — 审核时暂缓;留在审批队列
+    # 注:存量行仍是 approved(DB 里已是),不受此默认变更影响。
+    review_status = Column(String, default="local", index=True)
     reviewed_at = Column(DateTime)
+    reviewed_by = Column(String)          # 审核人(user id);approve/reject 时写入
 
     # 上下架(listing)— 与 review_status 正交的运营开关,决定是否参与 UGC 匹配。
     # 匹配候选池 = (review_status='approved') AND (is_listed=True)。
@@ -111,6 +113,13 @@ class Image(Base):
     # Lineage
     source_type = Column(String, default="original")
     parent_id = Column(String, ForeignKey("images.id"))
+
+    # 来源追溯(治理策略第一期):谁传的 / 哪个来源渠道 / 属于哪个上传批次。
+    # source_channel 取值:AI生产 / 摄影补拍 / UGC投稿 / OTA授权(前端受控)。
+    # upload_batch_id 指向 upload_batches.id(不设 DB 级 FK,避免 SQLite 迁移麻烦)。
+    uploaded_by = Column(String)
+    source_channel = Column(String, index=True)
+    upload_batch_id = Column(String, index=True)
 
     # Phase 2: preserve the original folder layout from the source directory
     # so users can browse / filter by 景点 / scene folder name.
@@ -224,6 +233,28 @@ class Task(Base):
 
     # Phase 2 — link top-level Task row to its BatchRun for batch generation
     batch_id = Column(String, ForeignKey("batch_runs.id"), index=True)
+
+
+# ── UploadBatch(来源追溯 · 治理策略第一期)──
+
+
+class UploadBatch(Base):
+    """一次上传=一个批次。承载批次级元数据(来源渠道、上传人、备注),
+    图片通过 Image.upload_batch_id 挂到批次上,便于"整批溯源 / 整批退回"。"""
+
+    __tablename__ = "upload_batches"
+
+    id = Column(String, primary_key=True, default=_uid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
+    batch_no = Column(String, nullable=False)          # 日期+序号,如 20260711-001
+    source_channel = Column(String, nullable=False)    # AI生产/摄影补拍/UGC投稿/OTA授权
+    uploaded_by = Column(String)                       # 上传人 user id
+    uploaded_by_name = Column(String)                  # 上传人显示名(冗余,免联表)
+    task_id = Column(String)                           # 关联生产任务(可选)
+    note = Column(Text)                                # 批次备注
+    total = Column(Integer, default=0)                 # 本批张数
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ── Duplicate Group ──

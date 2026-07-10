@@ -672,13 +672,8 @@ class BatchScheduler:
                 # surfaces generated images under the same attraction.
                 relative_dir=seed_relative_dir,
                 generation_metadata=gen_meta,
-                # AI-generated images go to the review queue. Operator must
-                # approve before they're eligible for matching / cloud sync.
-                # See routers/image_review.py for the queue endpoints.
-                review_status="pending",
-                # 【止血P0-1】对齐 /api/generate 的事故修复:AI 生成图默认不上架、
-                # 不入资产库,绝不自动上 OSS。运营在「审核」通过 + 显式上架后才发布。
-                # 下方 enqueue_image_sync 经上云门禁对未上架图自动 no-op(双保险)。
+                # AI 生成图 = 本地态,不进审批、不碰 OSS。运营满意后手动上传才进审批流。
+                review_status="local",
                 is_listed=False,
                 in_library=False,
             )
@@ -699,17 +694,8 @@ class BatchScheduler:
             )
             await db.commit()
 
-        # Enqueue OSS sync for the freshly-created generated image. No-op when
-        # OSS is disabled. Wrapped so any failure can't poison the batch.
-        try:
-            from sidecar.engines.oss_sync import enqueue_image_sync
-            await enqueue_image_sync(new_image_id)
-        except Exception as e:
-            # warning 而非 debug:enqueue 失败原来被静默吞掉,图永远不上云但 batch
-            # 仍标 completed。enqueue 已幂等(S5),审核通过路径 + 手动对账都会补
-            # enqueue,所以这里不致命,但必须可见以便排查。
-            logger.warning("oss enqueue (batch) failed for %s(审核通过/对账会补): %s",
-                           new_image_id, e)
+        # 治理策略:生成图 = 本地态,不自动上 OSS。运营手动「加入资产库」+「上传」
+        # 经审核通过 + 打标门禁后才上云。此处不再入队。
 
         async with state.lock:
             state.completed += 1

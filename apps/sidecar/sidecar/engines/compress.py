@@ -281,19 +281,9 @@ async def _safe_commit(db, max_retry: int = 5) -> None:
 
 
 async def _batch_enqueue_oss(image_ids: list[str]) -> None:
-    """批量入队 OSS 同步,内部带 SQLite locked retry。
-    每图调一次 enqueue_image_sync(force=True);失败的图 retry 最多 3 次。"""
-    from sidecar.engines.oss_sync import enqueue_image_sync
-    for iid in image_ids:
-        for attempt in range(3):
-            try:
-                await enqueue_image_sync(iid, force=True)
-                break
-            except Exception as e:
-                msg = str(e)
-                if "database is locked" in msg and attempt < 2:
-                    await asyncio.sleep(0.2 * (attempt + 1))
-                    continue
-                logger.warning("enqueue OSS failed for %s (attempt %d): %s",
-                               iid, attempt + 1, msg[:120])
-                break
+    """治理策略:压缩 = 本地编辑,**不再自动重传 OSS**。
+
+    以前压缩完会 force 覆盖 OSS 原图 —— 违反"编辑留本地、不碰 OSS"原则,且会把
+    OSS 上的图悄悄换成压缩版。现在压缩只改本地派生文件;要让新版本上 OSS,须走
+    正常「上传 → 审核」流程。此函数保留为 no-op,避免改动多处调用点。"""
+    return

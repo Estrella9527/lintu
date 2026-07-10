@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { ChevronDown, ChevronRight, Folder, FolderOpen, Image as ImageIcon } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Image as ImageIcon, Pencil } from 'lucide-react'
 import { useState } from 'react'
 
 interface FolderNode {
@@ -73,12 +74,34 @@ function buildTree(rows: { folder: string; count: number }[]): FolderNode {
 }
 
 export function FolderTree({ projectId, selected, onSelect, inLibrary }: FolderTreeProps) {
+  const qc = useQueryClient()
   const { data, isLoading } = useQuery({
     queryKey: ['image-folders', projectId, inLibrary],
     queryFn: () => api.images.listFolders(projectId, undefined, inLibrary),
     refetchInterval: 10_000,
     enabled: !!projectId,
   })
+
+  const renameMut = useMutation({
+    mutationFn: ({ oldFolder, newFolder }: { oldFolder: string; newFolder: string }) =>
+      api.images.renameFolder(projectId, oldFolder, newFolder),
+    onSuccess: (d) => {
+      toast.success(`已重命名文件夹（${d.updated} 张图）`)
+      qc.invalidateQueries({ queryKey: ['image-folders'] })
+      qc.invalidateQueries({ queryKey: ['images'] })
+    },
+    onError: (e: any) => toast.error(e?.message || '重命名失败'),
+  })
+
+  const handleRename = (fullPath: string) => {
+    // 只改这一层的名字(末段),保留父路径;后端按前缀连子文件夹一起改。
+    const segs = fullPath.split('/')
+    const cur = segs[segs.length - 1]
+    const next = window.prompt(`重命名文件夹「${cur}」为：`, cur)
+    if (!next || !next.trim() || next.trim() === cur) return
+    segs[segs.length - 1] = next.trim()
+    renameMut.mutate({ oldFolder: fullPath, newFolder: segs.join('/') })
+  }
 
   const root = useMemo(() => buildTree(data ?? []), [data])
   const grandTotal = useMemo(
@@ -124,6 +147,7 @@ export function FolderTree({ projectId, selected, onSelect, inLibrary }: FolderT
           node={child}
           selected={selected}
           onSelect={onSelect}
+          onRename={handleRename}
           depth={0}
         />
       ))}
@@ -136,10 +160,11 @@ export function FolderTree({ projectId, selected, onSelect, inLibrary }: FolderT
   )
 }
 
-function TreeNode({ node, selected, onSelect, depth }: {
+function TreeNode({ node, selected, onSelect, onRename, depth }: {
   node: FolderNode
   selected: string | null
   onSelect: (path: string) => void
+  onRename: (fullPath: string) => void
   depth: number
 }) {
   const [expanded, setExpanded] = useState(depth === 0)  // top-level expanded by default
@@ -157,6 +182,7 @@ function TreeNode({ node, selected, onSelect, depth }: {
         expanded={expanded}
         onToggleExpand={hasChildren ? () => setExpanded((v) => !v) : undefined}
         onClick={() => onSelect(node.fullPath)}
+        onRename={() => onRename(node.fullPath)}
       />
       {hasChildren && expanded && (
         <div>
@@ -166,6 +192,7 @@ function TreeNode({ node, selected, onSelect, depth }: {
               node={c}
               selected={selected}
               onSelect={onSelect}
+              onRename={onRename}
               depth={depth + 1}
             />
           ))}
@@ -177,7 +204,7 @@ function TreeNode({ node, selected, onSelect, depth }: {
 
 function FolderRow({
   label, count, active, depth, hasChildren, expanded, leaf,
-  onClick, onToggleExpand, icon,
+  onClick, onToggleExpand, onRename, icon,
 }: {
   label: string
   count: number
@@ -188,13 +215,14 @@ function FolderRow({
   leaf?: boolean
   onClick: () => void
   onToggleExpand?: () => void
+  onRename?: () => void
   icon?: React.ReactNode
 }) {
   return (
-    <button
+    <div
       onClick={onClick}
       className={cn(
-        'w-full group flex items-center gap-1 px-1.5 py-1 rounded text-left transition-colors',
+        'w-full group flex items-center gap-1 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
         active
           ? 'bg-accent/10 text-accent'
           : 'text-foreground/70 hover:bg-foreground/[0.03]',
@@ -221,12 +249,21 @@ function FolderRow({
         )
       )}
       <span className="truncate flex-1">{label}</span>
+      {onRename && (
+        <span
+          onClick={(e) => { e.stopPropagation(); onRename() }}
+          title="重命名文件夹"
+          className="shrink-0 opacity-0 group-hover:opacity-100 text-foreground/35 hover:text-accent transition-opacity"
+        >
+          <Pencil size={11} />
+        </span>
+      )}
       <span className={cn(
         'text-[10px] tabular-nums shrink-0',
         active ? 'text-accent/80' : 'text-foreground/35',
       )}>
         {count.toLocaleString()}
       </span>
-    </button>
+    </div>
   )
 }

@@ -6,9 +6,11 @@ import { api, apiFetchRaw } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { Cpu, Download, Eye, FolderOpen, GitFork, PenTool, Rocket, Sparkles, Trash2 } from 'lucide-react'
+import { Cpu, Crop, Download, Eye, FolderOpen, GitFork, PenTool, Rocket, Sparkles, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { ThumbnailImage } from './ThumbnailImage'
 import { TagEditor } from './TagEditor'
+import { CropDialog } from './CropDialog'
 import { activeModuleAtom, assetLibraryNavRequestAtom } from '@/atoms/navigation'
 import { batchSeedQueueAtom } from '@/atoms/workshop'
 import type { ImageRecord } from '@/lib/types'
@@ -30,6 +32,7 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
   const setActiveModule = useSetAtom(activeModuleAtom)
   const setSeedQueue = useSetAtom(batchSeedQueueAtom)
   const setAssetNav = useSetAtom(assetLibraryNavRequestAtom)
+  const [cropOpen, setCropOpen] = useState(false)
 
   const { data: detail } = useQuery({
     queryKey: ['image-detail', image?.id],
@@ -137,6 +140,27 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
           </Button>
         </div>
 
+        {/* 裁切:保留合格部分,原地覆盖原图 */}
+        <Button
+          variant="outline" size="sm"
+          className="w-full h-7 text-[11px]"
+          onClick={() => setCropOpen(true)}
+          title="拖拽框选保留区域,直接覆盖原图(不备份)"
+        >
+          <Crop size={11} className="mr-1" /> 裁切照片
+        </Button>
+        <CropDialog
+          imageId={img.id}
+          fileName={img.file_name}
+          open={cropOpen}
+          onOpenChange={setCropOpen}
+          onDone={() => {
+            queryClient.invalidateQueries({ queryKey: ['images'] })
+            queryClient.invalidateQueries({ queryKey: ['image-detail', img.id] })
+            queryClient.invalidateQueries({ queryKey: ['image-folders'] })
+          }}
+        />
+
         {/* Workflow shortcuts: seed new batch + jump to derivatives. */}
         <div className="grid grid-cols-2 gap-1">
           <Button
@@ -171,6 +195,25 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
           <Row label="亮度" value={img.brightness != null ? img.brightness.toFixed(1) : '—'} />
           <Row label="文件夹" value={img.relative_dir || '根目录'} />
           <Row label="入库时间" value={img.created_at ? new Date(img.created_at).toLocaleString('zh-CN') : '—'} />
+        </Section>
+
+        {/* 来源追溯(治理策略第一期)*/}
+        <Section title="来源追溯">
+          <Row label="状态" value={
+            img.review_status === 'approved' ? '✓ 已通过（已上 OSS）' :
+            img.review_status === 'rejected' ? '✗ 已退回' :
+            img.review_status === 'pending' ? '⏳ 审核中' :
+            img.review_status === 'skipped' ? '暂缓' :
+            '本地（未上传）'
+          } />
+          <Row label="上架" value={img.is_listed ? '已上架（UGC 可匹配）' : '未上架'} />
+          <Row label="来源渠道" value={img.source_channel || '—'} />
+          <Row label="上传人" value={img.uploaded_by || '—'} />
+          <Row label="上传批次" value={img.upload_batch_id ? img.upload_batch_id.slice(0, 8) : '—'} />
+          <Row label="审核人" value={img.reviewed_by || '—'} />
+          {img.reviewed_at && (
+            <Row label="审核时间" value={new Date(img.reviewed_at).toLocaleString('zh-CN')} />
+          )}
         </Section>
 
         {/* AI generation provenance */}
