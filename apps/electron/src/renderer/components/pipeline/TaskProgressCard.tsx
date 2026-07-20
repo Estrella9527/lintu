@@ -29,6 +29,14 @@ export function TaskProgressCard({
   const isRunning = task.status === 'running'
   const isPaused = task.status === 'paused'
   const isRetriable = task.status === 'failed' || task.status === 'cancelled'
+  const statusLabel: Record<TaskRecord['status'], string> = {
+    queued: '排队中',
+    running: '运行中',
+    paused: '已暂停',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  }
   // Auto-subscribe when no external progress was provided AND the task is
   // running. `externalProgress === undefined` means "not passed" (parent
   // didn't opt out, so this card owns its stream). `null` from the parent
@@ -44,6 +52,7 @@ export function TaskProgressCard({
   const totalRaw = Math.max(progress?.total ?? 0, task.total ?? 0)
   const total = totalRaw || 0
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0
+  const failed = Math.max(progress?.failed ?? 0, task.failed ?? 0)
 
   // Optional human-friendly label stored at task creation time, e.g.
   //   "AI打标 · 秋季漂流封面 · 42 张"
@@ -64,11 +73,14 @@ export function TaskProgressCard({
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span
             className={`w-2 h-2 rounded-full shrink-0 ${
-              isRunning ? 'bg-success animate-pulse' : isPaused ? 'bg-info' : 'bg-foreground/20'
+              isRunning ? 'bg-success animate-pulse'
+                : isPaused ? 'bg-info'
+                : task.status === 'failed' ? 'bg-destructive'
+                : 'bg-foreground/20'
             }`}
           />
           <span className="text-[13px] font-medium text-foreground/80 shrink-0">
-            {isRunning ? '运行中' : isPaused ? '已暂停' : task.status === 'completed' ? '已完成' : task.status}
+            {statusLabel[task.status]}
           </span>
           {customLabel && (
             <span
@@ -113,7 +125,10 @@ export function TaskProgressCard({
         </div>
         <div className="flex justify-between text-[11px] text-foreground/40 tabular-nums">
           <span>{pct}% ({processed.toLocaleString()} / {total.toLocaleString()})</span>
-          {task.cost_usd > 0 && <span>${task.cost_usd.toFixed(4)}</span>}
+          <span className="flex items-center gap-3">
+            {failed > 0 && <span className="text-destructive">失败 {failed.toLocaleString()}</span>}
+            {task.cost_usd > 0 && <span>${task.cost_usd.toFixed(4)}</span>}
+          </span>
         </div>
       </div>
 

@@ -119,20 +119,25 @@ export function usePipelineRunAll(projectId: string | null): UsePipelineRunAllRe
       while (polls < MAX_POLLS) {
         await sleep(POLL_INTERVAL_MS)
         polls++
+        let task
         try {
-          const t = await api.tasks.get(taskId)
-          if (t.status === 'completed') break
-          if (t.status === 'failed' || t.status === 'cancelled') {
-            const reason = (t as any).error || '任务失败'
-            setState({ status: 'failed', currentStage: stage, currentIndex: i, totalStages: STAGES.length, error: reason, failedStage: stage })
-            throw new Error(`${STAGE_LABELS[stage]}：${reason}`)
-          }
+          task = await api.tasks.get(taskId)
         } catch (e: any) {
-          // Transient fetch error — keep polling unless we've maxed out
+          // Only transient fetch errors are swallowed. Terminal task errors
+          // are handled outside this catch so they cannot be mistaken for a
+          // temporary polling failure and spin until the 60-minute timeout.
           if (polls >= MAX_POLLS) {
             setState({ status: 'failed', currentStage: stage, currentIndex: i, totalStages: STAGES.length, error: '轮询超时', failedStage: stage })
             throw e
           }
+          continue
+        }
+
+        if (task.status === 'completed') break
+        if (task.status === 'failed' || task.status === 'cancelled') {
+          const reason = task.error_message || '任务失败'
+          setState({ status: 'failed', currentStage: stage, currentIndex: i, totalStages: STAGES.length, error: reason, failedStage: stage })
+          throw new Error(`${STAGE_LABELS[stage]}：${reason}`)
         }
       }
 

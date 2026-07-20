@@ -25,16 +25,24 @@ export function TaggingTab() {
   const [costLimit, setCostLimit] = useState('10')
 
   const { data: tasks } = useQuery({
-    queryKey: ['tasks', 'tag'],
-    queryFn: () => api.tasks.list({ type: 'tag' }),
+    queryKey: ['tasks', 'tag', projectId],
+    queryFn: () => api.tasks.list({ type: 'tag', project_id: projectId! }),
     refetchInterval: 3000,
+    enabled: !!projectId,
   })
 
-  const activeTask = tasks?.find(
-    (t: TaskRecord) => t.status === 'running' || t.status === 'queued',
+  const blockingTask = tasks?.find(
+    (t: TaskRecord) => t.status === 'running' || t.status === 'queued' || t.status === 'paused',
   )
   const lastTask = tasks?.[0]
-  const progress = useTaskProgress(activeTask?.id ?? null)
+  const visibleTask = blockingTask ?? lastTask
+  const progress = useTaskProgress(
+    blockingTask?.status === 'running' || blockingTask?.status === 'queued'
+      ? blockingTask.id
+      : null,
+  )
+
+  const refreshTasks = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
 
   const startMutation = useMutation({
     mutationFn: async () => {
@@ -47,7 +55,7 @@ export function TaggingTab() {
     },
     onSuccess: () => {
       toast.success('打标任务已启动')
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      refreshTasks()
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -117,30 +125,60 @@ export function TaggingTab() {
 
         <Button
           onClick={() => startMutation.mutate()}
-          disabled={startMutation.isPending || !!activeTask}
+          disabled={startMutation.isPending || !!blockingTask}
           className="w-full"
         >
-          {activeTask ? '打标任务运行中' : '开始打标'}
+          {blockingTask?.status === 'paused'
+            ? '打标任务已暂停'
+            : blockingTask
+              ? '打标任务运行中'
+              : '开始打标'}
         </Button>
       </ConfigCard>
 
-      {(activeTask || (lastTask && lastTask.status === 'completed')) && (
+      {visibleTask && (
         <TaskProgressCard
-          task={activeTask || lastTask!}
+          task={visibleTask}
           progress={progress}
-          onPause={activeTask ? () => api.tasks.pause(activeTask.id) : undefined}
-          onCancel={activeTask ? () => api.tasks.cancel(activeTask.id) : undefined}
+          onPause={visibleTask.status === 'running' ? async () => {
+            await api.tasks.pause(visibleTask.id)
+            refreshTasks()
+          } : undefined}
+          onResume={visibleTask.status === 'paused' ? async () => {
+            await api.tasks.resume(visibleTask.id)
+            refreshTasks()
+          } : undefined}
+          onCancel={['running', 'queued', 'paused'].includes(visibleTask.status) ? async () => {
+            await api.tasks.cancel(visibleTask.id)
+            refreshTasks()
+          } : undefined}
+          onRetry={['failed', 'cancelled'].includes(visibleTask.status) ? async () => {
+            const result = await api.tasks.retry(visibleTask.id) as { ok?: boolean; message?: string }
+            if (result.ok) {
+              toast.success('打标任务已重新入队')
+              refreshTasks()
+            } else {
+              toast.error(result.message || '重试失败')
+            }
+          } : undefined}
           extraStats={
-            <div className="flex gap-4 text-[12px]">
-              {progress?.cost_usd !== undefined && (
-                <span className="text-info">费用: ${progress.cost_usd.toFixed(4)}</span>
+            <div className="space-y-2 text-[12px]">
+              {(progress?.cost_usd !== undefined || visibleTask.cost_usd > 0) && (
+                <span className="text-info">
+                  费用: ${(progress?.cost_usd ?? visibleTask.cost_usd).toFixed(4)}
+                </span>
+              )}
+              {visibleTask.status === 'failed' && visibleTask.error_message && (
+                <div className="rounded-md bg-destructive/10 px-2.5 py-2 text-destructive whitespace-pre-wrap">
+                  {visibleTask.error_message}
+                </div>
               )}
             </div>
           }
         />
       )}
 
-      {lastTask?.status === 'completed' && (
+      {visibleTask?.status === 'completed' && visibleTask.processed > 0 && visibleTask.failed === 0 && (
         <div className="rounded-lg border border-foreground/5 p-4">
           <h3 className="text-[13px] font-medium text-foreground/60 mb-3">打标结果</h3>
           <p className="text-[12px] text-foreground/55 mb-3">

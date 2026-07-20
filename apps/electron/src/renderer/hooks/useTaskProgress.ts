@@ -30,6 +30,9 @@ export function useTaskProgress(taskId: string | null) {
         if (cur.total != null && event.total != null) {
           merged.total = Math.max(cur.total, event.total)
         }
+        if (cur.failed != null && event.failed != null) {
+          merged.failed = Math.max(cur.failed, event.failed)
+        }
         return merged
       })
     })

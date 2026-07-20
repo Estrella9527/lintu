@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete as sa_delete, select, update
 
 from sidecar.db.models import Image, Tag, Task
 from sidecar.db.session import async_session
@@ -159,24 +159,20 @@ async def run_tagging(task: Task, progress_cb):
     # of generated images (skips the global "all pending in project" filter).
     image_ids: list[str] = params.get("image_ids") or []
 
+    schema = _read_schema()
+    required_dims = {
+        dimension for dimension, definition in schema.items()
+        if definition.get("required")
+    }
     prompt = _build_prompt_from_schema()
-
-    # Init primary provider
-    provider = _get_provider(provider_name)
-    consecutive_failures = 0
 
     async with async_session() as db:
         if image_ids:
             result = await db.execute(
-                select(Image).where(Image.id.in_(image_ids))
+                select(Image)
+                .where(Image.id.in_(image_ids))
+                .where(Image.project_id == task.project_id)
             )
-            # Re-run path: drop previously-stored AI tags for these images so
-            # we don't accumulate duplicates from prior runs.
-            from sqlalchemy import delete as sa_delete
-            await db.execute(
-                sa_delete(Tag).where(Tag.image_id.in_(image_ids)).where(Tag.source == "ai")
-            )
-            await db.commit()
         else:
             result = await db.execute(
                 select(Image)
@@ -187,23 +183,49 @@ async def run_tagging(task: Task, progress_cb):
             )
         images = result.scalars().all()
         total = len(images)
-        await progress_cb(total=total, processed=0, cost_usd=0.0)
+        await progress_cb(total=total, processed=0, failed=0, cost_usd=0.0)
+
+        if total == 0:
+            if image_ids:
+                reason = "所选图片不存在或不属于当前项目"
+            else:
+                reason = "当前项目没有同时满足“质检通过、去重保留、待打标”的图片"
+            raise RuntimeError(f"没有可打标的图片：{reason}")
+
+        # Only resolve the provider after confirming there is actual work.
+        # Otherwise a no-op task can misleadingly fail on provider config
+        # before we can explain that its candidate set is empty.
+        provider = _get_provider(provider_name)
+        active_provider_name = provider_name
+        consecutive_failures = 0
 
         semaphore = asyncio.Semaphore(concurrency)
         total_cost = 0.0
-        processed = 0
+        processed = 0  # attempted images, including terminal failures
+        succeeded = 0
         failed = 0
+        failure_errors: list[str] = []
+        cost_limit_reached = False
         lock = asyncio.Lock()
 
         async def tag_one(img: Image):
-            nonlocal total_cost, processed, failed, provider, consecutive_failures
+            nonlocal total_cost, processed, succeeded, failed
+            nonlocal provider, active_provider_name, consecutive_failures
+            nonlocal cost_limit_reached
 
             async with semaphore:
+                # Another concurrent image may have exhausted the task budget
+                # while this coroutine was waiting for a slot.
+                if cost_limit_reached:
+                    return
+
                 last_error = None
                 for attempt in range(retry_times):
                     try:
                         result = await provider.tag_image(effective_file_path(img), prompt)
                         tags_data = result["tags"]
+                        if not isinstance(tags_data, dict):
+                            raise ValueError("模型返回的 tags 不是 JSON 对象")
 
                         async with async_session() as inner_db:
                             # 尊重人工标签:某维若已有 manual 标签,跳过该维的 AI 值,不覆盖人工
@@ -212,6 +234,26 @@ async def run_tagging(task: Task, progress_cb):
                                 .where(Tag.image_id == img.id).where(Tag.source == "manual")
                             )).all()
                             manual_dims = {d for d, _ in manual_rows}
+                            missing_required = [
+                                dimension for dimension in required_dims
+                                if dimension not in manual_dims
+                                and not tags_data.get(dimension)
+                            ]
+                            if missing_required:
+                                raise ValueError(
+                                    "模型返回缺少必填标签维度："
+                                    + "、".join(sorted(missing_required))
+                                )
+
+                            # Re-run safety: only remove the old AI tags after
+                            # the provider has returned a valid replacement.
+                            # A failed re-tag therefore preserves the previous
+                            # usable labels instead of leaving the image blank.
+                            await inner_db.execute(
+                                sa_delete(Tag)
+                                .where(Tag.image_id == img.id)
+                                .where(Tag.source == "ai")
+                            )
                             tag_values: list[str] = [v for _, v in manual_rows]  # blob 含已有人工值
                             for dimension, value in tags_data.items():
                                 if dimension == "description" or dimension in manual_dims:
@@ -233,7 +275,7 @@ async def run_tagging(task: Task, progress_cb):
                                     description=description,
                                     tag_status="tagged",
                                     tagged_at=datetime.utcnow(),
-                                    tag_provider=provider_name,
+                                    tag_provider=active_provider_name,
                                     text_search_blob=text_search_blob,
                                 )
                             )
@@ -250,10 +292,16 @@ async def run_tagging(task: Task, progress_cb):
                         async with lock:
                             total_cost += result.get("cost_usd", 0)
                             processed += 1
+                            succeeded += 1
                             consecutive_failures = 0
                             if total_cost >= cost_limit:
-                                raise Exception(f"达到费用上限 ${total_cost:.4f}")
-                            await progress_cb(processed=processed, total=total, cost_usd=total_cost)
+                                cost_limit_reached = True
+                            await progress_cb(
+                                processed=processed,
+                                total=total,
+                                failed=failed,
+                                cost_usd=total_cost,
+                            )
 
                         # A/B audit — sample-rate gated, fire-and-forget
                         try:
@@ -261,7 +309,7 @@ async def run_tagging(task: Task, progress_cb):
                             maybe_schedule_audit(
                                 img.id,
                                 tags_data,
-                                provider_name,
+                                active_provider_name,
                                 getattr(provider, "model", None),
                                 prompt=prompt,
                             )
@@ -277,7 +325,7 @@ async def run_tagging(task: Task, progress_cb):
                             if consecutive_failures >= 10 and fallback_name and fallback_name != provider_name:
                                 try:
                                     provider = _get_provider(fallback_name)
-                                    provider_name_ref = fallback_name
+                                    active_provider_name = fallback_name
                                     consecutive_failures = 0
                                     logger.warning(f"Switched to fallback provider: {fallback_name}")
                                 except Exception:
@@ -288,11 +336,37 @@ async def run_tagging(task: Task, progress_cb):
                 # All retries failed
                 async with lock:
                     failed += 1
+                    processed += 1
+                    failure_errors.append(str(last_error or "未知错误"))
+                    await progress_cb(
+                        processed=processed,
+                        total=total,
+                        failed=failed,
+                        cost_usd=total_cost,
+                    )
                 logger.error(f"Failed to tag {img.id} after {retry_times} retries: {last_error}")
 
         batch_size = int(get_setting("tagger_batch_size") or 10)
         for i in range(0, total, batch_size):
             batch = images[i:i + batch_size]
             await asyncio.gather(*[tag_one(img) for img in batch])
+            if cost_limit_reached:
+                break
 
-        logger.info(f"Tagging done: {processed} tagged, {failed} failed, cost=${total_cost:.4f}")
+        logger.info(
+            "Tagging done: %d succeeded, %d failed, %d/%d attempted, cost=$%.4f",
+            succeeded, failed, processed, total, total_cost,
+        )
+
+        if failed:
+            first_error = failure_errors[0][:300] if failure_errors else "未知错误"
+            raise RuntimeError(
+                f"打标任务未全部成功：成功 {succeeded} 张，失败 {failed} 张。"
+                f"首个错误：{first_error}"
+            )
+
+        if cost_limit_reached and processed < total:
+            raise RuntimeError(
+                f"达到费用上限 ${total_cost:.4f}，任务已停止："
+                f"成功 {succeeded}/{total} 张"
+            )

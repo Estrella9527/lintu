@@ -132,6 +132,7 @@ export interface CoverageMatrix {
 export interface TaskProgressEvent {
   processed: number
   total: number
+  failed?: number
   status?: string
   phase?: string
   cost_usd?: number
