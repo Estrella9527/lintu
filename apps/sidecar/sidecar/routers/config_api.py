@@ -10,6 +10,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.config import DATA_DIR
+from sidecar.time_utils import utc_iso
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -156,10 +157,16 @@ async def update_config(body: UpdateConfigBody):
                 new_relays = json.loads(v)
                 old_relays = json.loads(config.get("custom_relays", "[]"))
                 old_by_name = {r.get("name"): r for r in old_relays if r.get("name")}
-                for r in new_relays:
+                for index, r in enumerate(new_relays):
                     key = r.get("api_key", "")
                     if _looks_masked(key):
                         prev = old_by_name.get(r.get("name"))
+                        # Editing a relay can rename it while the UI still
+                        # carries the masked key. Name lookup then misses;
+                        # preserve the secret from the same stable list slot
+                        # rather than writing "xxxx****" as the real token.
+                        if not prev and index < len(old_relays):
+                            prev = old_relays[index]
                         if prev and prev.get("api_key"):
                             r["api_key"] = prev["api_key"]
                 incoming[k] = json.dumps(new_relays, ensure_ascii=False)
@@ -300,7 +307,7 @@ async def list_config_audit(
             "new_value": r.new_value,
             "source": r.source,
             "actor_meta": r.actor_meta,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "created_at": utc_iso(r.created_at),
         }
         for r in rows
     ]

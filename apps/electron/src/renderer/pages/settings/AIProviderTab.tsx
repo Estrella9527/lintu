@@ -380,7 +380,7 @@ function RelayCard({ relay, index, allRelays, onSaved }: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider_id: 'openai_compatible',
-          relay_index: index,
+          provider_name: relay.name,
         }),
       })
       setTestResult(await res.json())
@@ -922,9 +922,9 @@ function ArkProviderCard({ relays, onSaved }: ArkProviderCardProps) {
     setTesting(true)
     setTestResult(null)
     try {
-      // Prefer relay_index lookup so the backend reads the real (unmasked) api_key
-      // from disk. The GET /api/config endpoint masks api_keys to `xxxx****`,
-      // so sending the prefilled value back would always 401.
+      // Prefer stable relay-name lookup so the backend reads the real
+      // (unmasked) api_key from disk. Array indexes can drift after another
+      // device inserts/reorders relays and would test the wrong token.
       let body: Record<string, unknown>
       if (apiKey) {
         body = {
@@ -934,12 +934,12 @@ function ArkProviderCard({ relays, onSaved }: ArkProviderCardProps) {
           model: chatModel,
         }
       } else {
-        const idx = relays.findIndex((r) => r.name === ARK_RELAY_NAMES.chat)
-        if (idx < 0) {
+        const saved = relays.some((r) => r.name === ARK_RELAY_NAMES.chat)
+        if (!saved) {
           setTestResult({ ok: false, error: '请先填入 API Key' })
           return
         }
-        body = { provider_id: 'openai_compatible', relay_index: idx }
+        body = { provider_id: 'openai_compatible', provider_name: ARK_RELAY_NAMES.chat }
       }
       const res = await apiFetchRaw('/providers/test', {
         method: 'POST',

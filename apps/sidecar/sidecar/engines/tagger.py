@@ -154,7 +154,7 @@ def _provider_candidate_names(primary_name: str, fallback_name: str = "") -> lis
     return names
 
 
-def _get_provider(provider_name: str):
+def _get_provider(provider_name: str, *, model_override: str | None = None):
     """Instantiate exactly the named provider.
 
     Provider fallback is handled explicitly by ``_get_provider_chain``. The
@@ -182,7 +182,7 @@ def _get_provider(provider_name: str):
             from sidecar.providers.openai_compat import OpenAICompatProvider
             return OpenAICompatProvider(
                 base_url=relay["base_url"], api_key=relay["api_key"],
-                model=relay.get("model", "gpt-4o"),
+                model=model_override or relay.get("model", "gpt-4o"),
             )
 
     raise ValueError(f"未找到 AI 服务商：{provider_name}")
@@ -192,9 +192,14 @@ def _get_provider_chain(primary_name: str, fallback_name: str = "") -> list[tupl
     """Resolve all usable tagging providers without letting one bad config abort the task."""
     resolved: list[tuple[str, object]] = []
     resolution_errors: list[str] = []
+    general_model_override = str(get_setting("general_provider_model") or "").strip()
     for name in _provider_candidate_names(primary_name, fallback_name):
         try:
-            resolved.append((name, _get_provider(name)))
+            if name == _normalize_provider_name(primary_name) and general_model_override:
+                provider = _get_provider(name, model_override=general_model_override)
+            else:
+                provider = _get_provider(name)
+            resolved.append((name, provider))
         except Exception as exc:
             resolution_errors.append(f"{name}: {exc}")
             logger.warning("Skipping unavailable tagging provider %s: %s", name, exc)

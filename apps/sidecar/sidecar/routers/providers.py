@@ -27,6 +27,7 @@ class TestProviderBody(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+    provider_name: str | None = None  # stable relay identity; matches runtime lookup
     relay_index: int | None = None  # For testing saved custom relays
 
 
@@ -37,20 +38,31 @@ async def test_provider(body: TestProviderBody):
         if body.provider_id == "gemini":
             return await _test_gemini(body.api_key)
         elif body.provider_id == "openai_compatible":
-            # If relay_index is set, read saved relay config (with full api_key)
+            # Resolve saved relays by name, just like the runtime tagger. Index
+            # remains for old clients, but can point at the wrong token after
+            # another device inserts/reorders relay entries.
             base_url = body.base_url
             api_key = body.api_key
             model = body.model
-            if body.relay_index is not None:
+            if body.provider_name or body.relay_index is not None:
                 config = _read_config()
                 try:
                     relays = json.loads(config.get("custom_relays", "[]"))
-                    relay = relays[body.relay_index]
+                    if body.provider_name:
+                        relay = next(
+                            r for r in relays
+                            if r.get("name") == body.provider_name
+                        )
+                    else:
+                        relay = relays[body.relay_index]
                     base_url = base_url or relay.get("base_url")
                     api_key = api_key or relay.get("api_key")
                     model = model or relay.get("model")
-                except (json.JSONDecodeError, IndexError):
-                    pass
+                except (json.JSONDecodeError, IndexError, StopIteration, TypeError):
+                    return {
+                        "ok": False,
+                        "error": f"未找到服务商：{body.provider_name or body.relay_index}",
+                    }
             return await _test_openai_compatible(base_url, api_key, model)
         elif body.provider_id == "comfyui":
             return await _test_comfyui(body.base_url)
@@ -90,21 +102,141 @@ async def _test_openai_compatible(base_url: str | None, api_key: str | None, mod
         return {"ok": False, "error": "未提供 API Key"}
     try:
         import httpx
-        base = base_url.rstrip("/")
-        # Skip /v1 prefix when base already contains a version segment
-        # (e.g. Volcengine Ark /api/v3, or any /v2, /v3 base).
-        if _VERSION_SEGMENT.search(base):
-            url = base + "/models"
-        else:
-            url = base + "/v1/models"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
-            if resp.status_code == 200:
-                data = resp.json()
-                models = [m.get("id", "") for m in data.get("data", [])[:5]]
-                return {"ok": True, "message": f"连接成功，可用模型: {', '.join(models) or '(已获取)'}"}
-            else:
-                return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+
+        def endpoint(path: str) -> str:
+            base = base_url.rstrip("/")
+            # Skip /v1 prefix when caller already supplied a versioned base
+            # (Volcengine Ark /api/v3, custom /v2, etc.).
+            return base + path if _VERSION_SEGMENT.search(base) else base + "/v1" + path
+
+        def response_message(response: httpx.Response) -> str:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    error = data.get("error")
+                    if isinstance(error, dict) and error.get("message"):
+                        return str(error["message"])[:300]
+                    if isinstance(error, str):
+                        return error[:300]
+                    if data.get("message"):
+                        return str(data["message"])[:300]
+            except ValueError:
+                pass
+            return response.text.strip()[:300]
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        available_models: list[str] = []
+        model_list_status: int | None = None
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Model listing is useful diagnostics, but it is not a successful
+            # health check: many gateways list models that this token cannot
+            # invoke, or have no live distributor behind a listed model.
+            models_resp = await client.get(endpoint("/models"), headers=headers)
+            model_list_status = models_resp.status_code
+            if models_resp.status_code == 200:
+                try:
+                    payload = models_resp.json()
+                    available_models = [
+                        str(item.get("id"))
+                        for item in payload.get("data", [])
+                        if isinstance(item, dict) and item.get("id")
+                    ]
+                except (ValueError, AttributeError):
+                    available_models = []
+
+            if not model:
+                if models_resp.status_code == 200:
+                    return {
+                        "ok": False,
+                        "error": "连接成功，但未配置模型；无法验证真实调用",
+                        "available_models": available_models[:20],
+                    }
+                return {
+                    "ok": False,
+                    "error": f"模型列表请求失败（HTTP {models_resp.status_code}）：{response_message(models_resp)}",
+                }
+
+            model_lower = model.lower()
+            non_chat_model = any(hint in model_lower for hint in (
+                "embedding", "seedream", "gpt-image", "dall-e", "imagen", "flux",
+            ))
+            if non_chat_model:
+                if available_models and model not in available_models:
+                    return {
+                        "ok": False,
+                        "error": f"令牌可连接，但模型 {model} 不在可用模型列表中",
+                        "available_models": available_models[:20],
+                    }
+                return {
+                    "ok": models_resp.status_code == 200,
+                    "message": (
+                        f"连接成功，模型 {model} 可见；为避免计费，未执行生成/向量调用"
+                        if models_resp.status_code == 200
+                        else None
+                    ),
+                    "error": (
+                        None if models_resp.status_code == 200
+                        else f"模型列表请求失败（HTTP {models_resp.status_code}）"
+                    ),
+                    "verified": "listing_only",
+                }
+
+            # Real, minimal multimodal request. This deliberately mirrors the
+            # tagger's endpoint, auth header, model field, image payload and
+            # max_tokens parameter so "测试成功" means tagging can really call.
+            # 16x16 neutral PNG. Ark rejects images below 14px; keeping the
+            # probe tiny avoids bandwidth/cost while exercising vision input.
+            tiny_png = (
+                "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGNsaGhg"
+                "IAUwkaSaYVQDcYCJSHVwMKqBGEByKAEAyUwBoHKcrY0AAAAASUVORK5CYII="
+            )
+            call_resp = await client.post(
+                endpoint("/chat/completions"),
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "只回复 OK"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{tiny_png}"},
+                            },
+                        ],
+                    }],
+                    "max_tokens": 16,
+                },
+            )
+
+        if call_resp.status_code == 200:
+            return {
+                "ok": True,
+                "message": f"真实视觉调用成功：{model}",
+                "model": model,
+                "verified": "vision_call",
+            }
+
+        listing_hint = ""
+        if available_models and model not in available_models:
+            listing_hint = (
+                f"；该令牌可见模型：{', '.join(available_models[:5])}"
+            )
+        elif model_list_status and model_list_status != 200:
+            listing_hint = f"；模型列表接口 HTTP {model_list_status}"
+        return {
+            "ok": False,
+            "error": (
+                f"模型 {model} 真实视觉调用失败（HTTP {call_resp.status_code}）："
+                f"{response_message(call_resp)}{listing_hint}"
+            ),
+            "model": model,
+            "verified": "vision_call",
+            "available_models": available_models[:20],
+        }
     except ImportError:
         return {"ok": False, "error": "httpx 未安装"}
     except Exception as e:

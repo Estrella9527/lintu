@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.db.models import OperationLog, User
 from sidecar.db.session import get_db
+from sidecar.time_utils import utc_iso
 
 router = APIRouter()
 
@@ -84,7 +85,7 @@ async def list_operations(
                 "summary": r.summary,
                 "ip": r.ip,
                 "user_agent": r.user_agent,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": utc_iso(r.created_at),
             }
             for r in rows
         ],

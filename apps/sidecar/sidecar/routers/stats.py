@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.db.models import Image, Tag, Task
 from sidecar.db.session import get_db
+from sidecar.time_utils import utc_iso
 
 router = APIRouter()
 
@@ -168,5 +169,5 @@ def _task_dict(t: Task) -> dict:
         "status": t.status,
         "total": t.total,
         "processed": t.processed,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "created_at": utc_iso(t.created_at),
     }

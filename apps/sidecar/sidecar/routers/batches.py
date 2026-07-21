@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sidecar.db.models import BatchRun, BatchSubtask
 from sidecar.db.session import get_db
 from sidecar.scheduler.batch_engine import batch_scheduler
+from sidecar.time_utils import utc_iso
 
 router = APIRouter()
 
@@ -55,10 +56,10 @@ def _batch_to_dict(b: BatchRun) -> dict:
         "provider_chain": b.provider_chain,
         "budget_usd": float(b.budget_usd) if b.budget_usd is not None else None,
         "cost_usd": float(b.cost_usd) if b.cost_usd is not None else 0.0,
-        "started_at": b.started_at.isoformat() if b.started_at else None,
-        "completed_at": b.completed_at.isoformat() if b.completed_at else None,
-        "created_at": b.created_at.isoformat() if b.created_at else None,
-        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        "started_at": utc_iso(b.started_at),
+        "completed_at": utc_iso(b.completed_at),
+        "created_at": utc_iso(b.created_at),
+        "updated_at": utc_iso(b.updated_at),
     }
 
 
@@ -73,8 +74,8 @@ def _subtask_to_dict(s: BatchSubtask) -> dict:
         "output_image_id": s.output_image_id,
         "cost_usd": float(s.cost_usd) if s.cost_usd is not None else None,
         "error_message": s.error_message,
-        "started_at": s.started_at.isoformat() if s.started_at else None,
-        "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+        "started_at": utc_iso(s.started_at),
+        "completed_at": utc_iso(s.completed_at),
     }
 
 

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.db.models import Task
 from sidecar.db.session import get_db
+from sidecar.time_utils import utc_iso
 
 router = APIRouter()
 
@@ -143,8 +144,8 @@ def _task_to_dict(t: Task) -> dict:
         "processed": t.processed,
         "failed": t.failed,
         "cost_usd": t.cost_usd,
-        "started_at": t.started_at.isoformat() if t.started_at else None,
-        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "started_at": utc_iso(t.started_at),
+        "completed_at": utc_iso(t.completed_at),
+        "created_at": utc_iso(t.created_at),
         "error_message": t.error_message,
     }
