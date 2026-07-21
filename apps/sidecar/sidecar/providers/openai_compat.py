@@ -224,6 +224,16 @@ class OpenAICompatProvider(ImageProvider):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        try:
+            configured_timeout = float(
+                get_setting("tagger_request_timeout_seconds") or 180
+            )
+        except (TypeError, ValueError):
+            configured_timeout = 180.0
+        # A real tagging prompt plus a 2K image routinely needs 40-90s when
+        # the upstream queues concurrent requests. The old blanket 60s
+        # timeout cut off valid responses just before completion.
+        self.tagging_read_timeout_seconds = max(30.0, configured_timeout)
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -237,7 +247,13 @@ class OpenAICompatProvider(ImageProvider):
         b64 = _encode_image_for_analysis(image_path)
         url = _build_url(self.base_url, "/chat/completions")
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        timeout = httpx.Timeout(
+            connect=15,
+            read=self.tagging_read_timeout_seconds,
+            write=60,
+            pool=60,
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=self._headers, json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": [

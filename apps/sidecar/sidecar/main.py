@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 
 # IMPORTANT: clear HTTP(S) proxy env vars BEFORE importing any HTTP client.
 # Lintu's sidecar talks to Aliyun OSS / Volcengine Ark — both are domestic
@@ -22,7 +23,7 @@ os.environ.setdefault(
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from sidecar.config import LINTU_ALLOW_CORS, LINTU_MODE
+from sidecar.config import DATA_DIR, LINTU_ALLOW_CORS, LINTU_MODE
 from sidecar.db.migrate import init_db
 from sidecar.middleware.audit import AuditMiddleware, OperationLogMiddleware
 from sidecar.middleware.auth import AuthMiddleware
@@ -41,6 +42,26 @@ from sidecar.scheduler.sse import create_sse_router
 from sidecar.routers import tasks, images, stats, matrix, config_api, projects, providers, tag_schema, prompts, openapi, openapi_v1, strategies, prompt_docs, batches, api_keys, duplicate_groups, tag_audit, oss, match_analytics, match_synonyms, internal_sync, image_review, auth as auth_router, invitations as invitations_router, audit_ops as audit_ops_router, orgs as orgs_router, platform as platform_router, generate as generate_router, style_archives as style_archives_router, oss_library as oss_library_router
 
 logging.basicConfig(level=logging.INFO)
+
+# Packaged Windows apps have no console window, so stdout/stderr alone makes
+# production failures impossible to inspect. Keep a bounded local log under
+# %USERPROFILE%\lintu-data\logs (or the platform-equivalent DATA_DIR).
+try:
+    _log_dir = DATA_DIR / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _file_handler = RotatingFileHandler(
+        _log_dir / "sidecar.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+        delay=True,
+    )
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s"
+    ))
+    logging.getLogger().addHandler(_file_handler)
+except OSError:
+    logging.getLogger(__name__).exception("failed to initialize sidecar file logging")
 
 scheduler = TaskScheduler()
 

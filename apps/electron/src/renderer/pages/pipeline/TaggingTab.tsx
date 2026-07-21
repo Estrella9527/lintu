@@ -21,7 +21,7 @@ export function TaggingTab() {
   const queryClient = useQueryClient()
   const projectId = useAtomValue(activeProjectIdAtom)
   const setActiveModule = useSetAtom(activeModuleAtom)
-  const [concurrency, setConcurrency] = useState(24)
+  const [concurrency, setConcurrency] = useState(6)
   const [costLimit, setCostLimit] = useState('10')
 
   const { data: tasks } = useQuery({
@@ -89,8 +89,8 @@ export function TaggingTab() {
                   concurrency >= 48 ? 'text-warning' : concurrency >= 24 ? 'text-info' : 'text-foreground/85'
                 )}>{concurrency}</span>
                 <InfoHint text={
-                  '中转 (one-API/new-api) 24-48 并发都安全；\n' +
-                  'OpenAI / Gemini 官方 API 限流较严，推荐 ≤ 8。'
+                  '真实视觉打标通常需要 40-90 秒；\n' +
+                  '官方 API 推荐 4-6 并发，中转渠道建议从 6 开始逐步调高。'
                 } />
               </span>
               {concurrency >= 48 && (

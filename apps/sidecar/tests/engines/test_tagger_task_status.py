@@ -211,6 +211,74 @@ async def test_http_403_immediately_fails_over_to_working_vision_provider(
     assert backup.calls == 1
 
 
+async def test_bad_primary_is_canaried_once_before_parallel_batch(
+    client, db_session, sample_project, monkeypatch,
+):
+    images = []
+    for index in range(4):
+        image = Image(
+            project_id=sample_project,
+            file_path=f"/tmp/fake-tag-image-{index}.jpg",
+            file_name=f"fake-tag-image-{index}.jpg",
+            quality_status="passed",
+            is_kept=True,
+            tag_status="pending",
+        )
+        db_session.add(image)
+        images.append(image)
+    await db_session.flush()
+    task = Task(
+        project_id=sample_project,
+        type="tag",
+        status="queued",
+        parameters=json.dumps({"image_ids": [image.id for image in images]}),
+        total=len(images),
+    )
+    db_session.add(task)
+    await db_session.commit()
+    await db_session.refresh(task)
+
+    forbidden = _ForbiddenProvider()
+    backup = _CountingSuccessProvider()
+    monkeypatch.setattr(tagger, "get_setting", _fake_setting)
+    monkeypatch.setattr(
+        tagger,
+        "_get_provider_chain",
+        lambda _primary, _fallback: [
+            ("forbidden", forbidden),
+            ("working-backup", backup),
+        ],
+    )
+
+    scheduler = TaskScheduler()
+    scheduler.register("tag", tagger.run_tagging)
+    await scheduler._execute(task)
+
+    await db_session.refresh(task)
+    assert task.status == "completed"
+    assert task.processed == len(images)
+    assert task.failed == 0
+    assert forbidden.calls == 1
+    assert backup.calls == len(images)
+
+
+def test_tagging_timeout_has_headroom_for_real_vision_calls(monkeypatch):
+    from sidecar.providers import openai_compat
+
+    monkeypatch.setattr(
+        openai_compat,
+        "get_setting",
+        lambda key: 180 if key == "tagger_request_timeout_seconds" else None,
+    )
+    provider = openai_compat.OpenAICompatProvider(
+        base_url="https://relay.invalid",
+        api_key="test-key",
+        model="vision-model",
+    )
+
+    assert provider.tagging_read_timeout_seconds == 180
+
+
 async def test_provider_error_keeps_upstream_message_when_no_fallback_works(
     client, db_session, sample_project, monkeypatch,
 ):

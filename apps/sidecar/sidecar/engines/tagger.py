@@ -240,6 +240,14 @@ def _format_provider_error(provider_name: str, provider: object, exc: BaseExcept
         message = _response_error_message(exc.response)
         detail = f"：{message}" if message else ""
         return f"{identity} 请求失败（HTTP {exc.response.status_code}）{detail}"
+    if isinstance(exc, httpx.TimeoutException):
+        timeout_seconds = getattr(provider, "tagging_read_timeout_seconds", None)
+        timeout_hint = (
+            f"（等待 {timeout_seconds:g} 秒）"
+            if isinstance(timeout_seconds, (int, float))
+            else ""
+        )
+        return f"{identity} 响应超时{timeout_hint}：{type(exc).__name__}"
     return f"{identity} 请求失败：{str(exc)[:400]}"
 
 
@@ -504,9 +512,17 @@ async def run_tagging(task: Task, progress_cb):
                     )
                 logger.error("Failed to tag %s after provider fallbacks: %s", img.id, last_error)
 
-        batch_size = int(get_setting("tagger_batch_size") or 10)
-        for i in range(0, total, batch_size):
-            batch = images[i:i + batch_size]
+        # Use one real image as a canary before fanning out. If the configured
+        # primary is unauthorized (the common "test succeeds, batch fails"
+        # case), this switches the shared provider exactly once instead of
+        # launching a whole batch of doomed requests with the bad model.
+        remaining_images = list(images)
+        if len(remaining_images) > 1:
+            await tag_one(remaining_images.pop(0))
+
+        batch_size = max(1, int(get_setting("tagger_batch_size") or 6))
+        for i in range(0, len(remaining_images), batch_size):
+            batch = remaining_images[i:i + batch_size]
             await asyncio.gather(*[tag_one(img) for img in batch])
             if cost_limit_reached:
                 break

@@ -27,9 +27,12 @@ DEFAULTS = {
     # fresh install.
     "tagger_provider": "",
     "tagger_fallback_provider": "",
-    "tagger_batch_size": 10,
-    "tagger_max_concurrent": 24,
+    # 真实视觉请求通常需要 40-90 秒。官方模型在 10 路并发时容易排队到
+    # 客户端读超时；桌面端默认保持 6 路，仍允许运营按渠道配额手动调高。
+    "tagger_batch_size": 6,
+    "tagger_max_concurrent": 6,
     "tagger_retry_times": 3,
+    "tagger_request_timeout_seconds": 180,
     "tagger_cost_limit_usd": 50.0,
 
     # ── Image generation ──
