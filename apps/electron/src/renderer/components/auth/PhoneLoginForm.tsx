@@ -30,6 +30,7 @@ export function PhoneLoginForm({ onSuccess }: Props) {
   const [sending, setSending] = useState(false)
   const [verifying, setVerifying] = useState(false)
   const [cooldown, setCooldown] = useState(0)
+  const [localDebugCode, setLocalDebugCode] = useState<string | null>(null)
 
   const phoneValid = PHONE_REGEX.test(phone)
 
@@ -47,7 +48,18 @@ export function PhoneLoginForm({ onSuccess }: Props) {
     setSending(true)
     try {
       const res = await api.auth.sendSms(phone)
-      toast.success(`验证码已发送，${Math.round(res.ttl_sec / 60)} 分钟内有效`)
+      const debugCode = res.delivery === 'local_debug' && /^\d{6}$/.test(res.debug_code || '')
+        ? res.debug_code!
+        : null
+      setLocalDebugCode(debugCode)
+      if (debugCode) {
+        toast.warning(`本地开发验证码：${debugCode}`, {
+          description: '当前未配置短信通道，验证码没有发送到手机。',
+          duration: 12_000,
+        })
+      } else {
+        toast.success(`验证码已发送，${Math.round(res.ttl_sec / 60)} 分钟内有效`)
+      }
       setCooldown(RESEND_COOLDOWN_SEC)
       setStep('code')
       setCode('')
@@ -151,7 +163,7 @@ export function PhoneLoginForm({ onSuccess }: Props) {
       <div className="flex items-center justify-between rounded-xl border border-foreground/8 bg-foreground/[0.02] px-3 py-2">
         <button
           type="button"
-          onClick={() => { setStep('phone'); setCode('') }}
+          onClick={() => { setStep('phone'); setCode(''); setLocalDebugCode(null) }}
           className="inline-flex items-center gap-1 text-[11.5px] text-foreground/55 transition-colors hover:text-foreground/85"
         >
           <ArrowLeft size={12} />
@@ -175,6 +187,12 @@ export function PhoneLoginForm({ onSuccess }: Props) {
           disabled={verifying}
           autoFocus
         />
+        {localDebugCode && (
+          <p className="rounded-lg border border-warning/25 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-warning">
+            当前为本地开发模式，短信未发送。本次测试验证码：
+            <strong className="ml-1 font-mono tracking-[0.18em]">{localDebugCode}</strong>
+          </p>
+        )}
       </div>
 
       {/* 主按钮 */}

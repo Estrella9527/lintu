@@ -645,7 +645,7 @@ async def _enrich_and_filter(
             )
             .where(Image.id.in_(image_ids))
             # 候选池双闸门(UGC 需求 2026-06):
-            #   1. review_status='approved' — 审核通过
+            #   1. review_status='approved' — 已确认进入图库
             #   2. is_listed=True            — 已上架(运营开关)
             # 上架而非「是否同步到 OSS」决定一张图能否被 UGC 匹配。存量行迁移
             # 已回填 is_listed=True,故对现有库无回归;OSS 反向导入的库外图

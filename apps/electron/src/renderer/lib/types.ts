@@ -40,6 +40,12 @@ export interface ImageRecord {
   upload_batch_id?: string | null
   reviewed_by?: string | null
   reviewed_at?: string | null
+  compressed_file_path?: string | null
+  compression_status?: 'queued' | 'running' | 'ready' | 'failed' | null
+  compression_error?: string | null
+  compression_profile?: string | null
+  compressed_size_kb?: number | null
+  cdn_path?: string | null
   generation_metadata?: {
     provider?: string | null
     model?: string | null

@@ -449,6 +449,15 @@ async def run_tagging(task: Task, progress_cb):
                             except Exception:
                                 logger.debug("cloud sync enqueue failed for %s (non-fatal)", img.id)
 
+                            # 标签更新后顺手重试 OSS 入队，覆盖历史记录或此前
+                            # 压缩尚未完成的情况。图库上传不再由标签阻塞，方法
+                            # 仍会检查图库状态和压缩状态，重复调用安全。
+                            try:
+                                from sidecar.engines.oss_sync import enqueue_image_sync
+                                await enqueue_image_sync(img.id)
+                            except Exception:
+                                logger.debug("oss enqueue (ai tag-complete) failed for %s (non-fatal)", img.id)
+
                             async with lock:
                                 total_cost += result.get("cost_usd", 0)
                                 processed += 1

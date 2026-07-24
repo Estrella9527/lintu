@@ -148,6 +148,33 @@ async def test_successful_tagging_is_the_only_completed_path(
     assert tag_count == 5
 
 
+async def test_ai_tagging_reoffers_approved_image_to_oss(
+    client, db_session, sample_project, monkeypatch,
+):
+    """审核先通过、AI 后补齐必填标签时，必须重新尝试 OSS 发布。"""
+    task, image = await _create_scoped_task(db_session, sample_project)
+    image.review_status = "approved"
+    await db_session.commit()
+
+    offered: list[str] = []
+
+    async def capture_enqueue(image_id: str, force: bool = False) -> int:
+        offered.append(image_id)
+        return 0
+
+    from sidecar.engines import oss_sync
+
+    monkeypatch.setattr(tagger, "get_setting", _fake_setting)
+    monkeypatch.setattr(tagger, "_get_provider", lambda _name: _SuccessProvider())
+    monkeypatch.setattr(oss_sync, "enqueue_image_sync", capture_enqueue)
+
+    scheduler = TaskScheduler()
+    scheduler.register("tag", tagger.run_tagging)
+    await scheduler._execute(task)
+
+    assert offered == [image.id]
+
+
 async def test_empty_candidate_set_does_not_complete(
     client, db_session, sample_project, monkeypatch,
 ):

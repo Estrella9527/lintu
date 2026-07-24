@@ -187,6 +187,14 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
         {/* File info */}
         <Section title="文件信息">
           <Row label="来源" value={img.source_type === 'generated' ? 'AI 生成' : '原始图片'} />
+          <Row label="本地原图" value={img.file_path ? `✓ 已保存 · ${formatSize(img.file_size_kb || 0)}` : '✗ 文件缺失'} />
+          <Row label="压缩发布版" value={
+            img.compression_status === 'ready' ? `✓ 已生成 · ${formatSize(img.compressed_size_kb || 0)}` :
+            img.compression_status === 'running' ? '处理中…' :
+            img.compression_status === 'queued' ? '等待处理' :
+            img.compression_status === 'failed' ? `✗ 失败：${img.compression_error || '请重试'}` :
+            '历史图片 · 发布时使用原图'
+          } />
           <Row label="质检" value={
             img.quality_status === 'passed' ? '✓ 通过' :
             img.quality_status === 'rejected' ? `✗ 淘汰 (${img.reject_reason || ''})` : '待检'
@@ -197,22 +205,28 @@ export function ImageInspector({ image, onPreview }: ImageInspectorProps) {
           <Row label="入库时间" value={img.created_at ? new Date(img.created_at).toLocaleString('zh-CN') : '—'} />
         </Section>
 
-        {/* 来源追溯(治理策略第一期)*/}
-        <Section title="来源追溯">
+        {/* 图库发布状态 */}
+        <Section title="图库发布">
           <Row label="状态" value={
-            img.review_status === 'approved' ? '✓ 已通过（已上 OSS）' :
-            img.review_status === 'rejected' ? '✗ 已退回' :
-            img.review_status === 'pending' ? '⏳ 审核中' :
-            img.review_status === 'skipped' ? '暂缓' :
-            '本地（未上传）'
+            img.review_status === 'approved' ? '✓ 已上传到图库' :
+            img.review_status === 'rejected' ? '✗ 已退回（历史记录）' :
+            img.review_status === 'pending' ? '⏳ 历史审核中' :
+            img.review_status === 'skipped' ? '暂缓（历史记录）' :
+            '本地草稿（未上传图库）'
+          } />
+          <Row label="OSS 发布" value={
+            img.cdn_path ? '✓ 已发布' :
+            img.compression_status === 'failed' ? '发布受阻（压缩失败）' :
+            img.review_status === 'approved' ? '等待压缩/同步任务' :
+            '尚未发布'
           } />
           <Row label="上架" value={img.is_listed ? '已上架（UGC 可匹配）' : '未上架'} />
           <Row label="来源渠道" value={img.source_channel || '—'} />
           <Row label="上传人" value={img.uploaded_by || '—'} />
           <Row label="上传批次" value={img.upload_batch_id ? img.upload_batch_id.slice(0, 8) : '—'} />
-          <Row label="审核人" value={img.reviewed_by || '—'} />
+          {(img.reviewed_by || img.reviewed_at) && <Row label="历史审核人" value={img.reviewed_by || '—'} />}
           {img.reviewed_at && (
-            <Row label="审核时间" value={new Date(img.reviewed_at).toLocaleString('zh-CN')} />
+            <Row label="历史审核时间" value={new Date(img.reviewed_at).toLocaleString('zh-CN')} />
           )}
         </Section>
 
@@ -310,4 +324,3 @@ function formatLatency(ms?: number | null): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`
   return `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`
 }
-

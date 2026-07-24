@@ -1,10 +1,10 @@
 """OSS 图库 —— 扫描 bucket、把库外对象反向导入灵图库。
 
 UGC 需求(2026-06):OSS bucket 里有库外图(外部直传),需要让它们进入
-灵图库参与审核+上架+匹配。这个 router 给「匹配策略 → OSS 图库」入口用。
+灵图库后由用户决定是否上架参与匹配。这个 router 给「匹配策略 → OSS 图库」入口用。
 
   GET  /api/oss-library/scan                 扫描 bucket,返回每个对象的入库/审核/上架状态
-  POST /api/oss-library/import               导入库外对象(待审核+未上架),派发 embed/tag
+  POST /api/oss-library/import               导入库外对象(直接入图库+未上架),派发 embed/tag
 """
 from __future__ import annotations
 
@@ -93,8 +93,8 @@ class ImportBody(BaseModel):
 
 @router.post("/import")
 async def do_import(body: ImportBody):
-    """把库外对象导入灵图库:下载 → 建 Image 行(待审核+未上架,cdn_path=key)
-    → 派发 embed + tag 任务。导入后需运营审核 + 上架才进 UGC 匹配池。"""
+    """把库外对象导入灵图库:下载 → 建 Image 行(图库已确认+未上架,cdn_path=key)
+    → 派发 embed + tag 任务。导入后仅在用户上架时进入 UGC 匹配池。"""
     if not body.project_id:
         raise HTTPException(400, {"code": "missing_project", "message": "project_id 必填"})
     try:

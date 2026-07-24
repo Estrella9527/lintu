@@ -83,16 +83,18 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
   const importAll = useMutation({
     mutationFn: () => api.ossLibrary.import(projectId!, undefined),
     onSuccess: (r) => {
-      toast.success(`已导入 ${r.imported} 张库外图（待审核 + 未上架），失败 ${r.failed}。已派发向量+打标，处理后到「审核」上架即可参与匹配。`)
+      toast.success(`已回填 ${r.imported} 张云端未归档图片，失败 ${r.failed}`, {
+        description: '已下载到本地并建立图库关联；默认未上架，只有手动上架后才供 UGC 使用。',
+      })
       refreshAll()
     },
-    onError: (e: any) => toast.error(`导入失败：${String(e?.message || e).slice(0, 160)}`),
+    onError: (e: any) => toast.error(`回填失败：${String(e?.message || e).slice(0, 160)}`),
   })
 
   const importKeys = useMutation({
     mutationFn: (keys: string[]) => api.ossLibrary.import(projectId!, keys),
-    onSuccess: (r) => { toast.success(`已导入 ${r.imported} 张`); setSelected(new Set()); refreshAll() },
-    onError: (e: any) => toast.error(`导入失败：${String(e?.message || e).slice(0, 140)}`),
+    onSuccess: (r) => { toast.success(`已回填 ${r.imported} 张到本地资产库`); setSelected(new Set()); refreshAll() },
+    onError: (e: any) => toast.error(`回填失败：${String(e?.message || e).slice(0, 140)}`),
   })
 
   // OSS 文件删除:先弹确认(列明 未纳管直接删 / 已入库连记录删 / 云端跳过)
@@ -180,15 +182,15 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
           <div className="flex items-center gap-1 mb-2 px-1.5">
             <h3 className="text-[11px] font-medium text-foreground/50">按状态</h3>
             <InfoHint text={
-              '已入库(本机):这台电脑的灵图在管理,信息最全,可审核/上架/编辑。\n' +
+              '已入库(本机):这台电脑的灵图在管理,信息最全,可上架/编辑。\n' +
               '云端已发布:其他电脑发布的,标签等信息直接显示远端数据;要在本机参与匹配,开 设置→通用→多设备同步。\n' +
-              '未纳管:仓里只有文件,任何电脑都没导入过 — 「导入」后走打标→审核→上架。'
+              '云端未归档:OSS 有文件但灵图没有关联记录 — 「回填」会建立本地记录，是否供 UGC 使用仍由上架决定。'
             } />
           </div>
           <div className="space-y-0.5">
             {([
               ['all', '全部', data?.total_objects],
-              ['orphan', '未纳管（可导入）', data?.orphans],
+              ['orphan', '云端未归档（可回填）', data?.orphans],
               ['cloud', '云端已发布', data?.cloud],
               ['in_library', '已入库（本机）', data?.in_library],
             ] as [OnlyFilter, string, number | undefined][]).map(([f, label, n]) => (
@@ -217,7 +219,7 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
               onClick={() => importAll.mutate()}
               title={!projectId ? '请先选择项目' : ''}>
               {importAll.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : <CloudDownload size={12} className="mr-1" />}
-              导入全部未纳管（{(data?.orphans ?? 0).toLocaleString()}）
+              回填全部未归档（{(data?.orphans ?? 0).toLocaleString()}）
             </Button>
             <button onClick={() => rescan.mutate()} disabled={rescan.isPending}
               className="flex items-center gap-1 px-2 py-1 text-[12px] rounded text-foreground/65 hover:bg-foreground/[0.05] disabled:opacity-50">
@@ -244,7 +246,7 @@ export function OssLibraryTab({ projectId }: { projectId: string | null }) {
               <span className="text-foreground/65">已选 {selected.size} 张</span>
               {selOrphan.length > 0 && (
                 <Button onClick={() => importKeys.mutate(selOrphan.map((i) => i.object_key))} disabled={!projectId || importKeys.isPending}>
-                  <CloudDownload size={12} className="mr-1" /> 导入库外（{selOrphan.length}）
+                  <CloudDownload size={12} className="mr-1" /> 回填到资产库（{selOrphan.length}）
                 </Button>
               )}
               {selInLib.length > 0 && <>
@@ -381,7 +383,7 @@ function CloudImageInspector({ item }: { item: OssObjectItem }) {
 
         <div className="flex flex-wrap gap-1">
           <Tag tone={d?.review_status === 'approved' || item.review_status === 'approved' ? 'ok' : 'muted'}>
-            {(d?.review_status || item.review_status) === 'approved' ? '已审核' : '待审核'}
+            {(d?.review_status || item.review_status) === 'approved' ? '已入图库' : '未归入图库'}
           </Tag>
           <Tag tone={(d?.is_listed ?? item.is_listed) ? 'accent' : 'muted'}>
             {(d?.is_listed ?? item.is_listed) ? '已上架' : '未上架'}
@@ -450,10 +452,10 @@ function OssCell({
           selected ? 'bg-accent border-accent text-white' : 'border-white/70 bg-black/20 opacity-0 group-hover:opacity-100')}>
         {selected && <Check size={10} strokeWidth={3} />}
       </button>
-      {/* 状态角标:未纳管(橙) / 云端已发布(蓝+审核态) / 本机(审核+上架) */}
+      {/* 状态角标:云端未归档(橙) / 云端已发布(蓝) / 本机(图库状态+上架) */}
       <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5 items-end">
         {item.status === 'orphan' ? (
-          <Tag tone="warn">未纳管</Tag>
+          <Tag tone="warn">未归档</Tag>
         ) : item.status === 'cloud' ? <>
           <Tag tone="info">云端</Tag>
           {typeof item.cloud_tag_count === 'number' && item.cloud_tag_count > 0 && (
@@ -462,15 +464,15 @@ function OssCell({
           <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
         </> : <>
           <Tag tone={item.review_status === 'approved' ? 'ok' : item.review_status === 'rejected' ? 'bad' : 'muted'}>
-            {item.review_status === 'approved' ? '已审' : item.review_status === 'rejected' ? '拒' : '待审'}
+            {item.review_status === 'approved' ? '已入图库' : item.review_status === 'rejected' ? '已退回' : '未确认'}
           </Tag>
           <Tag tone={item.is_listed ? 'accent' : 'muted'}>{item.is_listed ? '已上架' : '未上架'}</Tag>
         </>}
       </div>
-      {/* hover 动作:未纳管→导入+删;本机→上下架+删;云端→无(去详情看远端信息) */}
+      {/* hover 动作:未归档→回填+删;本机→上下架+删;云端→无 */}
       <div className="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
         {item.status === 'orphan' ? (
-          <ActionBtn onClick={onImport} disabled={busy}><CloudDownload size={10} /> 导入</ActionBtn>
+          <ActionBtn onClick={onImport} disabled={busy}><CloudDownload size={10} /> 回填</ActionBtn>
         ) : item.status === 'local' ? (
           <ActionBtn onClick={() => onListing(!item.is_listed)} disabled={busy}>
             {item.is_listed ? <><EyeOff size={10} /> 下架</> : <><Eye size={10} /> 上架</>}
@@ -504,12 +506,12 @@ function OssOrphanInspector({ item, projectId, onImport, onDelete, importing }: 
         </div>
         <div>
           <h3 className="text-[13px] font-medium text-foreground/85 break-all leading-tight">{name}</h3>
-          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">未纳管（任何电脑都没导入过）</p>
+          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">云端未归档（OSS 有文件，本机无记录）</p>
         </div>
         {item.status === 'orphan' && (
           <Button block onClick={onImport} disabled={!projectId || importing}>
             {importing ? <Loader2 size={12} className="animate-spin mr-1.5" /> : <CloudDownload size={12} className="mr-1.5" />}
-            导入到灵图库（待审核）
+            回填到本地资产库
           </Button>
         )}
         {item.status === 'orphan' && (
@@ -520,12 +522,12 @@ function OssOrphanInspector({ item, projectId, onImport, onDelete, importing }: 
           </button>
         )}
         <div className="text-[11px] text-foreground/45 leading-relaxed">
-          导入后默认「待审核 + 未上架」，自动派发向量与打标；到「审核」通过并上架后才进入 UGC 匹配候选池。
+          回填会建立本地记录并下载原文件，直接归入图库但默认未上架；文件不会重复上传，UGC 是否可用仍由上架状态决定。
         </div>
         <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.05] px-2.5 py-2 text-[11px] text-foreground/55 leading-relaxed">
           <b className="text-amber-700 dark:text-amber-400">为什么没有打标信息?</b><br />
-          这张图<b>任何电脑都没导入过</b>,本机和云端都没有它的标签。
-          如果同事已在别的电脑打标:请确认那台电脑上这张图走完了<b>审核通过</b>(=发布到云端),
+          这张图<b>尚未回填到灵图</b>，本机没有它的标签记录。
+          如果同事已在别的电脑打标:请确认那台电脑上这张图已<b>上传到图库</b>(=发布到云端),
           本机最多 10 分钟后自动显示,或点上方「重新扫描」立即刷新。
         </div>
         <div className="pt-2 border-t border-foreground/5">

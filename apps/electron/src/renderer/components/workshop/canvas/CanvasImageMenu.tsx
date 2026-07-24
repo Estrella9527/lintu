@@ -12,7 +12,7 @@ export interface CanvasImageMenuState {
 }
 
 /**
- * 画布图片右键菜单 — 保存原图 / 复制图片 / 加入资产库。
+ * 画布图片右键菜单 — 保存原图 / 复制图片 / 上传到图库。
  *
  * 用 fixed 定位贴着鼠标弹出;点外部 / Esc / 滚轮 关闭。
  * 复制走主进程剪贴板(nativeImage),外部应用可直接粘贴位图;
@@ -94,10 +94,10 @@ export function CanvasImageMenu({
   const addToLibrary = async () => {
     onClose()
     try {
-      await api.images.setLibrary([menu.imageId], true)
-      toast.success('已加入资产库')
+      await api.images.publishToLibrary([menu.imageId])
+      toast.success('已上传到图库，压缩完成后将自动同步 OSS')
     } catch (e) {
-      toast.error(`加入资产库失败:${(e as Error).message}`)
+      toast.error(`上传到图库失败:${(e as Error).message}`)
     }
   }
 
@@ -129,7 +129,7 @@ export function CanvasImageMenu({
       </button>
       <div className="my-1 h-px bg-foreground/8" />
       <button className={itemCls} onClick={addToLibrary}>
-        <FolderPlus size={13} className="text-foreground/55" /> 加入资产库
+        <FolderPlus size={13} className="text-foreground/55" /> 上传到图库
       </button>
     </div>
   )

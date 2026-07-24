@@ -672,7 +672,7 @@ class BatchScheduler:
                 # surfaces generated images under the same attraction.
                 relative_dir=seed_relative_dir,
                 generation_metadata=gen_meta,
-                # AI 生成图 = 本地态,不进审批、不碰 OSS。运营满意后手动上传才进审批流。
+                # AI 生成图 = 本地态,不进图库、不碰 OSS。用户满意后手动上传到图库。
                 review_status="local",
                 is_listed=False,
                 in_library=False,
@@ -694,8 +694,8 @@ class BatchScheduler:
             )
             await db.commit()
 
-        # 治理策略:生成图 = 本地态,不自动上 OSS。运营手动「加入资产库」+「上传」
-        # 经审核通过 + 打标门禁后才上云。此处不再入队。
+        # 生成图默认仍是本地草稿，不自动上 OSS。用户如需发布，可明确「上传到图库」；
+        # 该入口会直接走压缩 + OSS 同步。
 
         async with state.lock:
             state.completed += 1

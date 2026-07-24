@@ -35,7 +35,7 @@ interface HistoryPanelProps {
  *      没选中时跳过这一区,直接显历史
  *   2. 「最近生成」滚动列表 — 项目内 source_type='generated' 的图,30 张,按 created_at desc
  *      点条目 → 把这张图加到画布(视口中心),让用户可追溯历史成果
- *   3. 底部:加入资产库 / 存为策略
+ *   3. 底部:上传到图库 / 存为策略
  *
  * 数据源:复用 /api/images?source_type=generated&project_id=... — 后端已有,
  * 我们生成的每张图都自动入了 ImageRecord(source_type='generated'),所以无需新表。
@@ -109,17 +109,15 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
     setSelectedId(null)
   }
 
-  const submitToReview = async () => {
+  const publishToLibrary = async () => {
     if (!selectedImage) return
     try {
-      // 加入资产库:置 in_library=True(后端会把原本不在库的图入队推 OSS)。
-      // 进库后即出现在「资产库」,可继续走审核 / 上架参与 UGC。
-      await api.images.setLibrary([selectedImage.image_id], true)
-      toast.success('已加入资产库', {
+      await api.images.publishToLibrary([selectedImage.image_id])
+      toast.success('已上传到图库，压缩完成后将自动同步 OSS', {
         action: { label: '去资产库', onClick: () => setActiveModule('asset-library') },
       })
     } catch (e) {
-      toast.error(`加入资产库失败:${(e as Error).message}`)
+      toast.error(`上传到图库失败:${(e as Error).message}`)
     }
   }
 
@@ -262,10 +260,10 @@ export function HistoryPanel({ canvasSnapshot }: HistoryPanelProps) {
             variant="outline" size="sm"
             className="flex-1 h-8 text-[12px]"
             disabled={!selectedImage}
-            onClick={() => void submitToReview()}
-            title={selectedImage ? '把当前选中对象加入审核队列' : '先选中画布上一张图'}
+            onClick={() => void publishToLibrary()}
+            title={selectedImage ? '将当前选中对象上传到图库（压缩完成后自动同步 OSS）' : '先选中画布上一张图'}
           >
-            加入资产库
+            上传到图库
           </Button>
           <Button
             size="sm"

@@ -149,27 +149,30 @@ class DecideBody(BaseModel):
 async def _apply_decision(
     db: AsyncSession, image_ids: list[str], decision: str, reviewer_id: Optional[str],
 ) -> int:
-    """把审核结论应用到一批图,并触发上云/撤下副作用。返回实际更新数。
+    """把审核结论应用到一批**待审核**图，并触发上云副作用。返回实际更新数。
 
     治理策略(审核 ≠ UGC 上架):
       - 通过(approved) → 图进正式素材库 → 推 OSS 文件 + 推云端元数据,
         供 UGC 后台同步并【自行选择上架】。**不自动动 is_listed**——是否被 UGC
         调用由 UGC 后台的上架决定,不是审核这一步。
-      - 拒绝(rejected) → 移出正式库(is_listed=False);原本已发布的推云端删除(墓碑)。
+      - 拒绝(rejected) → 移出正式库(is_listed=False)。
       - 跳过(skipped)  → 只记审核态,保持暂存,下次仍在队列。
+
+    API 只消费 review_status='pending' 的记录，避免陈旧的前端选中状态或误调用
+    把已经通过、已拒绝的图再次改写，进而意外触发 OSS 发布。
     """
     if not image_ids:
         return 0
     now = datetime.utcnow()
-
-    prev_approved: list[str] = []
-    if decision == "rejected":
-        prev_approved = [
-            r[0] for r in (await db.execute(
-                select(Image.id).where(Image.id.in_(image_ids))
-                .where(Image.review_status == "approved")
-            )).all()
-        ]
+    pending_ids = [
+        row[0] for row in (await db.execute(
+            select(Image.id)
+            .where(Image.id.in_(image_ids))
+            .where(Image.review_status == "pending")
+        )).all()
+    ]
+    if not pending_ids:
+        return 0
 
     values: dict = {
         "review_status": decision,
@@ -180,7 +183,7 @@ async def _apply_decision(
         values["is_listed"] = False  # 退回顺带移出匹配池,但通过不自动上架
 
     result = await db.execute(
-        update(Image).where(Image.id.in_(image_ids)).values(**values)
+        update(Image).where(Image.id.in_(pending_ids)).values(**values)
     )
     await db.commit()
     updated = result.rowcount or 0
@@ -190,13 +193,9 @@ async def _apply_decision(
             # 审核通过 = 可上 OSS(门禁已改为 review_status=='approved')+ 推云端
             from sidecar.engines.oss_sync import enqueue_image_sync
             from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
-            for iid in image_ids:
+            for iid in pending_ids:
                 await enqueue_image_sync(iid)
                 await enqueue_image_upsert(iid)
-        elif prev_approved:
-            from sidecar.scheduler.cloud_sync_worker import enqueue_image_delete
-            for iid in prev_approved:
-                await enqueue_image_delete(iid)
     except Exception as e:
         logger.debug("review decision side-effect failed: %s", e)
 
@@ -276,9 +275,12 @@ async def batch_decide(body: BatchDecideBody, request: Request, db: AsyncSession
     """整批审核:通过 / 退回(拒绝) / 跳过 一整个上传批次。"""
     if body.decision not in VALID_DECISIONS:
         raise HTTPException(400, f"decision must be one of {VALID_DECISIONS}")
+    # 整批操作也只能处理仍在待审核队列里的图；已经通过/退回的图不被回写。
     ids = [
         r[0] for r in (await db.execute(
-            select(Image.id).where(Image.upload_batch_id == body.upload_batch_id)
+            select(Image.id)
+            .where(Image.upload_batch_id == body.upload_batch_id)
+            .where(Image.review_status == "pending")
         )).all()
     ]
     if not ids:

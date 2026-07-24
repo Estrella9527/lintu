@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sidecar.config import THUMBNAILS_DIR
-from sidecar.db.models import Image, Project, Tag, UploadBatch
+from sidecar.db.models import Image, Project, Tag, Task, UploadBatch
 from sidecar.db.session import get_db
 from sidecar.engines.image_utils import compute_perceptual_hashes, effective_file_path
 from sidecar.engines.oss_sync import enqueue_image_sync
@@ -364,10 +364,8 @@ async def _refresh_tag_state(db: AsyncSession, image_id: str) -> None:
         await enqueue_image_upsert(image_id)
     except Exception as e:
         logger.debug("cloud sync enqueue (tags) failed for %s: %s", image_id, e)
-    # 审核/打标配合的自愈闭环:若这张图已审核通过,补齐标签后自动补传 OSS。
-    # 上 OSS 需"审核通过 + 必填维度打全"两个条件都满足;审核通过时若还没打标,
-    # 那一刻 enqueue 被门禁挡住;此处在打标完成时再触发一次,门禁通过即上传。
-    # (谁后满足谁触发,审核/打标先后无所谓,不会漏图。)
+    # 标签更新后顺手重试一次 OSS 入队。当前标签不再阻塞图库发布；这里保留
+    # 幂等重试，覆盖历史记录或此前压缩尚未就绪的情况。
     if img.review_status == "approved":
         try:
             from sidecar.engines.oss_sync import enqueue_image_sync
@@ -388,9 +386,9 @@ async def _image_tags_payload(db: AsyncSession, image_id: str) -> dict:
 class ImagePatchBody(BaseModel):
     """Lightweight PATCH for single-image field updates.
 
-    review_status — 推到审核队列 / 改审核态。
-    is_listed     — 上架 / 下架(决定是否进 UGC 匹配候选池,与审核正交)。
-    in_library    — 加入 / 移出资产库(画布草稿 → 入库);置 True 时入队推 OSS。"""
+    review_status — 兼容历史审核记录的状态字段；新上传请使用 /images/publish。
+    is_listed     — 上架 / 下架(决定是否进 UGC 匹配候选池,与图库上传正交)。
+    in_library    — 仅变更资产库成员标记；不会自动触发 OSS。"""
     review_status: Optional[str] = None
     is_listed: Optional[bool] = None
     in_library: Optional[bool] = None
@@ -417,7 +415,7 @@ async def patch_image(
     if body.in_library is not None:
         img.in_library = body.in_library
     await db.commit()
-    # 治理策略:加入资产库 = 只是本地库成员,**不自动上 OSS**。上 OSS 只经「上传→审核」。
+    # 仅改成员状态不会自动上 OSS；正式发布统一走「上传到图库」(/images/publish)。
     # 状态变更推云端(多人协作:上下架/入库态跨端流转;非 approved 会被 push 过滤)
     if body.review_status is not None or body.is_listed is not None or body.in_library is not None:
         try:
@@ -436,8 +434,9 @@ class LibraryBody(BaseModel):
 
 @router.post("/batch/library")
 async def batch_set_library(body: LibraryBody, db: AsyncSession = Depends(get_db)):
-    """批量加入 / 移出资产库(仅本地库成员标记)。治理策略:加入资产库**不上 OSS**,
-    上 OSS 只经「上传 → 审核」。"""
+    """批量加入 / 移出资产库(仅本地库成员标记，不触发 OSS)。
+
+    需要发布时请调用 /images/publish，避免把纯本地草稿误上传。"""
     if not body.image_ids:
         return {"ok": True, "updated": 0}
     rows = (await db.execute(
@@ -552,8 +551,8 @@ async def crop_image(image_id: str, body: CropBody, db: AsyncSession = Depends(g
     img.updated_at = datetime.utcnow()
     await db.commit()
 
-    # 治理策略:裁切 = 本地编辑,**不自动上 OSS、不推云端**。OSS/云端保留上次上传的
-    # 版本;要让裁切后的新版本上云,须重走「上传 → 审核」流程。
+    # 裁切 = 本地编辑，OSS/云端保留上次发布版；用户可在资产库明确「上传到图库」
+    # 来生成新发布版并同步，避免编辑时误上传。
     return {"ok": True, "width": new_w, "height": new_h}
 
 
@@ -990,6 +989,58 @@ async def batch_update_status(
 _UPLOAD_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".bmp", ".tiff", ".tif"}
 _UPLOAD_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB / file
 _UPLOAD_MAX_FILES_PER_REQUEST = 30
+_UPLOAD_COMPRESSION_PROFILE = "jpeg-q80-2400-v1"
+
+
+async def _queue_upload_compression(
+    db: AsyncSession,
+    images: list[Image],
+    *,
+    label: str,
+) -> str | None:
+    """Queue one idempotent compression task for upload/library images.
+
+    Existing queued/running work is left alone. A failed preprocessing row can
+    be submitted again to retry it, while an already materialized derivative is
+    simply marked ready. The caller owns the surrounding transaction.
+    """
+    image_ids: list[str] = []
+    for img in images:
+        compressed = getattr(img, "compressed_file_path", None)
+        if compressed and Path(compressed).exists():
+            img.compression_status = "ready"
+            img.compression_error = None
+            img.compression_profile = _UPLOAD_COMPRESSION_PROFILE
+            img.compressed_size_kb = int(Path(compressed).stat().st_size / 1024)
+            continue
+        if getattr(img, "compression_status", None) in {"queued", "running"}:
+            continue
+        img.compression_status = "queued"
+        img.compression_error = None
+        img.compression_profile = _UPLOAD_COMPRESSION_PROFILE
+        image_ids.append(img.id)
+
+    if not image_ids:
+        return None
+
+    task = Task(
+        project_id=images[0].project_id,
+        type="compress",
+        status="queued",
+        total=len(image_ids),
+        parameters=json.dumps({
+            "image_ids": image_ids,
+            "quality": 80,
+            "max_long_side": 2400,
+            "force": False,
+            "profile": _UPLOAD_COMPRESSION_PROFILE,
+            "label": label,
+            "trigger": "asset_upload",
+        }),
+    )
+    db.add(task)
+    await db.flush()
+    return task.id
 
 
 def _safe_ext(filename: str) -> str:
@@ -1015,6 +1066,64 @@ class SubmitBody(BaseModel):
     task_id: str = ""
 
 
+class PublishToLibraryBody(BaseModel):
+    image_ids: list[str]
+
+
+@router.post("/publish")
+async def publish_to_library(body: PublishToLibraryBody, db: AsyncSession = Depends(get_db)):
+    """把已有本地草稿明确上传到图库。
+
+    这是拖入新文件之外的唯一补入口，服务于画布草稿和旧版「仅保存本地」的
+    图片。用户在资产库多选并确认后，图片直接成为图库资产，压缩完成后自动
+    同步 OSS；不再创建审核批次，也不要求来源类型或标签齐全。
+    """
+    if not body.image_ids:
+        return {"ok": True, "published": 0, "requested": 0, "compression_task_id": None}
+
+    rows = (await db.execute(
+        select(Image).where(Image.id.in_(body.image_ids))
+    )).scalars().all()
+    if not rows:
+        return {
+            "ok": True,
+            "published": 0,
+            "requested": len(body.image_ids),
+            "compression_task_id": None,
+        }
+
+    changed = 0
+    for img in rows:
+        if not img.in_library or img.review_status != "approved":
+            img.in_library = True
+            img.review_status = "approved"
+            changed += 1
+
+    # 对已在图库、但压缩曾失败或文件被清理的图片也重试预处理；helper 会对
+    # ready/queued 记录幂等跳过，避免重复任务。
+    compression_task_id = await _queue_upload_compression(
+        db,
+        rows,
+        label=f"资产库补传 {len(rows)} 张 · 自动生成发布版",
+    )
+    await db.commit()
+
+    # 已经有压缩发布版的历史图片不会新建 compress task；提交后立即再试一次
+    # OSS 入队。仍在压缩的图片会由 compress engine 完成时自动接手。
+    for img in rows:
+        try:
+            await enqueue_image_sync(img.id)
+        except Exception as e:
+            logger.debug("oss enqueue (publish library) failed for %s: %s", img.id, e)
+
+    return {
+        "ok": True,
+        "requested": len(body.image_ids),
+        "published": changed,
+        "compression_task_id": compression_task_id,
+    }
+
+
 @router.post("/submit")
 async def submit_for_review(body: SubmitBody, request: Request, db: AsyncSession = Depends(get_db)):
     """「上传」动作:把选中的**本地态**图提交进审批流。
@@ -1029,12 +1138,23 @@ async def submit_for_review(body: SubmitBody, request: Request, db: AsyncSession
     if not body.image_ids:
         return {"ok": True, "submitted": 0}
 
-    rows = (await db.execute(
+    all_rows = (await db.execute(
         select(Image).where(Image.id.in_(body.image_ids))
-        .where(Image.review_status == "local")
     )).scalars().all()
+    rows = [img for img in all_rows if img.review_status == "local"]
+    status_counts: dict[str, int] = {}
+    for img in all_rows:
+        status = img.review_status or "local"
+        status_counts[status] = status_counts.get(status, 0) + 1
     if not rows:
-        return {"ok": True, "submitted": 0, "note": "选中的图都不在本地态,无需上传"}
+        return {
+            "ok": True,
+            "requested": len(body.image_ids),
+            "submitted": 0,
+            "skipped": len(body.image_ids),
+            "status_counts": status_counts,
+            "note": "选中的图都不在本地态,无需重复提交",
+        }
 
     _user = getattr(request.state, "user", None)
     project_id = rows[0].project_id
@@ -1068,10 +1188,19 @@ async def submit_for_review(body: SubmitBody, request: Request, db: AsyncSession
         if getattr(_user, "id", None):
             img.uploaded_by = _user.id
         img.in_library = True  # 提交上传即视为进资产库
+    compression_task_id = await _queue_upload_compression(
+        db,
+        rows,
+        label=f"上传批次 {batch.batch_no} · 自动生成发布版",
+    )
     await db.commit()
     return {
         "ok": True,
+        "requested": len(body.image_ids),
         "submitted": len(rows),
+        "skipped": max(0, len(body.image_ids) - len(rows)),
+        "status_counts": status_counts,
+        "compression_task_id": compression_task_id,
         "batch": {"id": batch.id, "batch_no": batch.batch_no, "source_channel": channel},
     }
 
@@ -1085,11 +1214,12 @@ async def upload_images(
     in_library: bool = Form(True),
     db: AsyncSession = Depends(get_db),
 ):
-    """导入图片到本地资产库(粘贴 / 拖入 / 选文件)。
+    """导入图片到图库(粘贴 / 拖入 / 选文件)。
 
-    治理策略:导入 ≠ 上传。导入只把图落到**本地态(review_status='local')**,
-    纯本地可用可编辑,**不进审批、不碰 OSS/云端**。要送审 + 上云,用户之后在
-    资产库选中图、点「上传」(见 /images/submit)。
+    用户在资产库确认「上传到图库」即是唯一的发布授权：原图先落在本地，
+    然后生成压缩发布版并自动同步 OSS。当前规模不走人工审核 / 标签门禁；
+    打标仅用于后续检索和匹配增强。画布草稿(in_library=False)仍保持本地态，
+    不入图库、更不触发 OSS。
 
     去重:md5(file_bytes) ⊆ 现有项目图;重复直接返回已有行(镜像 scan)。
     """
@@ -1135,7 +1265,9 @@ async def upload_images(
     created: list[Image] = []
     duplicate_existing: list[Image] = []
     skipped_invalid: list[dict] = []
-    new_ids_for_sync: list[str] = []
+    # 新图 + 同 hash 的历史本地图，统一确保有压缩发布任务。dict 去重，避免
+    # 用户一次选中相同文件两遍时重复建任务。
+    library_candidates: dict[str, Image] = {}
 
     for f in files:
         ext = _safe_ext(f.filename or "image.png")
@@ -1156,7 +1288,14 @@ async def upload_images(
 
         file_hash = hashlib.md5(data).hexdigest()
         if file_hash in existing_by_hash:
-            duplicate_existing.append(existing_by_hash[file_hash])
+            existing = existing_by_hash[file_hash]
+            duplicate_existing.append(existing)
+            if in_library:
+                # 新流程不再要求「提交审核」。把旧的 local/pending/rejected
+                # 记录再次明确上传到图库时，直接纳入图库并恢复自动发布链路。
+                existing.in_library = True
+                existing.review_status = "approved"
+                library_candidates[existing.id] = existing
             continue
 
         # Use the hash as the filename to keep collisions impossible without
@@ -1190,13 +1329,12 @@ async def upload_images(
             height=height,
             file_size_kb=len(data) // 1024,
             # User-initiated uploads bypass auto QC — they wanted this image.
-            # Stays subject to the 审核 review_status flow if pending matters.
+            # 用户主动确认上传图库即是发布授权；画布草稿仍保持 local。
             quality_status="passed",
             tag_status="pending",
             source_type="original",
             in_library=in_library,
-            # 导入 = 本地态,不进审批、不碰 OSS。来源渠道/批次在「上传」时才登记。
-            review_status="local",
+            review_status="approved" if in_library else "local",
             is_listed=False,
             uploaded_by=uploader_id,
             relative_dir=rel_dir,
@@ -1204,12 +1342,21 @@ async def upload_images(
         db.add(img)
         existing_by_hash[file_hash] = img
         created.append(img)
+        if in_library:
+            library_candidates[img.id] = img
 
-    if created:
+    compression_task_id: str | None = None
+    if created or library_candidates:
         await db.flush()
+        if in_library:
+            compression_task_id = await _queue_upload_compression(
+                db,
+                list(library_candidates.values()),
+                label=f"上传图库 {len(library_candidates)} 张 · 自动生成发布版",
+            )
         await db.commit()
-        # 治理策略:导入只落本地态,此刻【不】建批次、【不】进审批、【不】碰 OSS。
-        # 用户之后在资产库选中图点「上传」(/images/submit)才登记批次并送审。
+        # 原图已原子落入项目 uploads 目录；资产图库上传会立即生成本地压缩
+        # 发布版。压缩完成时由 compress engine 自动提交 OSS 同步队列。
 
     return {
         "ok": True,
@@ -1220,6 +1367,7 @@ async def upload_images(
         "skipped_duplicates": len(duplicate_existing),
         "duplicate_images": [_image_to_dict(img) for img in duplicate_existing],
         "skipped_invalid": skipped_invalid,
+        "compression_task_id": compression_task_id,
         "images": [_image_to_dict(img) for img in created],
     }
 
@@ -1247,6 +1395,12 @@ def _image_to_dict(img: Image) -> dict:
         "relative_dir": img.relative_dir or "",
         "orient_status": img.orient_status or "none",
         "rotated_file_path": img.rotated_file_path,
+        "compressed_file_path": img.compressed_file_path,
+        "compression_status": getattr(img, "compression_status", None),
+        "compression_error": getattr(img, "compression_error", None),
+        "compression_profile": getattr(img, "compression_profile", None),
+        "compressed_size_kb": getattr(img, "compressed_size_kb", None),
+        "cdn_path": img.cdn_path,
         "parent_id": img.parent_id,
         # 来源追溯(治理策略第一期)
         "uploaded_by": getattr(img, "uploaded_by", None),

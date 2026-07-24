@@ -13,6 +13,7 @@ interface UploadResponseChunk {
   duplicate_images?: ImageRecord[]
   skipped_invalid: Array<{ name: string; reason: string }>
   images: ImageRecord[]
+  compression_task_id?: string | null
 }
 
 export interface UploadResult {
@@ -23,6 +24,8 @@ export interface UploadResult {
   duplicate_images: ImageRecord[]
   skipped_duplicates: number
   skipped_invalid: Array<{ name: string; reason: string }>
+  /** 网络/服务端异常而没有完成本地落盘的原始 File；调用方应保留它们供用户重试。 */
+  failedFiles: File[]
 }
 
 export interface UseUploadImagesOptions {
@@ -31,7 +34,7 @@ export interface UseUploadImagesOptions {
   /** 上传成功(整体或单批)后回调,方便宿主刷新列表 / 自动选中等 */
   onSuccess?: (result: UploadResult) => void
   /** 是否直接进资产库。资产库页上传 = true(默认);AI 工坊画布拖入 = false
-   *  (只作画布草稿,不进资产库列表、不推 OSS,需手动「加入资产库」)。 */
+   *  (只作画布草稿,不进资产库列表、不推 OSS,需手动「上传到图库」)。 */
   inLibrary?: boolean
 }
 
@@ -43,9 +46,8 @@ export interface UseUploadImagesOptions {
  *   - 多并发 = 进度反馈更及时,toast 能滚动告诉用户"已完成 X / Y"
  *   - 单批失败不影响其他批(retry 单批就够)
  *
- * 不做的事:
- *   - 不写文件压缩 / 缩放;后端 OSS 阶段已有完整压缩 pipeline
- *   - 不做断点续传;移动到 Phase 2 再说
+ * 每个成功落库的资产图库分块，后端会立即排队生成压缩发布版；压缩完成后自动
+ * 交给 OSS 同步。画布草稿(inLibrary=false)仍只保存在本地，绝不触发 OSS。
  */
 const CHUNK_SIZE = 30
 const CONCURRENCY = 4
@@ -57,10 +59,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
   // 防止用户连点上传时 UI state 被旧批次踩;每次上传开新的 toast id
   const toastIdRef = useRef<string | number | null>(null)
 
-  const upload = useCallback(async (
-    files: File[],
-    meta?: { sourceChannel?: string; uploadBatchId?: string },
-  ): Promise<UploadResult | null> => {
+  const upload = useCallback(async (files: File[]): Promise<UploadResult | null> => {
     if (!projectId) {
       toast.error('请先选择一个项目再上传图片')
       return null
@@ -89,6 +88,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
       uploaded: 0,
       skipped_duplicates: 0,
       skipped_invalid: [],
+      failedFiles: [],
     }
 
     // 自己实现的轻量级 concurrency 池 — 不引外部依赖
@@ -105,9 +105,6 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
           const form = new FormData()
           form.append('project_id', projectId!)
           form.append('in_library', String(inLibrary))
-          // 来源追溯:资产库上传带来源渠道 + 同一批次 id(各分块共用一个批次)
-          if (meta?.sourceChannel) form.append('source_channel', meta.sourceChannel)
-          if (meta?.uploadBatchId) form.append('upload_batch_id', meta.uploadBatchId)
           for (const f of chunk) {
             // 客户端没法保证文件名唯一(同截图重复粘贴),后端按 hash 命名落盘,
             // 不会真冲突 — 这里把 filename 传过去只是给后端在 UI / log 里有名字。
@@ -131,7 +128,10 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
           }
         } catch (e) {
           firstError = firstError || (e as Error)
-          // 单批失败仍把该批所有文件算进 done(进度条不卡住),但其他批继续
+          // 单批失败仍把该批所有文件算进 done(进度条不卡住),但其他批继续。
+          // 关键是把原始 File 交回宿主保留在上传面板，不能让用户以为失败的
+          // 文件已经被保存或悄悄丢失了。
+          aggregate.failedFiles.push(...chunk)
         } finally {
           doneFiles += chunk.length
           setProgress({ done: doneFiles, total: list.length })
@@ -144,6 +144,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
 
     try {
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, worker))
+
     } finally {
       setUploading(false)
       const id = toastIdRef.current
@@ -152,7 +153,7 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
         // TS 在 closure 里赋值的 let 变量,narrow 完会把它降级成 never;
         // 上面 truthy 检查已经排除 null,这里用非空断言告诉 TS"信我".
         const err = firstError as Error
-        const msg = `上传部分失败:${err.message}`
+        const msg = `上传部分失败：${err.message}；${aggregate.failedFiles.length} 张仍保留，可直接重试`
         if (id != null) toast.error(msg, { id })
         else toast.error(msg)
       } else {
@@ -161,10 +162,10 @@ export function useUploadImages(opts: UseUploadImagesOptions) {
         // - 全是已有 → "N 张已在资产库,直接选中即可"(让用户知道不是失败)
         // - 混合 → 拆开说
         const parts: string[] = []
-        if (aggregate.uploaded) parts.push(`新上传 ${aggregate.uploaded} 张`)
-        if (aggregate.skipped_duplicates) parts.push(`${aggregate.skipped_duplicates} 张已在资产库`)
+        if (aggregate.uploaded) parts.push(inLibrary ? `已入图库 ${aggregate.uploaded} 张` : `已保存草稿 ${aggregate.uploaded} 张`)
+        if (aggregate.skipped_duplicates) parts.push(`${aggregate.skipped_duplicates} 张${inLibrary ? '已在图库' : '已存在'}`)
         if (aggregate.skipped_invalid.length) parts.push(`拒绝 ${aggregate.skipped_invalid.length} 张`)
-        const text = parts.length ? `上传完成:${parts.join(' · ')}` : '没有可上传的图'
+        const text = parts.length ? `上传完成：${parts.join(' · ')}` : '没有可上传的图'
         if (id != null) toast.success(text, { id })
         else toast.success(text)
       }

@@ -74,10 +74,10 @@ class Image(Base):
 
     # 图片生命周期状态(治理策略:导入≠上传)。默认 `local`:任何来源导入/生成/
     # 编辑产物都先落"本地态",纯本地可用可编辑,**不进审批队列、不碰 OSS/云端**。
-    # 只有用户手动点「上传」才 local→pending 进审批流。
-    #   local    — 本地资产库,未提交上传(默认);不展示为特殊状态
-    #   pending  — 已点上传,进审批队列待审
-    #   approved — 审核通过;满足打标门禁后上 OSS + 同步云端
+    # 用户确认「上传到图库」即直接写 approved，随后压缩并同步 OSS。
+    #   local    — 本地草稿 / 未确认入图库的历史记录
+    #   pending  — 历史审核流或需要人工复核的特殊记录
+    #   approved — 图库正式资产，可上 OSS + 同步云端
     #   rejected — 退回;移出匹配、不上云
     #   skipped  — 审核时暂缓;留在审批队列
     # 注:存量行仍是 approved(DB 里已是),不受此默认变更影响。
@@ -95,8 +95,8 @@ class Image(Base):
 
     # 是否进「资产库」—— 与 review/listing 正交。AI 工坊生成图、拖到画布的本地图
     # 默认 in_library=False(只是画布草稿:本地存、画布可用、历史可追溯,但不进
-    # 资产库列表、也不自动推 OSS)。运营点「加入资产库」后置 True → 进库 + 推 OSS
-    # → 进而可审核/上架/参与 UGC。流水线扫描 / 资产库直接上传 的图默认 True。
+    # 资产库列表、也不自动推 OSS)。用户点「上传到图库」后置 True，同时生成压缩
+    # 发布版并同步 OSS；UGC 仍需单独上架。流水线扫描 / 资产库直接上传的图默认 True。
     #   - 存量图迁移置 True(不回归)
     in_library = Column(Boolean, default=True, index=True)
 
@@ -143,6 +143,15 @@ class Image(Base):
     # sync uploads this when present to save bandwidth; local display/export
     # always reads the original via effective_file_path().
     compressed_file_path = Column(String)
+
+    # Upload preprocessing state. New files entering the asset library are
+    # compressed exactly once in the background before they can be published
+    # to OSS. NULL keeps historical rows backward-compatible (they may still
+    # publish their original bytes); new uploads use queued/running/ready/failed.
+    compression_status = Column(String, index=True)
+    compression_error = Column(Text)
+    compression_profile = Column(String)
+    compressed_size_kb = Column(Integer)
 
     # Public CDN object key (relative to oss_cdn_base). Populated by
     # OssSyncWorker after a successful upload; openapi_v1 prefers this over

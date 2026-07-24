@@ -61,6 +61,18 @@ def is_configured() -> bool:
     return all(creds[k] for k in ("access_key", "access_secret", "sign_name", "template_code"))
 
 
+def uses_local_debug_delivery() -> bool:
+    """Return True only when a non-user build deliberately writes codes locally.
+
+    Dev/ops without a configured SMS provider used to return a successful API
+    response after logging the code.  The router uses this flag to make that
+    fact explicit to the renderer, rather than falsely telling a developer
+    that their phone will receive a message.
+    """
+    is_user_flavor = os.environ.get("LINTU_BUILD_FLAVOR") == "user"
+    return not is_user_flavor and (SDK_IMPORT_ERROR is not None or not is_configured())
+
+
 def preflight() -> dict:
     """启动期诊断 — sidecar lifespan 调一次，把 SDK / 凭据状态打到日志。
     User flavor 没装 SDK 是发版事故，必须能从 sidecar 日志里看到。"""

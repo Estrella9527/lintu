@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ChevronsLeft,
   ChevronsRight,
-  ClipboardCheck,
   FlaskConical,
   FolderOpen,
   GitBranch,
@@ -36,7 +35,7 @@ interface NavGroup {
 }
 
 // 分组 + 排序按 v0.2 菜单方案：
-//   工作台（高频日常） · 6 项
+//   工作台（高频日常） · 5 项
 //   图片运营（中低频深度） · 3 项
 //   系统 · 1 项
 //
@@ -52,7 +51,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'ai-workshop',  title: 'AI工坊',   icon: Wand2 },
       { id: 'pipeline',     title: '流水线',   icon: GitBranch },
       { id: 'task-center',  title: '任务中心', icon: ListTodo },
-      { id: 'review-queue', title: '审核',     icon: ClipboardCheck },
     ],
   },
   {
@@ -86,20 +84,8 @@ export function LeftSidebar() {
     refetchInterval: 60_000,
     enabled: !!projectId,
   })
-  // Pending AI-generated images awaiting operator decision; drives the
-  // 「审核」 badge so the operator sees backlog without opening the page.
-  const { data: reviewCounts } = useQuery<Record<string, number>>({
-    queryKey: ['review-counts', projectId],
-    queryFn: () =>
-      apiFetchRaw(`/image-review/counts${projectId ? `?project_id=${projectId}` : ''}`)
-        .then((r) => r.json()),
-    refetchInterval: 60_000,
-    enabled: !!projectId,
-  })
-
   const recentBadges: Partial<Record<ModuleId, number>> = {
     'asset-library': recent?.generated || 0,
-    'review-queue':  reviewCounts?.pending || 0,
   }
 
   return (

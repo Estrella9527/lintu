@@ -9,7 +9,7 @@ import {
 import { activeModuleAtom } from '@/atoms/navigation'
 import { workshopModeAtom, workshopBatchDialogAtom } from '@/atoms/workshop'
 import { Button } from '@/components/ui/button'
-import { apiFetchRaw } from '@/lib/api'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -28,7 +28,7 @@ interface PropertyPanelProps {
  * Phase 1 内容:
  *   - 当前对象的元信息(名称 / 尺寸 / 种子)
  *   - 删除对象按钮
- *   - 页脚:存为策略 / 加入资产库
+ *   - 页脚:存为策略 / 上传到图库
  *
  * 当画布没选中对象时,显示空态提示。
  */
@@ -53,30 +53,19 @@ export function PropertyPanel({ canvasSnapshot, onTransferToBatch }: PropertyPan
     setSelectedId(null)
   }
 
-  // 「加入资产库」真流程:把当前对象的 image 改成 review_status='pending',让审核 module
-  // 接管。当前对象本身已经是 ImageRecord(画布上的图都在库里),这里只是把它从
-  // 「直接可用」转到「待审核」状态,符合 PRD §3.7 的语义。
-  const submitToReview = async () => {
+  // 画布草稿只有在用户明确点击时才会发布到图库；不再经过审核队列。
+  const publishToLibrary = async () => {
     if (!obj) return
     try {
-      const res = await apiFetchRaw(`/images/${obj.image_id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ review_status: 'pending' }),
-      })
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        toast.error(`加入审核队列失败:${text.slice(0, 120)}`)
-        return
-      }
-      toast.success('已加入审核队列', {
+      await api.images.publishToLibrary([obj.image_id])
+      toast.success('已上传到图库，压缩完成后将自动同步 OSS', {
         action: {
-          label: '去审核',
-          onClick: () => setActiveModule('review-queue'),
+          label: '去图库',
+          onClick: () => setActiveModule('asset-library'),
         },
       })
     } catch (e) {
-      toast.error(`加入审核队列失败:${(e as Error).message}`)
+      toast.error(`上传到图库失败:${(e as Error).message}`)
     }
   }
 
@@ -180,10 +169,10 @@ export function PropertyPanel({ canvasSnapshot, onTransferToBatch }: PropertyPan
             variant="outline" size="sm"
             className="flex-1 h-8 text-[12px]"
             disabled={!obj}
-            onClick={() => void submitToReview()}
-            title="把当前选中对象加入审核队列(review_status=pending)"
+            onClick={() => void publishToLibrary()}
+            title="将当前选中对象上传到图库（压缩完成后自动同步 OSS）"
           >
-            加入资产库
+            上传到图库
           </Button>
           <Button
             size="sm"

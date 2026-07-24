@@ -426,11 +426,23 @@ class APIClient {
         body: JSON.stringify({ image_ids: imageIds, is_listed: isListed }),
       }),
 
-    // 加入 / 移出资产库(批量)。加入时后端会把原本不在库的图入队推 OSS。
+    // 仅变更资产库归属；画布等本地草稿要发布时请调用 publishToLibrary。
     setLibrary: (imageIds: string[], inLibrary: boolean) =>
       this.request<{ updated: number }>('/images/batch/library', {
         method: 'POST',
         body: JSON.stringify({ image_ids: imageIds, in_library: inLibrary }),
+      }),
+
+    /** 明确把本地草稿 / 历史图片上传到图库，随后自动压缩并同步 OSS。 */
+    publishToLibrary: (imageIds: string[]) =>
+      this.request<{
+        ok: boolean
+        requested: number
+        published: number
+        compression_task_id: string | null
+      }>('/images/publish', {
+        method: 'POST',
+        body: JSON.stringify({ image_ids: imageIds }),
       }),
 
     // 批量移动到文件夹(逻辑分组,改 relative_dir)。folder="" = 移回根目录。
@@ -455,12 +467,6 @@ class APIClient {
         body: JSON.stringify(rect),
       }),
 
-    // 「上传」动作:把选中的本地态图提交进审批流(建批次 + local→pending + 写来源)。
-    submitForReview: (imageIds: string[], sourceChannel: string, note = '') =>
-      this.request<{ ok: boolean; submitted: number; batch?: { id: string; batch_no: string } }>('/images/submit', {
-        method: 'POST',
-        body: JSON.stringify({ image_ids: imageIds, source_channel: sourceChannel, note }),
-      }),
   }
 
   // ── OSS 图库(bucket 全量视图 + 反向导入)──
@@ -508,7 +514,13 @@ class APIClient {
   // ── Auth (用户系统 Phase 1) ──
   auth = {
     sendSms: (phone: string) =>
-      this.request<{ ok: boolean; ttl_sec: number }>('/auth/sms/send', {
+      this.request<{
+        ok: boolean
+        ttl_sec: number
+        /** local_debug 仅开发/运维环境无短信配置时返回，用户版永不返回。 */
+        delivery?: 'sms' | 'local_debug'
+        debug_code?: string
+      }>('/auth/sms/send', {
         method: 'POST',
         body: JSON.stringify({ phone }),
       }),

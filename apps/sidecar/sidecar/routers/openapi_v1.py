@@ -176,8 +176,8 @@ async def images_changes(
 
     复合游标 (updated_at, id) 分页,UGC 循环拉到 has_more=false,记 next_cursor 供下次。
     字段为 UGC 所需的裁剪版(无 embedding/phash 等内部字段)+ 绝对 CDN URL。
-    与桌面端「审核通过=发布上云」口径一致:云端只含已发布素材,review_status 多为
-    approved;下架走字段更新,删除/拒审走 deleted_ids。
+    与桌面端「确认上传图库=发布上云」口径一致:云端只含已发布素材,review_status
+    为 approved;下架走字段更新,删除/历史拒绝走 deleted_ids。
     """
     from datetime import datetime
     from sqlalchemy import and_, or_

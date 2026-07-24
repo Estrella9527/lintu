@@ -330,22 +330,44 @@ async def enqueue_image_sync(image_id: str, force: bool = False) -> int:
         if not img:
             return 0
 
-        # 【上云门禁① · 审核】只有「审核通过(review_status='approved')」的图才允许上 OSS。
-        # 含义:审核通过 = 图进正式素材库 = 可上 OSS(供 UGC 后台同步/选择)。与「上架
-        # (is_listed)」解耦——上架只决定 UGC 匹配调用。所有来源默认本地态(local),导入/
-        # 生成/编辑都不入队,只有手动「上传」→ 审核通过才上。force 重传同样受此约束。
+        # 【上云门禁】只有用户已确认进入图库的正式资产
+        # (兼容字段 review_status='approved')才允许上 OSS。画布草稿、生成草稿
+        # 和历史未确认记录仍不会入队。is_listed 继续只决定 UGC 是否参与匹配，
+        # 与文件同步解耦。
         if img.review_status != "approved":
-            logger.info("enqueue_image_sync 跳过 %s:未审核通过(review_status=%s),不上 OSS",
+            logger.info("enqueue_image_sync 跳过 %s:未确认上传图库(review_status=%s),不上 OSS",
                         image_id, img.review_status)
             return 0
 
-        # 【上云门禁② · 打标】必填维度(标签体系 required=True,如场景/季节/天气/视角/
-        # 人物)每个都至少有一个标签才允许上 OSS。缺标签的图挡在门外,避免污染 UGC 匹配。
-        from sidecar.engines.tag_completeness import missing_required_dims
-        missing = await missing_required_dims(db, image_id)
-        if missing:
-            logger.info("enqueue_image_sync 跳过 %s:必填维度未打全,缺 %s,不上 OSS",
-                        image_id, missing)
+        # New asset-library uploads must publish the prepared derivative, not
+        # race compression and silently fall back to the large original. NULL
+        # is reserved for historical rows and keeps their old fallback logic.
+        compression_status = getattr(img, "compression_status", None)
+        if compression_status in {"queued", "running"}:
+            logger.info(
+                "enqueue_image_sync 等待 %s:压缩发布版仍在处理(status=%s)",
+                image_id, compression_status,
+            )
+            return 0
+        if compression_status == "failed":
+            logger.warning(
+                "enqueue_image_sync 阻止 %s:压缩发布版失败(error=%s)",
+                image_id, getattr(img, "compression_error", None),
+            )
+            return 0
+        if compression_status == "ready":
+            compressed_path = getattr(img, "compressed_file_path", None)
+            if not compressed_path or not Path(compressed_path).exists():
+                logger.warning(
+                    "enqueue_image_sync 阻止 %s:状态 ready 但压缩文件不存在(path=%s)",
+                    image_id, compressed_path,
+                )
+                return 0
+
+        # OSS 回填记录引用的对象本来就在 bucket。状态确认后只需要后续的
+        # cloud metadata upsert，不能把同一文件重新上传一遍。
+        if img.source_type == "oss_import" and img.cdn_path and not force:
+            logger.info("enqueue_image_sync 跳过 %s:OSS 回填对象已存在(%s)", image_id, img.cdn_path)
             return 0
 
         if force:

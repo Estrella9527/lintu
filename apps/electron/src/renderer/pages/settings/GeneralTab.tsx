@@ -157,9 +157,9 @@ export function GeneralTab() {
         <div className="flex items-center gap-1.5 mb-3">
           <h3 className="text-[13px] font-medium text-foreground/80">多设备同步</h3>
           <InfoHint text={
-            '打开后,本机每 30 秒从云端拉回其他电脑上「已审核发布」的图片、标签和上下架状态。\n' +
-            '本机的审核发布始终会自动同步给其他电脑,此开关只控制"收不收别人的"。\n' +
-            '注意:协作约定是 打标 → 审核 在同一台电脑完成;审核通过即对全组织可见。'
+            '打开后,本机每 30 秒从云端拉回其他电脑上「已上传到图库」的图片、标签和上下架状态。\n' +
+            '本机上传图库后的发布始终会自动同步给其他电脑,此开关只控制"收不收别人的"。\n' +
+            '打标用于检索与匹配增强，不会阻塞图库同步；UGC 是否可用仍由“上架”决定。'
           } />
         </div>
         <div className="rounded-md border border-foreground/5 p-3 flex items-center justify-between gap-3">
@@ -172,7 +172,7 @@ export function GeneralTab() {
                 ? pullStatus?.last_at
                   ? `已开启 · 上次同步 ${new Date(pullStatus.last_at + 'Z').toLocaleString()}`
                   : '已开启 · 等待首次同步(最长 30 秒)'
-                : '未开启 · 本机看不到其他电脑的打标与审核结果'}
+                : '未开启 · 本机看不到其他电脑已上传图库的图片、标签与上架状态'}
             </p>
           </div>
           <Switch

@@ -241,7 +241,7 @@ export function CanvasStage() {
 
   const { upload } = useUploadImages({
     projectId,
-    inLibrary: false,  // 拖到自由画布的图只是草稿,不进资产库 / 不推 OSS,需手动「加入资产库」
+    inLibrary: false,  // 拖到自由画布的图只是草稿,不进资产库 / 不推 OSS,需手动「上传到图库」
     onSuccess: ({ images, duplicate_images }) => {
       // 新上传和已有同 hash 图都拉到画布(PRD §3.1:"拖入图片到画布 → 进入图生图")
       const all = [...images, ...duplicate_images]
@@ -258,7 +258,7 @@ export function CanvasStage() {
 
   // 「从资产库选择」 — 复用 SeedPickerDialog
   const [showPicker, setShowPicker] = useState(false)
-  // 图片右键菜单(复制 / 保存原图 / 加入资产库)
+  // 图片右键菜单(复制 / 保存原图 / 上传到图库)
   const [ctxMenu, setCtxMenu] = useState<CanvasImageMenuState | null>(null)
 
   // ── PR-9 画笔模式(inpaint / eraser) ───────────────────────────────────
@@ -708,7 +708,7 @@ export function CanvasStage() {
         }}
       />
 
-      {/* 图片右键菜单(复制 / 保存原图 / 加入资产库) */}
+      {/* 图片右键菜单(复制 / 保存原图 / 上传到图库) */}
       {ctxMenu && <CanvasImageMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />}
 
       <SeedPickerDialog

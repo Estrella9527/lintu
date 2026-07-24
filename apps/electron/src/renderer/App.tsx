@@ -173,7 +173,7 @@ export default function App() {
   }
 
   if (authState === 'guest') {
-    return <LoginPage onSuccess={handleLoginSuccess} />
+    return <LoginPage onSuccess={handleLoginSuccess} appVersion={appVersion} />
   }
 
   return (

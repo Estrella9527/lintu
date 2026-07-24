@@ -22,7 +22,7 @@ import os
 from pathlib import Path
 
 from PIL import Image as PILImage
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from sidecar.config import DERIVED_DIR
 from sidecar.db.models import Image, Task
@@ -152,6 +152,9 @@ async def run_compress(task: Task, progress_cb):
     quality: int = int(params.get("quality") or 80)
     max_long_side: int = int(params.get("max_long_side") or 2400)
     force: bool = bool(params.get("force") or False)
+    profile: str = str(
+        params.get("profile") or f"jpeg-q{quality}-{max_long_side or 'full'}-manual"
+    )
 
     if not image_ids:
         await progress_cb(total=0, processed=0)
@@ -186,7 +189,13 @@ async def run_compress(task: Task, progress_cb):
     async with async_session() as db:
         result = await db.execute(select(Image).where(Image.id.in_(image_ids)))
         images = result.scalars().all()
+        images_by_id = {img.id: img for img in images}
         total = len(images)
+        for img in images:
+            img.compression_status = "running"
+            img.compression_error = None
+            img.compression_profile = profile
+        await _safe_commit(db)
         await progress_cb(total=total, processed=0, ok=0, skipped=0, failed=0,
                           saved_kb_total=0)
 
@@ -207,29 +216,37 @@ async def run_compress(task: Task, progress_cb):
         for coro in asyncio.as_completed(tasks_iter):
             r = await coro
             idx += 1
+            img = images_by_id.get(r.get("img_id"))
 
             if r["ok"] and not r.get("skipped"):
                 ok_n += 1
                 saved_kb_total += r.get("saved_kb", 0)
                 # 只记压缩派生路径;原图的 file_size_kb / width / height 不动
                 #(它们描述原图,而原图没被改)。
-                await db.execute(
-                    update(Image).where(Image.id == r["img_id"])
-                    .values(compressed_file_path=r.get("dest"))
-                )
+                if img:
+                    img.compressed_file_path = r.get("dest")
+                    img.compression_status = "ready"
+                    img.compression_error = None
+                    img.compression_profile = profile
+                    img.compressed_size_kb = r.get("after_kb")
                 compressed_ids.append(r["img_id"])
             elif r["ok"] and r.get("skipped"):
                 skipped_n += 1
                 # skipped = 派生副本已存在。补记 compressed_file_path(老数据可能没记)
                 # + 补一次 OSS 入队(上次可能失败 / OSS 被清空)。
-                await db.execute(
-                    update(Image)
-                    .where(Image.id == r["img_id"], Image.compressed_file_path.is_(None))
-                    .values(compressed_file_path=r.get("dest"))
-                )
+                if img:
+                    img.compressed_file_path = img.compressed_file_path or r.get("dest")
+                    img.compression_status = "ready"
+                    img.compression_error = None
+                    img.compression_profile = profile
+                    img.compressed_size_kb = r.get("after_kb")
                 compressed_ids.append(r["img_id"])
             else:
                 failed_n += 1
+                if img:
+                    img.compression_status = "failed"
+                    img.compression_error = str(r.get("error") or "压缩失败")[:500]
+                    img.compression_profile = profile
                 logger.warning("compress failed %s: %s", r.get("img_id"), r.get("error"))
 
             # 每 20 张 commit + 进度上报 + 批量 enqueue OSS。
@@ -261,6 +278,12 @@ async def run_compress(task: Task, progress_cb):
             "compress task done: ok=%d skipped=%d failed=%d saved=%dKB (%.1fMB) parallel=%d",
             ok_n, skipped_n, failed_n, saved_kb_total, saved_kb_total / 1024, inner_parallel,
         )
+        if failed_n:
+            # 逐图失败不能再被调度器无条件包装成「已完成」。成功产物已经
+            # commit，并可继续发布；任务本身进入 failed，向用户暴露真实结果。
+            raise RuntimeError(
+                f"压缩完成但有 {failed_n}/{total} 张失败；成功 {ok_n}，已存在 {skipped_n}"
+            )
 
 
 async def _safe_commit(db, max_retry: int = 5) -> None:
@@ -281,9 +304,14 @@ async def _safe_commit(db, max_retry: int = 5) -> None:
 
 
 async def _batch_enqueue_oss(image_ids: list[str]) -> None:
-    """治理策略:压缩 = 本地编辑,**不再自动重传 OSS**。
+    """Offer ready derivatives to the governed OSS publication queue.
 
-    以前压缩完会 force 覆盖 OSS 原图 —— 违反"编辑留本地、不碰 OSS"原则,且会把
-    OSS 上的图悄悄换成压缩版。现在压缩只改本地派生文件;要让新版本上 OSS,须走
-    正常「上传 → 审核」流程。此函数保留为 no-op,避免改动多处调用点。"""
-    return
+    `enqueue_many` still enforces review approval and required-tag
+    completeness, so a local edit never publishes by itself. This closes the
+    race where approval happened while compression was still running.
+    """
+    if not image_ids:
+        return
+    from sidecar.engines.oss_sync import enqueue_many
+    jobs = await enqueue_many(image_ids)
+    logger.info("compress publish handoff: images=%d jobs=%d", len(image_ids), jobs)

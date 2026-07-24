@@ -1,12 +1,12 @@
 """OSS 反向导入 —— 让「OSS bucket 里的图」成为「灵图库的图」。
 
 UGC 需求(2026-06):OSS bucket 里有外部直传的图,灵图库里没有对应记录。
-这些图应当自动进入灵图库(默认待审核、未上架),运营审核+上架后参与 UGC 匹配。
+这些图回填后直接进入灵图库、保持未上架；用户明确上架后才参与 UGC 匹配。
 
 本模块提供:
   - scan_bucket()  : 列出 bucket 全部原图对象,标注每个对象「是否已入库 / 审核态 / 上架态」
-  - import_orphans(): 把库外对象下载到本地、建 Image 行(pending + 未上架,cdn_path=对象 key),
-                      并派发 embed + tag 任务,使其在审核+上架后能真正被匹配召回。
+  - import_orphans(): 把库外对象下载到本地、建 Image 行(图库已确认 + 未上架,cdn_path=对象 key),
+                      并派发 embed + tag 任务,使其在上架后能真正被匹配召回。
 
 对象命名约定(见 oss_sync.object_key_for):
   - 原图    : i/{image_id}.{ext}
@@ -425,7 +425,7 @@ async def cloud_image_detail(image_id: str) -> dict | None:
 
 
 async def import_orphans(project_id: str, object_keys: list[str] | None = None) -> dict:
-    """把库外对象导入灵图库(待审核 + 未上架),并派发 embed/tag 任务。
+    """把库外对象导入灵图库(直接入库 + 未上架),并派发 embed/tag 任务。
 
     object_keys 为空 → 导入 bucket 内全部库外对象;否则只导入指定的(且确为库外的)。
     返回 { imported, skipped, failed, image_ids[] }。
@@ -480,11 +480,10 @@ async def import_orphans(project_id: str, object_keys: list[str] | None = None) 
                     file_hash=file_hash,
                     width=w, height=h,
                     file_size_kb=local.stat().st_size // 1024,
-                    quality_status="passed",      # OSS 直传图视为已过质检
-                    # 【新规则】上传到 OSS = UGC 可用。导入即「审核通过 + 上架」,
-                    # 去掉人工卡审核、卡上传两道闸。运营如需剔除个别图,再手动下架。
-                    review_status="approved",      # 导入即视为已发布
-                    is_listed=True,                # 直接上架,进 UGC 候选池
+                    quality_status="passed",      # OSS 文件已能正常解码
+                    # 回填的文件已经在 OSS；直接确认归入图库，但绝不自动上架 UGC。
+                    review_status="approved",
+                    is_listed=False,
                     tag_status="pending",          # 标签后台补,不阻塞可用
                     source_type="oss_import",
                     cdn_path=key,                  # 已在 bucket,直接复用其 key 作 CDN
@@ -509,16 +508,6 @@ async def import_orphans(project_id: str, object_keys: list[str] | None = None) 
                     total=len(imported_ids),
                 ))
             await db.commit()
-
-    # 推送到云端 DB:导入图已是 approved+listed、文件已在 OSS(cdn_path 已设),
-    # 必须入队云端 upsert,UGC 才能看到。无需 OSS 上传(文件本就在桶里)。
-    if imported_ids:
-        try:
-            from sidecar.scheduler.cloud_sync_worker import enqueue_image_upsert
-            for iid in imported_ids:
-                await enqueue_image_upsert(iid)
-        except Exception:
-            logger.warning("导入图云端同步入队失败(可后续对账补推)", exc_info=True)
 
     return {"imported": len(imported_ids), "skipped": 0, "failed": failed, "image_ids": imported_ids}
 

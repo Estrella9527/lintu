@@ -141,7 +141,17 @@ async def sms_send(body: SmsSendBody, db: AsyncSession = Depends(get_db)):
             "code": "sms_send_failed",
             "message": err or "短信发送失败",
         })
-    return {"ok": True, "ttl_sec": SMS_CODE_TTL_SEC}
+    # 开发/运维环境没有配置短信通道时，provider 会有意把验证码写到本地
+    # 日志。必须把这个事实返回给 UI，避免页面提示“已发送”而用户一直等手机。
+    # user 版永不走该分支：凭据/SDK 异常会直接返回 502。
+    if sms_aliyun.uses_local_debug_delivery():
+        return {
+            "ok": True,
+            "ttl_sec": SMS_CODE_TTL_SEC,
+            "delivery": "local_debug",
+            "debug_code": code,
+        }
+    return {"ok": True, "ttl_sec": SMS_CODE_TTL_SEC, "delivery": "sms"}
 
 
 class SmsVerifyBody(BaseModel):
@@ -461,5 +471,4 @@ async def revoke_session(
         sess.revoked_at = datetime.utcnow()
         await db.commit()
     return {"ok": True}
-
 

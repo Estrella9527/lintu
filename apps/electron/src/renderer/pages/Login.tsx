@@ -1,12 +1,26 @@
+import { useEffect, useState } from 'react'
 import type { CurrentUser } from '@/atoms/auth'
 import { PhoneLoginForm } from '@/components/auth/PhoneLoginForm'
 import logoUrl from '@/assets/logo.png'
 
 interface Props {
   onSuccess: (user: CurrentUser) => void
+  appVersion?: string
 }
 
-export default function LoginPage({ onSuccess }: Props) {
+export default function LoginPage({ onSuccess, appVersion }: Props) {
+  const [version, setVersion] = useState(appVersion)
+
+  useEffect(() => {
+    setVersion(appVersion)
+  }, [appVersion])
+
+  useEffect(() => {
+    if (appVersion) return
+    const api = (window as any).updaterAPI
+    api?.getVersion?.().then((value: string) => setVersion(value)).catch(() => undefined)
+  }, [appVersion])
+
   return (
     <div className="relative flex h-full w-full overflow-hidden">
       {/* ── 背景：天空蓝渐变 + 浮云光晕 ────────────────────────────── */}
@@ -105,7 +119,7 @@ export default function LoginPage({ onSuccess }: Props) {
             登录即表示同意服务条款 · 登录态 30 天 · 活跃使用每 6 小时自动续期
           </p>
           <p className="text-[10px] text-foreground/35">
-            龙蟾科技 · Lintu v0.1.5
+            龙蟾科技 · Lintu {version ? `v${version}` : '版本读取中…'}
           </p>
         </footer>
       </main>

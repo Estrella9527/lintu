@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Check, ChevronRight, ClipboardCheck, Loader2, SkipForward, X } from 'lucide-react'
+import { Check, CheckSquare, ChevronRight, ClipboardCheck, Loader2, SkipForward, X } from 'lucide-react'
 
 import { activeProjectIdAtom } from '@/atoms/project'
 import { Button } from '@/components/ui/button'
@@ -140,6 +140,7 @@ export default function ReviewQueue() {
   const total = queueQuery.data?.total ?? 0
   const allSelected = items.length > 0 && items.every((it) => selected.has(it.id))
   const selectedCount = selected.size
+  const selectedOnPageCount = items.filter((it) => selected.has(it.id)).length
 
   const toggleOne = (id: string) => {
     const next = new Set(selected)
@@ -149,8 +150,14 @@ export default function ReviewQueue() {
   }
 
   const toggleAll = () => {
-    if (allSelected) setSelected(new Set())
-    else setSelected(new Set(items.map((it) => it.id)))
+    // 选中状态跨页保留：运营可以在多页里挑图，最后一次性批量审核。
+    // 因此「全选本页」只增删当前页，不应该清空其他页已选的图片。
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allSelected) items.forEach((it) => next.delete(it.id))
+      else items.forEach((it) => next.add(it.id))
+      return next
+    })
   }
 
   const onDecide = (decision: ReviewStatus, scope: 'selected' | 'all') => {
@@ -164,20 +171,6 @@ export default function ReviewQueue() {
     if (decision === 'rejected' && ids.length > 1) {
       const ok = window.confirm(`确定拒绝选中的 ${ids.length} 张图片？拒绝后将移出审核队列，不可批量撤销。`)
       if (!ok) return
-    }
-    // 审核-打标配合:通过时若有图必填标签没打齐,提示"通过后暂不会上 OSS,
-    // 补齐标签会自动补传"。不硬拦(允许先通过后补标),但要让运营心里有数。
-    if (decision === 'approved') {
-      const idset = new Set(ids)
-      const incomplete = items.filter((it) => idset.has(it.id) && it.tags_complete === false).length
-      if (incomplete > 0) {
-        const ok = window.confirm(
-          `选中的 ${ids.length} 张里有 ${incomplete} 张必填标签未打齐。\n\n` +
-          `通过后这 ${incomplete} 张暂时不会上 OSS/交给 UGC；等你把标签补齐,系统会自动补传。\n\n` +
-          `仍要通过吗？(建议先打标再通过)`
-        )
-        if (!ok) return
-      }
     }
     decide.mutate({ ids, decision })
   }
@@ -233,10 +226,32 @@ export default function ReviewQueue() {
 
         {status === 'pending' && (
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={allSelected ? 'secondary' : 'outline'}
+              onClick={toggleAll}
+              disabled={items.length === 0 || decide.isPending}
+              aria-pressed={allSelected}
+              title={allSelected ? '取消选择当前页的全部图片' : '选择当前页的全部待审核图片'}
+            >
+              <CheckSquare size={12} className="mr-1.5" />
+              {allSelected ? '取消本页全选' : `全选本页 (${items.length})`}
+            </Button>
             {selectedCount > 0 && (
-              <span className="text-[11px] text-foreground/55 mr-1">
-                已选 {selectedCount} 张
-              </span>
+              <>
+                <span className="text-[11px] text-foreground/55 mr-1">
+                  已选 {selectedCount} 张{selectedCount > selectedOnPageCount ? '（含其他页）' : ''}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelected(new Set())}
+                  disabled={decide.isPending}
+                  className="h-7 px-2 text-[11px] text-foreground/55"
+                >
+                  清空选择
+                </Button>
+              </>
             )}
             <Button
               size="sm"
@@ -290,18 +305,20 @@ export default function ReviewQueue() {
           <>
             {status === 'pending' && (
               <div className="flex items-center gap-3 mb-3">
-                <button
-                  onClick={toggleAll}
-                  className="text-[11.5px] text-foreground/65 hover:text-foreground/85"
-                >
-                  {allSelected ? '取消全选本页' : `全选本页 (${items.length})`}
-                </button>
                 <span className="text-[11.5px] text-foreground/40">
                   共 {total} 张待审核
                 </span>
+                <span className="text-[11.5px] text-foreground/45">
+                  点击图片或右上角方框可多选
+                </span>
+                {selectedCount > 0 && (
+                  <span className="text-[11.5px] text-accent">
+                    本页已选 {selectedOnPageCount} 张，跨页共选 {selectedCount} 张
+                  </span>
+                )}
                 {items.filter((it) => it.tags_complete === false).length > 0 && (
                   <span className="text-[11.5px] text-warning">
-                    本页 {items.filter((it) => it.tags_complete === false).length} 张标签未齐（通过后需补标签才上 OSS）
+                    本页 {items.filter((it) => it.tags_complete === false).length} 张标签待补充（不阻塞 OSS 上传）
                   </span>
                 )}
               </div>
@@ -326,7 +343,7 @@ export default function ReviewQueue() {
               page={page}
               pageSize={PAGE_SIZE}
               total={total}
-              onPageChange={(p) => { setPage(p); setSelected(new Set()) }}
+              onPageChange={setPage}
             />
           </>
         )}
@@ -413,10 +430,26 @@ function ReviewGrid({
                   }
                 }}
               />
-              {showCheckbox && isSelected && (
-                <div className="absolute top-1.5 right-1.5 h-5 w-5 rounded-full bg-accent text-accent-foreground flex items-center justify-center shadow">
+              {showCheckbox && (
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={isSelected}
+                  aria-label={`${isSelected ? '取消选择' : '选择'} ${it.file_name}`}
+                  title={isSelected ? '取消选择' : '选择用于批量审核'}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onToggleSelect(it.id)
+                  }}
+                  className={cn(
+                    'absolute top-1.5 right-1.5 h-5 w-5 rounded border shadow flex items-center justify-center transition-colors',
+                    isSelected
+                      ? 'bg-accent border-accent text-accent-foreground'
+                      : 'bg-background/90 border-foreground/30 text-transparent hover:border-accent/60',
+                  )}
+                >
                   <Check size={12} />
-                </div>
+                </button>
               )}
             </div>
             <div className="px-2 py-1.5 space-y-0.5">

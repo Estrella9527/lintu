@@ -134,7 +134,7 @@ export function PromptBar() {
   // ── 上传参考图(拖拽 / 粘贴 / 点 + 选本地) ─────────────────────────
   const { upload, uploading } = useUploadImages({
     projectId,
-    inLibrary: false,  // 画布参考图只是草稿,不进资产库 / 不推 OSS,需手动「加入资产库」
+    inLibrary: false,  // 画布参考图只是草稿,不进资产库 / 不推 OSS,需手动「上传到图库」
     onSuccess: ({ images, duplicate_images }) => {
       const all = [...images, ...duplicate_images]
       if (!all.length) return

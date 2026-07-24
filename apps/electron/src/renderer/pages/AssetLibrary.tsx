@@ -15,6 +15,7 @@ import { FilterBar, EMPTY_FILTER } from '@/components/asset-library/FilterBar'
 import { ImageInspector } from '@/components/asset-library/ImageInspector'
 import { ImageLightbox } from '@/components/asset-library/ImageLightbox'
 import { BatchActionBar } from '@/components/asset-library/BatchActionBar'
+import { UploadBatchDialog } from '@/components/asset-library/UploadBatchDialog'
 import { FolderTree } from '@/components/asset-library/FolderTree'
 import { DuplicateGroupsTab } from '@/components/asset-library/DuplicateGroupsTab'
 import { ImageDropOverlay } from '@/components/shared/ImageDropOverlay'
@@ -22,6 +23,7 @@ import { activeProjectIdAtom } from '@/atoms/project'
 import { useImageDropPaste } from '@/hooks/useImageDropPaste'
 import { useUploadImages } from '@/hooks/useUploadImages'
 import type { ImageRecord } from '@/lib/types'
+import { Button } from '@/components/ui/button'
 
 const TABS = [
   { id: 'all', label: '全部图片', icon: LayoutGrid },
@@ -166,25 +168,60 @@ export default function AssetLibrary() {
   const queryClient = useQueryClient()
   const dropZoneRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([])
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const uploadEnabled = activeTab === 'all' && !!projectId
-  const { upload, uploading } = useUploadImages({
+  const { upload, uploading, progress: uploadProgress } = useUploadImages({
     projectId,
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['images', projectId] })
       // FolderTree 的 queryKey 是 ['image-folders', ...],之前误写成 'folders' →
       // 上传后文件夹数字不立刻刷新。修正 key,让数字实时更新。
       queryClient.invalidateQueries({ queryKey: ['image-folders', projectId] })
       queryClient.invalidateQueries({ queryKey: ['oss-status'] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      const successfulIds = [
+        ...result.images.map((img) => img.id),
+        ...result.duplicate_images.map((img) => img.id),
+      ]
+      if (successfulIds.length) setSelectedIds(new Set(successfulIds))
     },
   })
-  // 治理策略:拖入/选文件 = 导入到【本地资产库】(本地态),不进审批、不碰 OSS。
-  // 送审 + 上云是另一个动作:选中图 → 批量工具栏「上传」(见 BatchActionBar)。
+  const stageUploadFiles = useCallback((files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith('image/'))
+    if (!images.length) return
+    setPendingUploadFiles(images)
+    setUploadDialogOpen(true)
+  }, [])
+  const removeStagedUploadFile = useCallback((index: number) => {
+    setPendingUploadFiles((prev) => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index)
+      if (next.length === 0) setUploadDialogOpen(false)
+      return next
+    })
+  }, [])
+  const finishStagedUpload = useCallback(async () => {
+    // 取快照，避免异步过程中用户修改选择导致本次处理和界面显示不一致。
+    const files = pendingUploadFiles
+    if (!files.length) return
+    const result = await upload(files)
+    if (result) {
+      // 分块上传中某一批网络/服务端失败时，成功部分已经落库；失败的
+      // File 必须继续留在确认面板，供用户直接重试，不能随着弹窗关闭而丢失。
+      if (result.failedFiles.length > 0) {
+        setPendingUploadFiles(result.failedFiles)
+        return
+      }
+      setUploadDialogOpen(false)
+      setPendingUploadFiles([])
+    }
+  }, [pendingUploadFiles, upload])
   const { isDragging } = useImageDropPaste({
     dropRef: dropZoneRef,
     enabled: uploadEnabled,
     // 【止血P0-5】关掉资产库整页的全局(document 级)粘贴监听,只保留显式导入按钮 + 拖入。
     enablePaste: false,
-    onFiles: (files) => { void upload(files) },
+    onFiles: stageUploadFiles,
   })
 
   return (
@@ -235,31 +272,26 @@ export default function AssetLibrary() {
                 style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
                 onChange={(e) => {
                   const files = Array.from(e.target.files || [])
-                  if (files.length) void upload(files)
+                  if (files.length) stageUploadFiles(files)
                   if (fileInputRef.current) fileInputRef.current.value = ''
                 }}
               />
-              <button
-                type="button"
+              <Button
+                size="sm"
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
                   fileInputRef.current?.click()
                 }}
                 disabled={uploading}
-                className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 text-[12px] rounded-md transition-colors',
-                  uploading
-                    ? 'text-foreground/40 cursor-wait'
-                    : 'text-foreground/65 hover:text-foreground hover:bg-foreground/[0.05]',
-                )}
-                title="选择本地图片上传 · 也可直接拖入页面 / Ctrl+V 粘贴截图"
+                className="h-7 text-[12px]"
+                title="先确认和筛选图片；确认后直接入图库，压缩完成后自动同步 OSS"
               >
                 {uploading
                   ? <Loader2 size={13} className="animate-spin" />
                   : <Upload size={13} strokeWidth={1.5} />}
-                <span>导入图片</span>
-              </button>
+                <span>上传图片</span>
+              </Button>
             </div>
           )}
         </div>
@@ -317,7 +349,7 @@ export default function AssetLibrary() {
                       parentId={activeTab === 'all' ? (filter.parent_id || undefined) : undefined}
                       tagStatus={activeTab === 'all' ? (filter.tagStatus !== 'all' ? filter.tagStatus : undefined) : undefined}
                       // 「全部图片」只展示已入库的图;AI 工坊生成图/画布草稿不在此显示,
-                      // 直到运营「加入资产库」。回收站不加此过滤(按淘汰态聚合)。
+                      // 直到用户明确「上传到图库」。回收站不加此过滤(按淘汰态聚合)。
                       inLibrary={activeTab === 'all' ? true : undefined}
                       selectedIds={selectedIds}
                       activeId={activeImage?.id ?? null}
@@ -366,6 +398,22 @@ export default function AssetLibrary() {
         // Eagle: pressing Esc / clicking 详情 returns focus to inspector — already
         // showing this image in the right panel
         onShowDetails={(img) => setActiveImage(img)}
+      />
+      <UploadBatchDialog
+        open={uploadDialogOpen}
+        fileCount={pendingUploadFiles.length}
+        totalBytes={pendingUploadFiles.reduce((sum, file) => sum + file.size, 0)}
+        files={pendingUploadFiles}
+        busy={uploading}
+        progress={uploadProgress}
+        onOpenChange={setUploadDialogOpen}
+        onCancel={() => setPendingUploadFiles([])}
+        onRemoveFile={removeStagedUploadFile}
+        onClearFiles={() => {
+          setPendingUploadFiles([])
+          setUploadDialogOpen(false)
+        }}
+        onConfirm={() => void finishStagedUpload()}
       />
     </>
   )
